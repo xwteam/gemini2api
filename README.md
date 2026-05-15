@@ -44,7 +44,7 @@
 | OpenAI 兼容 API | ✅ | `/openai/v1/chat/completions`，支持流式 |
 | Claude 兼容 API | ✅ | `/claude/v1/messages`，完整 SSE 协议 |
 | Gemini 原生 API | ✅ | `/gemini/v1beta/models/:model:generateContent` |
-| Function Calling | ✅ | 三种格式均支持工具调用 |
+| 函数调用 | ✅ | 三种格式均支持工具调用 |
 | 流式响应 | ✅ | SSE（OpenAI/Claude）+ Chunked JSON（Gemini） |
 | Deep Research | ✅ | 多步骤深度研究，支持同步/流式/异步 |
 | Cookie 自动刷新 | ✅ | 后台定时轮换，无感续期 |
@@ -200,7 +200,7 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
   -d '{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"Hi"}],"stream":true}'
 ```
 
-### Function Calling
+### 函数调用（Function Calling）
 
 ```python
 response = client.chat.completions.create(
@@ -285,7 +285,7 @@ gemini2api/
 │   │   ├── gemini.py
 │   │   └── research.py
 │   └── utils/                  # 工具函数
-│       ├── tools.py            # Function Calling 桥接
+│       ├── tools.py            # 函数调用桥接
 │       └── prompt.py           # 消息格式化
 ├── Dockerfile                  # 多阶段构建
 ├── docker-compose.yml          # 编排配置
@@ -298,7 +298,7 @@ gemini2api/
 ## 🗺️ 开发路线
 
 - [x] OpenAI / Claude / Gemini 三格式兼容
-- [x] 流式响应 + Function Calling
+- [x] 流式响应 + 函数调用
 - [x] Deep Research 深度研究
 - [x] Docker 部署
 - [ ] 多账号轮询（负载均衡）
