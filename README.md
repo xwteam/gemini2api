@@ -19,8 +19,8 @@
   <a href="#-快速部署">快速部署</a> &bull;
   <a href="#-接入示例">接入示例</a> &bull;
   <a href="#-api-端点">API 端点</a> &bull;
-  <a href="#️-配置说明">配置说明</a> &bull;
-  <a href="#️-开发路线">开发路线</a>
+  <a href="#-配置说明">配置说明</a> &bull;
+  <a href="#-开发路线">开发路线</a>
 </p>
 
 <br>
