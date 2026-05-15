@@ -387,42 +387,108 @@ async function loadConfig() {
 async function sendPlaygroundRequest() {
     const message = document.getElementById('pg-message')?.value.trim();
     const model = document.getElementById('pg-model')?.value;
-    const responseArea = document.getElementById('pg-response');
+    const chatContainer = document.getElementById('pg-chat');
 
     if (!message) {
         showToast('请输入消息内容', 'warning');
         return;
     }
 
-    if (responseArea) {
-        responseArea.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> 生成中...</div>';
-    }
+    const placeholder = chatContainer?.querySelector('.chat-placeholder');
+    if (placeholder) placeholder.remove();
 
+    const userMsg = document.createElement('div');
+    userMsg.className = 'chat-message user';
+    userMsg.innerHTML = `
+        <div class="chat-avatar"><i class="fas fa-user"></i></div>
+        <div class="chat-bubble">${escapeHtml(message)}</div>
+    `;
+    chatContainer.appendChild(userMsg);
+
+    const aiMsg = document.createElement('div');
+    aiMsg.className = 'chat-message assistant';
+    aiMsg.innerHTML = `
+        <div class="chat-avatar"><i class="fas fa-microchip"></i></div>
+        <div class="chat-bubble"><span class="typing-cursor"></span></div>
+    `;
+    chatContainer.appendChild(aiMsg);
+    const aiBubble = aiMsg.querySelector('.chat-bubble');
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+
+    document.getElementById('pg-message').value = '';
+
+    const token = localStorage.getItem('gemini2api_token');
     try {
-        const response = await apiCall('POST', '/openai/v1/chat/completions', {
-            model: model || 'gemini-2.5-flash-preview-05-20',
-            messages: [{ role: 'user', content: message }],
-            stream: false
+        const resp = await fetch('/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                model: model || 'gemini-2.5-flash-preview-05-20',
+                messages: [{ role: 'user', content: message }],
+                stream: true
+            })
         });
 
-        const content = response.choices?.[0]?.message?.content || '无响应内容';
-        if (responseArea) {
-            responseArea.textContent = content;
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => null);
+            const msg = err?.error?.message || `请求失败 (状态: ${resp.status})`;
+            aiBubble.innerHTML = `<span class="text-danger">${msg}</span>`;
+            return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let content = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const data = line.slice(6).trim();
+                if (data === '[DONE]') break;
+                try {
+                    const chunk = JSON.parse(data);
+                    const delta = chunk.choices?.[0]?.delta?.content || '';
+                    if (delta) {
+                        content += delta;
+                        aiBubble.textContent = content;
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    }
+                } catch {}
+            }
+        }
+
+        if (!content) {
+            aiBubble.textContent = '无响应内容';
         }
     } catch (error) {
-        if (responseArea) {
-            responseArea.innerHTML = `<span class="text-danger">错误: ${error.message}</span>`;
-        }
+        aiBubble.innerHTML = `<span class="text-danger">错误: ${error.message}</span>`;
     }
 }
 
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
 function clearPlayground() {
-    const message = document.getElementById('pg-message');
-    const response = document.getElementById('pg-response');
-    if (message) message.value = '';
-    if (response) {
-        response.innerHTML = '<div class="response-placeholder"><i class="fas fa-comment-dots"></i><p>发送请求后，响应内容将显示在这里</p></div>';
+    const chatContainer = document.getElementById('pg-chat');
+    if (chatContainer) {
+        chatContainer.innerHTML = '<div class="chat-placeholder"><i class="fas fa-comment-dots"></i><p>发送消息开始对话</p></div>';
     }
+    const message = document.getElementById('pg-message');
+    if (message) message.value = '';
 }
 
 // ============================================================================
