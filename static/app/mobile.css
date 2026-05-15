@@ -80,7 +80,8 @@
         font-size: 1.25rem;
     }
 
-    .stat-info00;
+    .stat-info p {
+        font-size: 0.75rem;
     }
 
     .form-control {
@@ -137,7 +138,6 @@
     .logs-container {
         height: calc(100vh - 280px);
         min-height: 300px;
-        font-size:
         font-size: 0.6875rem;
         line-height: 1.4;
         border-radius: var(--radius-sm);
@@ -148,7 +148,11 @@
         left: 1rem;
         right: 1rem;
         bottom: 1rem;
-        poin%;
+        pointer-events: none;
+    }
+
+    /* 模态框 */
+    .modal-content {
         max-width: 95%;
         max-height: 90vh;
         margin: 5vh auto;
@@ -275,7 +279,8 @@
         padding: 0.625rem 1rem;
     }
 
-  g: touch;
+    .logs-container {
+        -webkit-overflow-scrolling: touch;
     }
 }
 
@@ -309,7 +314,7 @@
    ======================================== */
 @media (prefers-reduced-motion: reduce) {
     *,
-    *::befe,
+    *::before,
     *::after {
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
