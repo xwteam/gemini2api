@@ -113,6 +113,7 @@ class GeminiWebClient:
         now = datetime.now(timezone.utc).isoformat()
         try:
             await self._ensure_session_current()
+            self._clear_session_cookies()
             cookies = self._get_cookies()
             headers = self._get_headers("GET")
             resp = await self._http.get(GEMINI_APP_EN_URL, cookies=cookies, headers=headers)
@@ -171,6 +172,13 @@ class GeminiWebClient:
             except Exception as e:
                 logger.error(f"Health check loop error: {e}")
 
+    def _clear_session_cookies(self):
+        """Clear curl_cffi's internal cookie jar to prevent cross-domain accumulation."""
+        try:
+            self._http.cookies.clear()
+        except Exception:
+            pass
+
     async def _obtain_session_token(self):
         try:
             await self._ensure_session_current()
@@ -178,14 +186,18 @@ class GeminiWebClient:
             headers = self._get_headers("GET")
 
             await apply_jitter("navigation")
+            self._clear_session_cookies()
             resp = await self._http.get(GOOGLE_HOME_URL, cookies=cookies, headers=headers)
             self._cookie_jar.update_from_response(resp)
 
             await apply_jitter("navigation")
+            self._clear_session_cookies()
+            cookies = self._get_cookies()
             resp = await self._http.get(GEMINI_HOME_URL, cookies=cookies, headers=headers)
             self._cookie_jar.update_from_response(resp)
 
             await apply_jitter("navigation")
+            self._clear_session_cookies()
             cookies = self._get_cookies()
             resp = await self._http.get(GEMINI_APP_EN_URL, cookies=cookies, headers=headers)
             self._cookie_jar.update_from_response(resp)
@@ -226,6 +238,7 @@ class GeminiWebClient:
         try:
             await apply_jitter("cookie_rotate")
             await self._ensure_session_current()
+            self._clear_session_cookies()
             cookies = self._get_cookies()
             body = '[000,"-0000000000000000000"]'
             resp = await self._http.post(
@@ -316,6 +329,7 @@ class GeminiWebClient:
     async def _send_request(self, prompt: str, model: str) -> dict:
         await apply_jitter("api_call")
         await self._ensure_session_current()
+        self._clear_session_cookies()
 
         encoded = self._encode_payload(prompt, model)
         form_data = {"at": self._session_token, "f.req": encoded}

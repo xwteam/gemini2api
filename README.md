@@ -48,6 +48,7 @@
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2025-05-16 00:40:00 | 修复 curl_cffi 跨域 Cookie 累积冲突，Cookie 热更新恢复正常 |
 | 2025-05-15 23:45:00 | 新增反检测与协议伪装系统：指纹一致性、完整 Cookie 持久化、Chrome 版本自动同步、请求时间抖动 |
 | 2025-05-15 23:10:00 | 替换 httpx 为 curl_cffi，模拟 Chrome TLS 指纹延长 session 寿命 |
 | 2025-05-15 21:30:00 | 新增 Web 管理面板（仪表盘、账号管理、实时日志、Playground） |
@@ -87,9 +88,10 @@
 
 ### 🛡 反检测与协议伪装
 
-- **TLS 指纹一致性**：UA、Sec-Ch-Ua、curl_cffi impersonate 三者版本始终同步（当前 Chrome 131）
+- **TLS 指纹一致性**：UA、Sec-Ch-Ua、curl_cffi impersonate 三者版本始终同步（当前 Chrome 124）
 - **动态请求头**：按 Chrome 真实顺序排列，根据请求类型（导航 GET / API POST）动态调整 Sec-Fetch-* 值
 - **完整 Cookie 持久化**：自动捕获所有响应 Cookie 并持久化到磁盘，跨重启保留
+- **Cookie 域名隔离**：每次请求前清除 session 内部 cookie，防止跨域名累积冲突
 - **Chrome 版本自动同步**：每 24 小时轮询 Google 版本 API，检测到新版本自动更新指纹配置
 - **请求时间抖动**：模拟人类操作间隔（导航 200-800ms / API 50-300ms / Cookie 轮换 1-3s）
 - **版本降级策略**：当 curl_cffi 不支持最新 Chrome 版本时，自动使用最近的可用版本

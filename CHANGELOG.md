@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2025-05-16
+
+### Fixed
+- 修复 curl_cffi AsyncSession 跨域 Cookie 累积导致 "Multiple cookies exist" 错误
+- 每次 HTTP 请求前清除 session 内部 cookie jar，防止跨域名（google.com / gemini.google.com / accounts.google.com）Cookie 冲突
+- 修复 `_obtain_session_token` 导航流程中 Cookie 在多个 Google 域名间累积的问题
+- 修复 Cookie 热更新（reload）时仍可能触发域名冲突的问题
+
+### Changed
+- 新增 `_clear_session_cookies()` 方法，统一管理 curl_cffi 内部 cookie 清理
+- `_obtain_session_token` 每步导航前刷新 cookies 变量，确保使用 PersistentCookieJar 的最新状态
+- 验证 chrome124 为当前 curl_cffi 0.7.4 最高可用 impersonate 目标（chrome126+ 请求失败）
+
 ## [0.5.0] - 2025-05-15
 
 ### Added
