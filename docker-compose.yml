@@ -1,0 +1,18 @@
+services:
+  gemini2api:
+    build: .
+    container_name: gemini2api
+    env_file:
+      - .env
+    ports:
+      - "4981:4981"
+    tmpfs:
+      - /tmp
+      - /home/appuser/.cache
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:4981/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
