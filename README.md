@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Async-httpx-ff6b35?style=flat-square&logo=python&logoColor=white" alt="httpx">
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/License-MIT-orange?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/License-PolyForm_NC-orange?style=flat-square" alt="License">
 </p>
 
 <h1 align="center">Gemini2API</h1>
@@ -373,7 +373,9 @@ gemini2api/
 
 ## 📄 License
 
-[MIT](LICENSE)
+[PolyForm Noncommercial 1.0.0](LICENSE)
+
+本项目仅供个人学习、研究、实验用途，禁止商业使用。商用授权请通过 GitHub Issues 联系。
 
 ---
 
