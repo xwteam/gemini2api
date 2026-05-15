@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690b6.svg" width="100" alt="Gemini2API">
+<img src="https://github.com/xwteam.png" width="100" alt="Gemini2API">
 
 <h1>Gemini2API</h1>
 <h3>轻量级 Gemini Web 反向代理</h3>
