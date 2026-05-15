@@ -1,21 +1,36 @@
-<p align="center">
-  <img src="https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690b6.svg" width="120" alt="Gemini2API">
-</p>
+<div align="center">
 
-<p align="center">
+<img src="https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690b6.svg" width="100" alt="Gemini2API">
+
+<h1>Gemini2API</h1>
+<h3>轻量级 Gemini Web 反向代理</h3>
+<p>一套代码兼容 OpenAI / Claude / Gemini 三大主流 AI SDK，纯异步架构，零官方 Key，30 秒 Docker 部署。</p>
+
+<p>
   <img src="https://img.shields.io/badge/Python-3.12-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Async-httpx-ff6b35?style=flat-square&logo=python&logoColor=white" alt="httpx">
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/License-PolyForm_NC-orange?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
 </p>
 
-<h1 align="center">Gemini2API</h1>
-
-<p align="center">
-  轻量级 Gemini Web 反向代理，一套代码兼容三大主流 AI SDK<br/>
-  纯异步架构 · 零官方 Key · 30 秒 Docker 部署
+<p>
+  <a href="#-快速部署">快速部署</a> &bull;
+  <a href="#-核心功能">核心功能</a> &bull;
+  <a href="#-接入示例">接入示例</a> &bull;
+  <a href="#-api-端点">API 端点</a> &bull;
+  <a href="#%EF%B8%8F-配置说明">配置说明</a> &bull;
+  <a href="#-开发路线">开发路线</a>
 </p>
+
+<br>
+
+<a href="https://github.com/xwteam/gemini2api/issues"><img src="https://img.shields.io/github/issues/xwteam/gemini2api?style=flat-square" alt="Issues"></a>
+<a href="https://github.com/xwteam/gemini2api/stargazers"><img src="https://img.shields.io/github/stars/xwteam/gemini2api?style=flat-square" alt="Stars"></a>
+
+</div>
+
+---
 
 > [!NOTE]
 > 本项目仅供研究和学习用途，请合理使用，不要用于任何商业目的。
@@ -25,37 +40,75 @@
 
 ---
 
-## 🎯 为什么选择 Gemini2API
+## 🌟 核心功能
 
-- **三合一兼容** — 一个服务同时提供 OpenAI、Claude、Gemini 三种 SDK 格式，切换零成本
-- **纯异步架构** — 基于 Python asyncio + httpx，全链路非阻塞，天然支持高并发
-- **Pydantic 强类型** — 请求参数自动校验，不再因字段缺失导致 500
-- **模块化设计** — 每个 API 格式独立路由文件，新增功能只需加一个文件，不影响现有代码
-- **Cookie 自愈** — 后台自动轮换 + 定时刷新，无需手动维护会话
-- **30 秒部署** — Docker Compose 一键启动，填入 Cookie 即可使用
-- **易于扩展** — Python + FastAPI 组合，代码可读性高，二次开发门槛低
+### 🔌 三合一协议兼容
+
+- 一个服务同时提供 OpenAI、Claude、Gemini 三种 SDK 格式
+- SSE 流式输出（OpenAI / Claude）+ Chunked JSON（Gemini）
+- 函数调用（Function Calling）三种格式均支持
+- Deep Research 多步骤深度研究
+
+### 🔐 安全与认证
+
+- API Key 自动生成（`sk-` 前缀 + 32 位随机字符串）
+- 支持 `Authorization: Bearer` 和 `x-api-key` 两种认证方式
+- 首次部署自动生成密钥，用户可自定义修改
+
+### 🔄 Cookie 自愈与账号管理
+
+- 后台自动轮换 Cookie，无感续期
+- 定时主动检测账号状态，连续失败自动标记不健康
+- 热更新 Cookie API，无需重启容器
+- 健康检查历史记录，为 Web 面板提供数据支撑
+
+### ⚡ 高性能架构
+
+- 基于 Python asyncio + httpx，全链路非阻塞
+- Pydantic 强类型校验，请求参数自动验证
+- 模块化设计，每个 API 格式独立路由文件
+- 失败自动重试，指数退避策略
 
 ---
 
-## ✨ 功能清单
+## 🏗️ 技术架构
 
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| OpenAI 兼容 API | ✅ | `/openai/v1/chat/completions`，支持流式 |
-| Claude 兼容 API | ✅ | `/claude/v1/messages`，完整 SSE 协议 |
-| Gemini 原生 API | ✅ | `/gemini/v1beta/models/:model:generateContent` |
-| 函数调用 | ✅ | 三种格式均支持工具调用 |
-| 流式响应 | ✅ | SSE（OpenAI/Claude）+ Chunked JSON（Gemini） |
-| Deep Research | ✅ | 多步骤深度研究，支持同步/流式/异步 |
-| Cookie 自动刷新 | ✅ | 后台定时轮换，无感续期 |
-| 模型自动发现 | ✅ | 启动时从 Web 页面提取可用模型列表 |
-| 速率限制 | ✅ | 可选，基于 IP 的滑动窗口限流 |
-| 健康检查 | ✅ | `/health` 端点，适配 Docker 健康探针 |
-| 账号状态检测 | ✅ | 定时主动验证 Cookie 有效性，支持历史记录查询 |
+```
+                          Gemini2API
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│  Client (OpenAI SDK / Claude SDK / Gemini SDK / cURL)      │
+│       |                                                    │
+│  POST /openai/v1/chat/completions                          │
+│  POST /claude/v1/messages                                  │
+│  POST /gemini/v1beta/models/:m:generateContent             │
+│       |                                                    │
+│       v                                                    │
+│  +-----------+    +----------------+    +--------------+   │
+│  |  Routes   |--->|  Translation   |--->| Gemini Web   |   │
+│  | (FastAPI) |    | Multi->Gemini  |    |   Client     |   │
+│  +-----------+    +----------------+    +--------------+   │
+│                                                            │
+│  +-----------+    +----------------+    +--------------+   │
+│  |   Auth    |    | Cookie Manager |    | Health Check |   │
+│  |  API Key  |    |  Auto-Rotate   |    |  Scheduled   |   │
+│  +-----------+    +----------------+    +--------------+   │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+                          |
+                   Browser Cookies
+             (__Secure-1PSID + PSIDTS)
+                          |
+                          v
+                  gemini.google.com
+              /BardChatUi/StreamGenerate
+```
 
 ---
 
 ## ⚡ 快速部署
+
+> **前置条件**：你需要一个能正常使用 Gemini 的 Google 账号。
 
 ### 1. 获取 Cookie
 
@@ -63,7 +116,7 @@
 2. 登录你的 Google 账号，确保能正常使用 Gemini 对话
 3. 按 `F12` 打开开发者工具
 4. 点击顶部 **Application**（应用程序）标签
-5. 左侧栏找到 **Cookies** → 点击 `https://gemini.google.com`
+5. 左侧栏找到 **Cookies** -> 点击 `https://gemini.google.com`
 6. 在 Cookie 列表中找到以下两个值：
 
 | Cookie 名称 | 说明 |
@@ -115,40 +168,25 @@ docker compose logs -f
 # 看到 "SNlM0e not found" 表示 Cookie 无效，需要重新获取
 ```
 
-### 3. 验证服务
+### 3. 验证
 
 ```bash
 # 健康检查
 curl http://localhost:5918/health
 # {"status":"ok","service":"gemini2api"}
 
-# 查看可用模型
-curl http://localhost:5918/openai/v1/models
+# 查看可用模型（需要 API Key，首次启动在日志中查看）
+curl http://localhost:5918/openai/v1/models \
+  -H "Authorization: Bearer sk-你的API密钥"
 
 # 发送测试请求
 curl -X POST http://localhost:5918/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
   -d '{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"hi"}]}'
 ```
 
----
-
-## 🛠️ 环境变量
-
-| 变量 | 必填 | 默认值 | 说明 |
-|------|------|--------|------|
-| `GEMINI_PSID` | ✅ | — | 浏览器 `__Secure-1PSID` |
-| `GEMINI_PSIDTS` | ✅ | — | 浏览器 `__Secure-1PSIDTS` |
-| `API_KEY` | ❌ | 自动生成 | API 访问密钥（`sk-` 开头，留空则首次启动自动生成） |
-| `REFRESH_INTERVAL` | ❌ | `5` | Cookie 刷新周期（分钟） |
-| `MAX_RETRIES` | ❌ | `3` | 失败重试次数（指数退避） |
-| `PORT` | ❌ | `5918` | 服务端口 |
-| `LOG_LEVEL` | ❌ | `info` | 日志级别（debug/info/warning/error） |
-| `RATE_LIMIT_ENABLED` | ❌ | `false` | 启用限流 |
-| `RATE_LIMIT_WINDOW` | ❌ | `60` | 限流窗口（秒） |
-| `RATE_LIMIT_MAX` | ❌ | `10` | 窗口内最大请求数 |
-| `HEALTH_CHECK_ENABLED` | ❌ | `true` | 启用定时账号状态检测 |
-| `HEALTH_CHECK_INTERVAL` | ❌ | `5` | 检测间隔（分钟） |
+看到 AI 回复的文字即部署成功。如果返回 401，请检查 API Key 是否正确。
 
 ---
 
@@ -161,13 +199,14 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 >
 > API Key 在首次启动时自动生成并写入 `.env` 文件，可在日志中查看或手动修改。
 
-### OpenAI SDK（Python）
+<details>
+<summary><b>OpenAI SDK（Python）</b></summary>
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="sk-你的API密钥",  # 填入 .env 中的 API_KEY
+    api_key="sk-你的API密钥",
     base_url="http://localhost:5918/openai/v1"
 )
 
@@ -179,13 +218,16 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
-### Claude SDK（Python）
+</details>
+
+<details>
+<summary><b>Claude SDK（Python）</b></summary>
 
 ```python
 import anthropic
 
 client = anthropic.Anthropic(
-    api_key="sk-你的API密钥",  # 填入 .env 中的 API_KEY
+    api_key="sk-你的API密钥",
     base_url="http://localhost:5918/claude"
 )
 
@@ -197,7 +239,10 @@ msg = client.messages.create(
 print(msg.content[0].text)
 ```
 
-### cURL
+</details>
+
+<details>
+<summary><b>cURL</b></summary>
 
 ```bash
 # 非流式请求
@@ -213,7 +258,10 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
   -d '{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"Hi"}],"stream":true}'
 ```
 
-### 函数调用（Function Calling）
+</details>
+
+<details>
+<summary><b>函数调用</b></summary>
 
 ```python
 response = client.chat.completions.create(
@@ -234,9 +282,14 @@ response = client.chat.completions.create(
 )
 ```
 
+</details>
+
 ---
 
-## 📘 API 端点一览
+## 📡 API 端点
+
+<details>
+<summary><b>点击展开完整端点列表</b></summary>
 
 ### OpenAI 兼容（`/openai/v1`）
 
@@ -266,15 +319,9 @@ response = client.chat.completions.create(
 
 | 方法 | 端点 | 功能 |
 |------|------|------|
-| POST | `/` | 同步深度研究（规划→调研→综合报告） |
+| POST | `/` | 同步深度研究（规划->调研->综合报告） |
 | POST | `/stream` | 流式研究（实时进度推送） |
-| POST | `/interact` | 异步任务模式（创建→轮询结果） |
-
-### 系统
-
-| 方法 | 端点 | 功能 |
-|------|------|------|
-| GET | `/health` | 健康检查（Docker 探针适配） |
+| POST | `/interact` | 异步任务模式（创建->轮询结果） |
 
 ### 管理接口（`/admin`）
 
@@ -282,32 +329,33 @@ response = client.chat.completions.create(
 |------|------|------|
 | POST | `/reload-cookies` | 热更新 Cookie（无需重启容器） |
 | GET | `/status` | 服务状态（健康状态 + 可用模型数） |
-| GET | `/check-account` | 实时检测账号状态（主动验证 Cookie 有效性） |
+| GET | `/check-account` | 实时检测账号状态 |
 | GET | `/health-history` | 最近 20 条健康检查记录 |
 
-> 管理接口同样需要 API Key 验证。
+### 系统
 
-**热更新 Cookie 示例：**
+| 方法 | 端点 | 功能 |
+|------|------|------|
+| GET | `/health` | 健康检查（Docker 探针适配） |
+
+</details>
+
+**管理接口使用示例：**
 
 ```bash
-# 方式一：直接传入新 Cookie
+# 热更新 Cookie
 curl -X POST http://localhost:5918/admin/reload-cookies \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sk-你的API密钥" \
-  -d '{"psid":"g.a000新的PSID值","psidts":"sidts-新的PSIDTS值"}'
+  -d '{"psid":"g.a000新的值","psidts":"sidts-新的值"}'
 
-# 方式二：不传参数，从 .env 文件重新读取
+# 从 .env 重新读取 Cookie
 curl -X POST http://localhost:5918/admin/reload-cookies \
-  -H "Authorization: Bearer sk-你的API密钥"
-
-# 查看服务状态
-curl http://localhost:5918/admin/status \
   -H "Authorization: Bearer sk-你的API密钥"
 
 # 主动检测账号状态
 curl http://localhost:5918/admin/check-account \
   -H "Authorization: Bearer sk-你的API密钥"
-# 返回：{"valid":true,"has_token":true,"models_count":12,"checked_at":"..."}
 
 # 查看健康检查历史
 curl http://localhost:5918/admin/health-history \
@@ -316,7 +364,26 @@ curl http://localhost:5918/admin/health-history \
 
 ---
 
-## 🏗️ 项目结构
+## ⚙️ 配置说明
+
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `GEMINI_PSID` | ✅ | — | 浏览器 `__Secure-1PSID` |
+| `GEMINI_PSIDTS` | ✅ | — | 浏览器 `__Secure-1PSIDTS` |
+| `API_KEY` | ❌ | 自动生成 | API 访问密钥（`sk-` 开头，留空则首次启动自动生成） |
+| `REFRESH_INTERVAL` | ❌ | `5` | Cookie 刷新周期（分钟） |
+| `MAX_RETRIES` | ❌ | `3` | 失败重试次数（指数退避） |
+| `PORT` | ❌ | `5918` | 服务端口 |
+| `LOG_LEVEL` | ❌ | `info` | 日志级别（debug/info/warning/error） |
+| `RATE_LIMIT_ENABLED` | ❌ | `false` | 启用限流 |
+| `RATE_LIMIT_WINDOW` | ❌ | `60` | 限流窗口（秒） |
+| `RATE_LIMIT_MAX` | ❌ | `10` | 窗口内最大请求数 |
+| `HEALTH_CHECK_ENABLED` | ❌ | `true` | 启用定时账号状态检测 |
+| `HEALTH_CHECK_INTERVAL` | ❌ | `5` | 检测间隔（分钟） |
+
+---
+
+## 🗂️ 项目结构
 
 ```
 gemini2api/
@@ -325,6 +392,7 @@ gemini2api/
 │   ├── config.py               # Pydantic 配置管理
 │   ├── core/
 │   │   ├── gemini_client.py    # Gemini Web 核心客户端
+│   │   ├── auth.py             # API Key 验证
 │   │   └── stream.py           # 流式工具函数
 │   ├── models/                 # Pydantic 数据模型
 │   │   ├── openai.py
@@ -334,7 +402,8 @@ gemini2api/
 │   │   ├── openai.py
 │   │   ├── claude.py
 │   │   ├── gemini.py
-│   │   └── research.py
+│   │   ├── research.py
+│   │   └── admin.py
 │   └── utils/                  # 工具函数
 │       ├── tools.py            # 函数调用桥接
 │       └── prompt.py           # 消息格式化
@@ -352,6 +421,9 @@ gemini2api/
 - [x] 流式响应 + 函数调用
 - [x] Deep Research 深度研究
 - [x] Docker 部署
+- [x] API Key 认证
+- [x] Cookie 热更新 API
+- [x] 账号状态定时检测
 - [ ] 多账号轮询（负载均衡）
 - [ ] Web 管理面板
 - [ ] 对话上下文持久化
@@ -371,12 +443,17 @@ gemini2api/
 
 ---
 
-## 📄 License
+## 📄 许可协议
 
-[PolyForm Noncommercial 1.0.0](LICENSE)
+本项目采用 [PolyForm Noncommercial 1.0.0](LICENSE)：
 
-本项目仅供个人学习、研究、实验用途，禁止商业使用。商用授权请通过 GitHub Issues 联系。
+- **允许**：个人学习、研究、实验、自用部署
+- **禁止**：任何形式的商业用途，包括但不限于出售、转售、收费代理、商业产品集成
+
+商用授权请通过 [GitHub Issues](https://github.com/xwteam/gemini2api/issues) 联系。
 
 ---
 
-<p align="center">Made with ❤️ by xwteam</p>
+<div align="center">
+  <sub>Built with Python + FastAPI + httpx | Powered by Gemini Web</sub>
+</div>
