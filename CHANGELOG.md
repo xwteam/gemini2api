@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-05-15
+
+### Changed
+- 替换 httpx 为 curl_cffi，使用 Chrome 120 TLS 指纹伪装，降低被 Google 识别为脚本流量的风险
+- Cookie 轮换逻辑适配 curl_cffi 的 cookies 解析方式
+
+### Removed
+- 移除 httpx 依赖
+
 ## [0.3.0] - 2025-05-15
 
 ### Added

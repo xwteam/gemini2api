@@ -7,7 +7,7 @@
 <p>
   <img src="https://img.shields.io/badge/Python-3.12+-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
-  <img src="https://img.shields.io/badge/httpx-Async-ff6b35?style=flat-square&logo=python&logoColor=white" alt="httpx">
+  <img src="https://img.shields.io/badge/curl__cffi-Chrome%20TLS-ff6b35?style=flat-square&logo=google-chrome&logoColor=white" alt="curl_cffi">
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
@@ -48,6 +48,7 @@
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2025-05-15 23:10:00 | 替换 httpx 为 curl_cffi，模拟 Chrome TLS 指纹延长 session 寿命 |
 | 2025-05-15 21:30:00 | 新增 Web 管理面板（仪表盘、账号管理、实时日志、Playground） |
 | 2025-05-15 19:08:40 | 新增多账号轮询（负载均衡），支持 round-robin / least-used 策略 |
 | 2025-05-15 17:25:10 | 新增账号状态定时检测、健康检查历史记录 API |
@@ -79,6 +80,7 @@
 - 每账号独立并发控制，避免单账号过载
 - 连续失败自动标记不健康，自动跳过故障账号
 - 后台自动轮换 Cookie，无感续期
+- **Chrome TLS 指纹模拟**：使用 curl_cffi 伪装 Chrome 120 TLS 握手，避免被 Google 识别为脚本流量
 - 热更新 Cookie API，无需重启容器
 - 支持通过 API 动态添加/移除账号
 - 健康检查历史记录，为 Web 面板提供数据支撑
@@ -94,7 +96,7 @@
 
 ### ⚡ 高性能架构
 
-- 基于 Python asyncio + httpx，全链路非阻塞
+- 基于 Python asyncio + curl_cffi，全链路非阻塞，Chrome TLS 指纹伪装
 - Pydantic 强类型校验，请求参数自动验证
 - 模块化设计，每个 API 格式独立路由文件
 - 失败自动重试，指数退避策略
@@ -606,5 +608,5 @@ gemini2api/
 ---
 
 <div align="center">
-  <sub>Built with Python + FastAPI + httpx | Powered by Gemini Web</sub>
+  <sub>Built with Python + FastAPI + curl_cffi | Powered by Gemini Web</sub>
 </div>
