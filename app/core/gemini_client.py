@@ -8,11 +8,17 @@ from threading import Lock
 from collections import deque
 from datetime import datetime, timezone
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class HTTPStatusError(Exception):
+    def __init__(self, status_code: int, text: str = ""):
+        self.status_code = status_code
+        super().__init__(f"HTTP {status_code}: {text[:200]}")
 
 GEMINI_APP_URL = "https://gemini.google.com/app"
 GEMINI_HOME_URL = "https://gemini.google.com/?hl=en"
@@ -54,15 +60,15 @@ class GeminiWebClient:
         self._healthy = False
         self._refresh_task: asyncio.Task | None = None
         self._health_check_task: asyncio.Task | None = None
-        self._http: httpx.AsyncClient | None = None
+        self._http: AsyncSession | None = None
         self._check_history: deque[dict] = deque(maxlen=20)
         self._last_check_result: dict | None = None
 
     async def initialize(self):
-        self._http = httpx.AsyncClient(
+        self._http = AsyncSession(
+            impersonate="chrome120",
             headers=DEFAULT_HEADERS,
-            timeout=httpx.Timeout(60.0),
-            follow_redirects=True,
+            timeout=60,
         )
         self._load_cached_cookies()
         await self._obtain_session_token()
@@ -218,7 +224,7 @@ class GeminiWebClient:
             body = '[000,"-0000000000000000000"]'
             resp = await self._http.post(
                 ROTATE_COOKIES_URL,
-                content=body,
+                content=body.encode(),
                 cookies=cookies,
                 headers={
                     "Content-Type": "application/json",
@@ -228,16 +234,13 @@ class GeminiWebClient:
             if resp.status_code != 200:
                 logger.warning(f"RotateCookies returned {resp.status_code}")
                 return False
-            for hdr in resp.headers.get_list("set-cookie"):
-                if "__Secure-1PSIDTS=" in hdr:
-                    new_ts = hdr.split("__Secure-1PSIDTS=")[1].split(";")[0]
-                    with self._lock:
-                        self._psidts = new_ts
-                    self._save_cookies_to_cache()
-                    logger.info("PSIDTS rotated via set-cookie")
-                    return True
-            # Google may not return a new PSIDTS if the current one is still fresh.
-            # As long as we get 200, the session is alive — re-fetch token to confirm.
+            new_ts = resp.cookies.get("__Secure-1PSIDTS")
+            if new_ts:
+                with self._lock:
+                    self._psidts = new_ts
+                self._save_cookies_to_cache()
+                logger.info("PSIDTS rotated via set-cookie")
+                return True
             logger.debug("RotateCookies 200 but no new PSIDTS (session still valid)")
             return True
         except Exception as e:
@@ -283,9 +286,9 @@ class GeminiWebClient:
         for attempt in range(settings.max_retries):
             try:
                 return await self._send_request(prompt, model)
-            except httpx.HTTPStatusError as e:
+            except HTTPStatusError as e:
                 last_err = e
-                status = e.response.status_code
+                status = e.status_code
                 if 400 <= status < 500:
                     if status in (401, 403):
                         self._healthy = False
@@ -306,7 +309,8 @@ class GeminiWebClient:
         form_data = {"at": self._session_token, "f.req": encoded}
         cookies = self._build_cookies()
         resp = await self._http.post(GENERATE_URL, data=form_data, cookies=cookies)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise HTTPStatusError(resp.status_code, resp.text[:200])
         return self._parse_output(resp.text)
 
     def _parse_output(self, raw: str) -> dict:
@@ -365,7 +369,7 @@ class GeminiWebClient:
             except asyncio.CancelledError:
                 pass
         if self._http:
-            await self._http.aclose()
+            await self._http.close()
 
     async def reload_cookies(self, psid: str | None = None, psidts: str | None = None):
         if psid:
