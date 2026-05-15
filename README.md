@@ -16,11 +16,16 @@
 
 <p>
   <a href="#-核心功能">核心功能</a> &bull;
+  <a href="#-技术架构">技术架构</a> &bull;
   <a href="#-快速部署">快速部署</a> &bull;
   <a href="#-接入示例">接入示例</a> &bull;
   <a href="#-api-端点">API 端点</a> &bull;
   <a href="#-配置说明">配置说明</a> &bull;
-  <a href="#-开发路线">开发路线</a>
+  <a href="#-开发路线">开发路线</a> &bull;
+  <a href="#-贡献">贡献</a> &bull;
+  <a href="#-star-history">Star History</a> &bull;
+  <a href="#-许可协议">许可协议</a> &bull;
+  <a href="#-免责声明">免责声明</a>
 </p>
 
 <br>
@@ -71,7 +76,7 @@
 
 ---
 
-## 🏗️ 技术架构
+## 🏗 技术架构
 
 ```
                           Gemini2API
@@ -364,7 +369,7 @@ curl http://localhost:5918/admin/health-history \
 
 ---
 
-## ⚙️ 配置说明
+## ⚙ 配置说明
 
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -383,7 +388,7 @@ curl http://localhost:5918/admin/health-history \
 
 ---
 
-## 🗂️ 项目结构
+## 🗂 项目结构
 
 ```
 gemini2api/
@@ -415,7 +420,7 @@ gemini2api/
 
 ---
 
-## 🗺️ 开发路线
+## 🗺 开发路线
 
 - [x] OpenAI / Claude / Gemini 三格式兼容
 - [x] 流式响应 + 函数调用
@@ -443,6 +448,18 @@ gemini2api/
 
 ---
 
+## ⭐ Star History
+
+<a href="https://star-history.com/#xwteam/gemini2api&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=xwteam/gemini2api&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=xwteam/gemini2api&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=xwteam/gemini2api&type=Date" />
+ </picture>
+</a>
+
+---
+
 ## 📄 许可协议
 
 本项目采用 [PolyForm Noncommercial 1.0.0](LICENSE)：
@@ -450,7 +467,19 @@ gemini2api/
 - **允许**：个人学习、研究、实验、自用部署
 - **禁止**：任何形式的商业用途，包括但不限于出售、转售、收费代理、商业产品集成
 
-商用授权请通过 [GitHub Issues](https://github.com/xwteam/gemini2api/issues) 联系。
+---
+
+## ⚠ 免责声明
+
+1. **技术性质**：Gemini2API 是一个技术研究项目，通过浏览器 Cookie 模拟访问 Google Gemini Web 界面。本项目不提供任何 AI 服务，所有生成内容均来自 Google。使用本项目可能违反 Google 服务条款，由此产生的一切后果由使用者自行承担。
+
+2. **无担保声明**：本项目按"原样"提供，不作任何明示或暗示的保证，包括但不限于适销性、特定用途适用性。开发者不对因使用本项目导致的账号封禁、数据丢失或其他任何损失承担责任。
+
+3. **数据与隐私**：本项目完全在用户本地环境运行，不收集、不上传、不存储任何用户数据。您的 Cookie 和 API Key 仅保存在本地配置中，请妥善保管，切勿泄露。
+
+4. **合规责任**：使用者应确保其使用行为符合所在地区的法律法规。严禁将本项目用于任何违法违规活动。
+
+5. **第三方服务**：本项目与 Google 无任何关联或授权关系。Google Gemini 的可用性、稳定性及内容准确性均由 Google 负责，与本项目无关。
 
 ---
 
