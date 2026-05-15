@@ -134,9 +134,9 @@ class FingerprintConfigManager:
     def _default_data(self) -> dict:
         return {
             "chrome_version": {
-                "major": 131,
-                "full": "131.0.6778.86",
-                "impersonate_target": "chrome131",
+                "major": 124,
+                "full": "124.0.6367.91",
+                "impersonate_target": "chrome124",
             },
             "platform": {
                 "os": "Windows",
@@ -162,16 +162,10 @@ class FingerprintConfigManager:
                 "Accept-Encoding": "gzip, deflate, br, zstd",
             },
             "version_map": {
+                "119": "chrome119",
                 "120": "chrome120",
+                "123": "chrome123",
                 "124": "chrome124",
-                "126": "chrome126",
-                "127": "chrome127",
-                "128": "chrome128",
-                "129": "chrome129",
-                "130": "chrome130",
-                "131": "chrome131",
-                "133": "chrome133",
-                "136": "chrome136",
             },
             "last_updated": datetime.now(timezone.utc).isoformat(),
         }

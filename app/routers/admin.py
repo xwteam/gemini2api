@@ -43,12 +43,12 @@ async def reload_cookies(req: ReloadCookiesRequest = None):
     if req and (req.psid or req.psidts):
         for account in account_pool.accounts:
             if account.client:
-                success = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
-                if success:
+                result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
+                if result.get("success"):
                     return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
         return JSONResponse(
             status_code=503,
-            content={"error": {"message": "Cookie reload failed.", "type": "reload_error"}},
+            content={"error": {"message": result.get("error", "Cookie reload failed"), "type": "reload_error"}},
         )
     else:
         from app.config import Settings
@@ -56,12 +56,16 @@ async def reload_cookies(req: ReloadCookiesRequest = None):
             fresh = Settings()
             for account in account_pool.accounts:
                 if account.client:
-                    success = await account.client.reload_cookies(
+                    result = await account.client.reload_cookies(
                         psid=fresh.gemini_psid,
                         psidts=fresh.gemini_psidts,
                     )
-                    if success:
+                    if result.get("success"):
                         return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
+            return JSONResponse(
+                status_code=503,
+                content={"error": {"message": result.get("error", "Cookie reload failed"), "type": "reload_error"}},
+            )
         except Exception as e:
             return JSONResponse(
                 status_code=500,
@@ -70,7 +74,7 @@ async def reload_cookies(req: ReloadCookiesRequest = None):
 
     return JSONResponse(
         status_code=503,
-        content={"error": {"message": "Cookie reload failed.", "type": "reload_error"}},
+        content={"error": {"message": "No accounts available", "type": "reload_error"}},
     )
 
 
@@ -158,12 +162,12 @@ async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
     for account in account_pool.accounts:
         if account.id == account_id:
             if account.client:
-                success = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
-                if success:
+                result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
+                if result.get("success"):
                     return {"status": "ok", "message": f"Account {account_id} cookies updated"}
                 return JSONResponse(
                     status_code=503,
-                    content={"error": {"message": "Cookie reload failed", "type": "reload_error"}},
+                    content={"error": {"message": result.get("error", "Cookie reload failed"), "type": "reload_error"}},
                 )
             return JSONResponse(
                 status_code=503,

@@ -50,6 +50,7 @@ class GeminiWebClient:
         self._current_target: str = ""
         self._check_history: deque[dict] = deque(maxlen=20)
         self._last_check_result: dict | None = None
+        self._last_reload_error: str = ""
 
     async def initialize(self):
         fingerprint_config.load()
@@ -190,7 +191,9 @@ class GeminiWebClient:
             self._cookie_jar.update_from_response(resp)
 
             if resp.status_code != 200:
-                logger.error(f"App page status: {resp.status_code}")
+                msg = f"Gemini returned HTTP {resp.status_code}"
+                logger.error(msg)
+                self._last_reload_error = msg
                 return
 
             body = resp.text
@@ -199,7 +202,14 @@ class GeminiWebClient:
                 self._session_token = token_match.group(1)
                 logger.info("Session token acquired")
             else:
-                logger.error("SNlM0e not found in response")
+                if "accounts.google.com" in body or "ServiceLogin" in body:
+                    msg = "Cookie expired - redirected to Google login page"
+                elif len(body) < 1000:
+                    msg = f"Invalid response (body too short: {len(body)} bytes)"
+                else:
+                    msg = "SNlM0e token not found (cookie may be invalid or expired)"
+                logger.error(msg)
+                self._last_reload_error = msg
                 return
 
             model_hits = re.findall(r"gemini-[a-zA-Z0-9.\-]+", body)
@@ -208,7 +218,9 @@ class GeminiWebClient:
                 self._available_models = discovered
                 logger.info(f"Discovered {len(discovered)} models")
         except Exception as e:
-            logger.error(f"Token extraction failed: {e}")
+            msg = f"Token extraction failed: {e}"
+            logger.error(msg)
+            self._last_reload_error = msg
 
     async def _rotate_cookies(self) -> bool:
         try:
@@ -375,7 +387,7 @@ class GeminiWebClient:
         if self._http:
             await self._http.close()
 
-    async def reload_cookies(self, psid: str | None = None, psidts: str | None = None):
+    async def reload_cookies(self, psid: str | None = None, psidts: str | None = None) -> dict:
         if psid:
             self._psid = psid.strip().strip('"').strip("'").rstrip(";")
         if psidts:
@@ -383,6 +395,7 @@ class GeminiWebClient:
 
         self._session_token = ""
         self._healthy = False
+        self._last_reload_error = ""
 
         self._cookie_jar.set("__Secure-1PSID", self._psid)
         if self._psidts:
@@ -393,7 +406,9 @@ class GeminiWebClient:
             self._healthy = True
             self._ensure_refresh_task()
             logger.info("Cookies reloaded successfully")
-            return True
+            return {"success": True}
+
+        first_error = self._last_reload_error or "SNlM0e token not found"
 
         rotated = await self._rotate_cookies()
         if rotated:
@@ -402,10 +417,11 @@ class GeminiWebClient:
                 self._healthy = True
                 self._ensure_refresh_task()
                 logger.info("Cookies reloaded after rotation")
-                return True
+                return {"success": True}
 
-        logger.error("Cookie reload failed")
-        return False
+        error_msg = self._last_reload_error or first_error
+        logger.error(f"Cookie reload failed: {error_msg}")
+        return {"success": False, "error": error_msg}
 
     def _ensure_refresh_task(self):
         if self._refresh_task is None or self._refresh_task.done():

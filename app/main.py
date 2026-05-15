@@ -25,7 +25,9 @@ log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
 logging.basicConfig(
     level=log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    force=True,
 )
+logging.getLogger("app").setLevel(log_level)
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
