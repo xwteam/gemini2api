@@ -24,6 +24,3 @@ Thumbs.db
 # Cache
 .cookies/
 *.log
-
-# Personal assets (QR codes, etc.)
-api/

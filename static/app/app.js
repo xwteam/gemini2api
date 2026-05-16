@@ -168,7 +168,7 @@ async function loadSystemInfo() {
     }
 }
 
-const QR_REMOTE_BASE = 'http://your-server-ip:5918/api-assets';
+const QR_REMOTE_BASE = 'https://raw.githubusercontent.com/xwteam/gemini2api/main/api';
 
 async function loadQrCards() {
     const container = document.getElementById('qrCardsContainer');

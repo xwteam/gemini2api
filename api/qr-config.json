@@ -1,0 +1,14 @@
+{
+  "cards": [
+    {
+      "title": "扫码进群，注明来意",
+      "image": "wechat-qr.png",
+      "description": "添加微信获取更多技术支持和交流"
+    },
+    {
+      "title": "扫码赞助",
+      "image": "sponsor-qr.png",
+      "description": "您的赞助是项目持续发展的动力"
+    }
+  ]
+}
