@@ -2,6 +2,7 @@ import logging
 import os
 import platform
 import sys
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -9,10 +10,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.config import APP_VERSION
 from app.core.account_pool import account_pool
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+_start_time = time.time()
 
 
 class ReloadCookiesRequest(BaseModel):
@@ -77,9 +81,10 @@ async def system_info():
     proc = psutil.Process(os.getpid())
     mem = proc.memory_info()
     total_mem = psutil.virtual_memory().total
+    uptime_seconds = int(time.time() - _start_time)
 
     return {
-        "version": "3.0.9",
+        "version": APP_VERSION,
         "python_version": platform.python_version(),
         "server_time": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
         "os": f"{platform.system()} {platform.release()}",
@@ -88,6 +93,7 @@ async def system_info():
         "cpu_percent": psutil.cpu_percent(interval=0.1),
         "pid": os.getpid(),
         "run_mode": "Docker" if os.path.exists("/.dockerenv") else "直接运行",
+        "uptime_seconds": uptime_seconds,
     }
 
 

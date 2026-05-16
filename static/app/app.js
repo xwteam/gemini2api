@@ -75,9 +75,6 @@ async function loadSectionData(sectionId) {
             case 'accounts':
                 await loadAccounts();
                 break;
-            case 'config':
-                await loadConfig();
-                break;
             case 'usage-stats':
                 await loadUsageStats();
                 break;
@@ -133,6 +130,23 @@ async function loadDashboard() {
     }
 }
 
+let uptimeInterval = null;
+
+function startUptimeTimer(initialSeconds) {
+    if (uptimeInterval) clearInterval(uptimeInterval);
+    let seconds = initialSeconds;
+    function update() {
+        const d = Math.floor(seconds / 86400);
+        const h = Math.floor((seconds % 86400) / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+        setText('uptime-display', d + '天 ' + h + '小时 ' + m + '分 ' + s + '秒');
+        seconds++;
+    }
+    update();
+    uptimeInterval = setInterval(update, 1000);
+}
+
 async function loadSystemInfo() {
     try {
         const data = await apiCall('GET', '/admin/system-info');
@@ -145,6 +159,9 @@ async function loadSystemInfo() {
         setText('sys-cpu', data.cpu_percent + '%');
         setText('sys-mode', data.run_mode);
         setText('sys-pid', data.pid);
+        if (data.uptime_seconds !== undefined) {
+            startUptimeTimer(data.uptime_seconds);
+        }
     } catch (error) {
         console.error('加载系统信息失败:', error);
     }
@@ -394,39 +411,6 @@ async function submitUpdateCookie() {
         await loadDashboard();
     } catch (error) {
         showToast(`更新失败: ${error.message}`, 'error');
-    }
-}
-
-// ============================================================================
-// Config
-// ============================================================================
-
-async function loadConfig() {
-    try {
-        const data = await apiCall('GET', '/admin/status');
-        const container = document.getElementById('configDisplay');
-        if (!container) return;
-
-        container.innerHTML = `
-            <div class="config-item">
-                <span class="config-key">轮询策略</span>
-                <span class="config-value">${data.strategy || '-'}</span>
-            </div>
-            <div class="config-item">
-                <span class="config-key">单账号并发上限</span>
-                <span class="config-value">${data.max_concurrent_per_account || '-'}</span>
-            </div>
-            <div class="config-item">
-                <span class="config-key">账号总数</span>
-                <span class="config-value">${(data.accounts || []).length}</span>
-            </div>
-            <div class="config-item">
-                <span class="config-key">活跃账号</span>
-                <span class="config-value">${(data.accounts || []).filter(a => a.status === 'active').length}</span>
-            </div>
-        `;
-    } catch (error) {
-        console.error('加载配置失败:', error);
     }
 }
 

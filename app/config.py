@@ -8,6 +8,8 @@ from pydantic import field_validator
 
 logger = logging.getLogger(__name__)
 
+APP_VERSION = "1.1.0"
+
 
 def _generate_api_key() -> str:
     chars = string.ascii_letters + string.digits

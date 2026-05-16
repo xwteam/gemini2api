@@ -322,6 +322,86 @@
     text-align: center;
 }
 
+/* Uptime + QR Panel */
+.dashboard-top-panel {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+    align-items: stretch;
+}
+
+.uptime-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-xl);
+    padding: 2rem 2.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    min-width: 260px;
+    box-shadow: var(--shadow-sm);
+}
+
+.uptime-icon {
+    font-size: 2rem;
+    color: var(--primary-color);
+}
+
+.uptime-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.uptime-label {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.qr-cards {
+    display: flex;
+    gap: 1.5rem;
+    flex: 1;
+}
+
+.qr-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-xl);
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    flex: 1;
+    box-shadow: var(--shadow-sm);
+}
+
+.qr-img {
+    width: 120px;
+    height: 120px;
+    object-fit: contain;
+    border-radius: var(--radius-md);
+    margin-bottom: 0.75rem;
+    background: var(--bg-secondary);
+}
+
+.qr-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+    font-size: 0.9rem;
+}
+
+.qr-desc {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
 /* 响应式 */
 @media (max-width: 1024px) {
     .info-grid {
@@ -340,6 +420,18 @@
 
     .provider-status-grid {
         grid-template-columns: 1fr;
+    }
+
+    .dashboard-top-panel {
+        flex-direction: column;
+    }
+
+    .uptime-card {
+        min-width: unset;
+    }
+
+    .qr-cards {
+        flex-direction: column;
     }
 }
 

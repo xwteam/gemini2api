@@ -12,7 +12,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from app.config import settings
+from app.config import settings, APP_VERSION
 from app.core.account_pool import account_pool
 from app.core.auth import verify_api_key
 from app.core.fingerprint.version_sync import version_sync_loop
@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Gemini2API",
     description="Gemini Web to API proxy",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
