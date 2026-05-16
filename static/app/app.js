@@ -8,6 +8,8 @@ import { initAuth, apiCall, logout } from './auth.js';
 import { showToast, formatNumber, getStatusBadge, maskString, copyToClipboard } from './utils.js';
 import { initUsageStats, loadUsageStats } from './usage-chart.js';
 import { initLogs } from './logs.js';
+import { initSettings, loadSettings } from './settings.js';
+import { initApiKeys, loadApiKeys } from './api-keys.js';
 
 let isAppInitialized = false;
 
@@ -80,6 +82,12 @@ async function loadSectionData(sectionId) {
                 await loadUsageStats();
                 break;
             case 'logs':
+                break;
+            case 'settings':
+                await loadSettings();
+                break;
+            case 'api-keys':
+                await loadApiKeys();
                 break;
         }
     } catch (error) {
@@ -632,6 +640,8 @@ async function initApp() {
     initEventListeners();
     initLogs();
     initUsageStats();
+    initSettings();
+    initApiKeys();
 
     console.log('Gemini2API 管理控制台已加载');
 }

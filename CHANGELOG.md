@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### Added
+- 设置页面：可视化管理运行时配置（刷新间隔、重试次数、速率限制、健康检查等）
+- `GET/POST /admin/settings` API，支持分组查看和批量更新配置
+- API Key 管理系统：集中管理第三方大模型 API Key（OpenAI、Anthropic、Gemini、OpenRouter、自定义）
+- `GET/POST/DELETE /admin/api-keys` 完整 CRUD API，支持批量导入导出
+- Provider 目录（`/admin/api-keys/catalog`），内置主流模型列表
+- 统一转发引擎（`api_forwarder`）：请求模型不在 Gemini Web 时自动转发到对应 Provider
+- OpenAI 兼容格式转发（支持流式），Anthropic 格式双向转换
+- `/openai/v1/models` 自动聚合 Gemini Web 模型和 API Key 池中的模型
+- 前端设置面板：分组表单、控件、保存/重置
+- 前端 API 管理面板：添加/删除/启禁用 Key、批量操作、导入导出
+
 ### Changed
 - 用量统计图表自适应容器宽度，高度增至 320px，撑满面板
 - 用量统计增加更多时间范围选项（3d/30d/全部），粒度与时间范围智能联动

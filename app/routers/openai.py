@@ -4,10 +4,11 @@ import uuid
 import logging
 from typing import AsyncGenerator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.account_pool import account_pool as gemini_client
+from app.core.api_forwarder import forward_to_provider
 from app.core.stream import split_into_chunks, format_sse
 from app.models.openai import (
     ChatRequest, ChatResponse, Choice, ChoiceMessage,
@@ -22,15 +23,32 @@ router = APIRouter(prefix="/openai/v1", tags=["OpenAI"])
 
 
 @router.get("/models")
-async def list_models():
-    models = gemini_client.models
+async def list_models(request: Request):
+    models = list(gemini_client.models)
+    # Also include models from API key pool
+    pool = getattr(request.app.state, 'api_key_pool', None)
+    if pool:
+        for entry in pool.entries.values():
+            if entry.status == 'active' and entry.model not in models:
+                models.append(entry.model)
     now = int(time.time())
     data = [ModelInfo(id=m, created=now) for m in models]
     return ModelList(data=data)
 
 
 @router.post("/chat/completions")
-async def chat_completions(req: ChatRequest):
+async def chat_completions(req: ChatRequest, request: Request):
+    # Check if model should be forwarded to third-party provider
+    if req.model not in gemini_client.models:
+        pool = getattr(request.app.state, 'api_key_pool', None)
+        if pool:
+            entry = pool.get_key_for_model(req.model)
+            if entry:
+                messages_raw = [m.model_dump() for m in req.messages]
+                result = await forward_to_provider(entry, messages_raw, req)
+                pool.update_last_used(entry.id)
+                return result
+
     messages_raw = [m.model_dump() for m in req.messages]
     prompt = build_prompt_from_messages(messages_raw)
 

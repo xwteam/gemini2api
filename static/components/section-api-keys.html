@@ -1,0 +1,67 @@
+<link rel="stylesheet" href="components/section-api-keys.css">
+<script type="module" src="app/api-keys.js"></script>
+<section id="api-keys" class="section" aria-labelledby="api-keys-title">
+    <div class="section-header">
+        <h2 id="api-keys-title">API 管理</h2>
+        <div class="section-header-actions">
+            <button class="btn btn-sm btn-outline" id="ak-import-btn">
+                <i class="fas fa-file-import"></i> 导入
+            </button>
+            <button class="btn btn-sm btn-outline" id="ak-export-btn">
+                <i class="fas fa-file-export"></i> 导出
+            </button>
+            <button class="btn btn-sm btn-primary" id="ak-add-btn">
+                <i class="fas fa-plus"></i> 添加 Key
+            </button>
+        </div>
+    </div>
+
+    <!-- Add Key Panel (hidden by default) -->
+    <div id="ak-add-panel" class="ak-add-panel" style="display:none">
+        <h3><i class="fas fa-plus-circle"></i> 添加 API Key</h3>
+        <div class="ak-form-grid">
+            <div class="form-group">
+                <label>Provider</label>
+                <select id="ak-provider">
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="gemini">Google Gemini</option>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="custom">自定义</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>API Key</label>
+         <input type="text" id="ak-apikey" placeholder="sk-...">
+            </div>
+            <div class="form-group">
+                <label>Base URL</label>
+                <input type="text" id="ak-baseurl" placeholder="自动填充">
+            </div>
+            <div class="form-group">
+                <label>标签 (可选)</label>
+                <input type="text" id="ak-label" placeholder="例如: 生产环境">
+            </div>
+        </div>
+        <div class="form-group ak-models-group">
+            <label>模型 <button class="btn btn-xs btn-outline" id="ak-fetch-models-btn"><i class="fas fa-sync-alt"></i> 获取</button></label>
+            <div id="ak-models-list" class="ak-models-list"></div>
+            <input type="text" id="ak-custom-model" placeholder="手动输入模型名，回车添加" style="display:none">
+        </div>
+        <div class="ak-form-actions">
+            <button class="btn btn-primary" id="ak-confirm-add"><i class="fas fa-check"></i> 确认添加</button>
+            <button class="btn btn-outline" id="ak-cancel-add"><i class="fas fa-times"></i> 取消</button>
+        </div>
+    </div>
+
+    <!-- Key List -->
+    <div id="ak-list-container" class="ak-list-container">
+        <div class="chart-loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</div>
+    </div>
+
+    <!-- Batch Actions -->
+    <div id="ak-batch-bar" class="ak-batch-bar" style="display:none">
+        <span id="ak-selected-count">0 项已选</span>
+        <button class="btn btn-sm btn-danger" id="ak-batch-delete"><i class="fas fa-trash"></i> 批量删除</button>
+    </div>
+</section>

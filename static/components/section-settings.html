@@ -1,0 +1,19 @@
+<link rel="stylesheet" href="components/section-settings.css">
+<script type="module" src="app/settings.js"></script>
+<section id="settings" class="section" aria-labelledby="settings-title">
+    <h2 id="settings-title">设置</h2>
+    <p class="section-desc">管理应用运行时配置，修改后立即生效。</p>
+
+    <div id="settings-container" class="settings-groups">
+        <div class="chart-loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</div>
+    </div>
+
+    <div class="settings-actions">
+        <button class="btn btn-primary" id="settings-save-btn">
+            <i class="fas fa-save"></i> 保存设置
+        </button>
+        <button class="btn btn-outline" id="settings-reset-btn">
+            <i class="fas fa-undo"></i> 重置
+        </button>
+    </div>
+</section>

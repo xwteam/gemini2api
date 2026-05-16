@@ -1,0 +1,210 @@
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.section-header h2 {
+    margin: 0;
+}
+
+.section-header-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.ak-add-panel {
+    background: var(--card-bg, #fff);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    border: 1px solid var(--primary-color, #059669);
+}
+
+.ak-add-panel h3 {
+    margin: 0 0 1rem 0;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.ak-form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.form-group label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary, #64748b);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.form-group input,
+.form-group select {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border-color, #e2e8f0);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    background: var(--input-bg, #f8fafc);
+    color: var(--text-primary, #1e293b);
+}
+
+.form-group input:focus,
+.form-group select:focus {
+    outline: none;
+    border-color: var(--primary-color, #059669);
+    box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
+}
+
+.ak-models-group {
+    margin-bottom: 1rem;
+}
+
+.ak-models-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    min-height: 36px;
+    padding: 0.5rem;
+    border: 1px solid var(--border-color, #e2e8f0);
+    border-radius: 8px;
+    background: var(--input-bg, #f8fafc);
+}
+
+.ak-model-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.25rem 0.6rem;
+    background: var(--primary-color, #e2e8f0);
+    color: var(--text-secondary, #64748b);
+}
+
+.ak-model-chip:hover {
+    opacity: 0.8;
+}
+
+.ak-form-actions {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.ak-list-container {
+    background: var(--card-bg, #fff);
+    border-radius: 12px;
+    border: 1px solid var(--border-color, #e2e8f0);
+    overflow: hidden;
+}
+
+.ak-list-container table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.ak-list-container th,
+.ak-list-container td {
+    padding: 0.6rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color, #e2e8f0);
+    font-size: 0.875rem;
+}
+
+.ak-list-container th {
+    font-weight: 600;
+    color: var(--text-secondary, #64748b);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    background: var(--input-bg, #f8fafc);
+}
+
+.ak-list-container tr:last-child td {
+    border-bottom: none;
+}
+
+.ak-list-container tr:hover td {
+    background: var(--input-bg, #f8fafc);
+}
+
+.ak-provider-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: #ecfdf5;
+    color: #059669;
+}
+
+.ak-key-masked {
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: var(--text-secondary, #64748b);
+}
+
+.ak-status-active {
+    color: #059669;
+    font-weight: 600;
+}
+
+.ak-status-disabled {
+    color: #ef4444;
+    font-weight: 600;
+}
+
+.ak-actions {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.ak-batch-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    margin-top: 1rem;
+    background: var(--card-bg, #fff);
+    border-radius: 8px;
+    border: 1px solid var(--border-color, #e2e8f0);
+}
+
+.ak-batch-bar span {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #64748b);
+}
+
+.btn-xs {
+    padding: 0.15rem 0.4rem;
+    font-size: 0.7rem;
+}
+
+.ak-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem;
+    color: var(--text-secondary, #64748b);
+    gap: 0.75rem;
+}
+
+.ak-empty i {
+    font-size: 2.5rem;
+    opacity: 0.4;
+}

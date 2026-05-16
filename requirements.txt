@@ -6,3 +6,4 @@ curl_cffi==0.7.4
 python-dotenv==1.1.0
 sse-starlette==2.3.3
 slowapi==0.1.9
+httpx==0.27.0
