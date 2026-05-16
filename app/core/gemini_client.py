@@ -14,6 +14,7 @@ from app.core.fingerprint.config import fingerprint_config
 from app.core.fingerprint.header_builder import header_builder
 from app.core.fingerprint.cookie_jar import PersistentCookieJar
 from app.core.fingerprint.jitter import apply_jitter, random_delay_factor
+from app.core.usage_metrics import live_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,7 @@ class GeminiWebClient:
             )
             if resp.status_code != 200:
                 logger.warning(f"RotateCookies returned {resp.status_code}")
+                live_metrics.record_rotation(False)
                 return False
 
             self._cookie_jar.update_from_response(resp)
@@ -269,13 +271,16 @@ class GeminiWebClient:
                     self._psidts = new_ts
                 self._cookie_jar.set("__Secure-1PSIDTS", new_ts)
                 logger.info("PSIDTS rotated successfully")
+                live_metrics.record_rotation(True)
                 return True
 
             resp_text = resp.text[:200] if resp.text else "(empty)"
             logger.warning(f"RotateCookies 200 but no new PSIDTS. Response: {resp_text}")
+            live_metrics.record_rotation(False)
             return False
         except Exception as e:
             logger.error(f"Rotation failed: {e}")
+            live_metrics.record_rotation(False)
             return False
 
     async def _send_heartbeat(self) -> bool:

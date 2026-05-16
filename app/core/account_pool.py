@@ -1,4 +1,5 @@
 import json
+import time
 import asyncio
 import logging
 from enum import Enum
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 
 from app.core.gemini_client import GeminiWebClient
 from app.config import settings
+from app.core.usage_metrics import live_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -221,11 +223,16 @@ class AccountPool:
 
     async def generate(self, prompt: str, model: str) -> dict:
         account = await self.acquire()
+        t0 = time.time()
         try:
             result = await account.client.generate(prompt, model)
+            latency_ms = (time.time() - t0) * 1000
+            live_metrics.record_request(model, latency_ms)
             self.release(account, success=True)
             return result
         except Exception as e:
+            latency_ms = (time.time() - t0) * 1000
+            live_metrics.record_request(model, latency_ms)
             self.release(account, success=False)
             raise
 

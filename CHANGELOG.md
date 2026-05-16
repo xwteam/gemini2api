@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2025-05-16
+
+### Added
+- 用量统计系统，持久化时序快照，重启不丢失历史数据
+- `GET /admin/usage-stats/summary` 接口，返回累计请求数、错误率、平均延迟、轮换成功率
+- `GET /admin/usage-stats/history` 接口，支持 raw/five_min/hourly/daily 粒度和自定义时间范围
+- LiveMetricsCollector 单例，线程安全记录每次请求的模型、延迟和 Cookie 轮换事件
+- 后台快照循环（默认 5 分钟），自动采集并持久化到 `data/usage-stats.json`
+- 基线机制（baseline），账号池重置时吸收差值，保证历史数据单调递增
+- 前端"使用统计"面板：Summary 卡片 + SVG 图表（请求柱状 + 延迟折线）+ 模型分布表格
+- 粒度/时间范围选择器，支持 5 分钟/小时/天 粒度和 1h/6h/24h/7d 范围
+
+### Changed
+- `account_pool.generate()` 自动记录每次请求的模型和响应延迟
+- `gemini_client._rotate_cookies()` 自动记录轮换成功/失败事件
+- 配置新增 `USAGE_STATS_ENABLED`、`USAGE_STATS_INTERVAL`、`USAGE_STATS_RETENTION_DAYS`
+
 ## [0.5.2] - 2025-05-16
 
 ### Added

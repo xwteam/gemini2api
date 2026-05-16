@@ -1,0 +1,81 @@
+<link rel="stylesheet" href="components/section-usage-stats.css">
+<script type="module" src="app/usage-chart.js"></script>
+<!-- Usage Stats Section -->
+<section id="usage-stats" class="section" aria-labelledby="usage-stats-title">
+    <h2 id="usage-stats-title">使用统计</h2>
+
+    <!-- Summary Cards -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-paper-plane"></i></div>
+            <div class="stat-info">
+                <h3 id="us-total-requests">0</h3>
+                <p>总请求数</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-exclamation-triangle"></i></div>
+            <div class="stat-info">
+                <h3 id="us-error-rate">0%</h3>
+                <p>错误率</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-clock"></i></div>
+            <div class="stat-info">
+                <h3 id="us-avg-latency">0ms</h3>
+                <p>平均延迟</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-sync-alt"></i></div>
+            <div class="stat-info">
+                <h3 id="us-rotation-rate">0%</h3>
+                <p>轮换成功率</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chart Panel -->
+    <div class="usage-chart-panel">
+        <div class="chart-controls">
+            <div class="control-group">
+                <label>粒度:</label>
+                <div class="btn-group" id="us-granularity">
+                    <button class="btn btn-sm btn-outline" data-value="five_min">5分钟</button>
+                    <button class="btn btn-sm btn-outline active" data-value="hourly">小时</button>
+                    <button class="btn btn-sm btn-outline" data-value="daily">天</button>
+                </div>
+            </div>
+            <div class="control-group">
+                <label>时间范围:</label>
+                <div class="btn-group" id="us-timerange">
+                    <button class="btn btn-sm btn-outline" data-value="1">1h</button>
+                    <button class="btn btn-sm btn-outline" data-value="6">6h</button>
+                    <button class="btn btn-sm btn-outline active" data-value="24">24h</button>
+                    <button class="btn btn-sm btn-outline" data-value="168">7d</button>
+                </div>
+            </div>
+            <button class="btn btn-sm btn-outline" id="us-refresh-btn">
+                <i class="fas fa-sync-alt"></i> 刷新
+            </button>
+        </div>
+
+        <!-- SVG Chart Container -->
+        <div class="chart-container" id="us-chart-container">
+            <div class="chart-loading">
+                <i class="fas fa-spinner fa-spin"></i> 加载中...
+            </div>
+        </div>
+    </div>
+
+    <!-- Model Distribution -->
+    <div class="usage-model-panel">
+        <h3><i class="fas fa-cube"></i> 模型分布</h3>
+        <div id="us-model-table" class="model-distribution-table">
+            <div class="chart-loading">
+                <i class="fas fa-spinner fa-spin"></i> 加载中...
+            </div>
+        </div>
+    </div>
+</section>

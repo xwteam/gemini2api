@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     version_sync_enabled: bool = True
     version_sync_interval: int = 24
     jitter_enabled: bool = True
+    usage_stats_enabled: bool = True
+    usage_stats_interval: int = 300
+    usage_stats_retention_days: int = 30
 
     @field_validator("gemini_psid")
     @classmethod

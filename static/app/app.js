@@ -6,6 +6,7 @@ import { initializeComponents } from './component-loader.js';
 import { initThemeSwitcher } from './theme-switcher.js';
 import { initAuth, apiCall, logout } from './auth.js';
 import { showToast, formatNumber, getStatusBadge, maskString, copyToClipboard } from './utils.js';
+import { initUsageStats, loadUsageStats } from './usage-chart.js';
 
 let isAppInitialized = false;
 
@@ -73,6 +74,9 @@ async function loadSectionData(sectionId) {
                 break;
             case 'config':
                 await loadConfig();
+                break;
+            case 'usage-stats':
+                await loadUsageStats();
                 break;
         }
     } catch (error) {
@@ -700,6 +704,7 @@ async function initApp() {
     initNavigation();
     initEventListeners();
     initLogStream();
+    initUsageStats();
 
     console.log('Gemini2API 管理控制台已加载');
 }
