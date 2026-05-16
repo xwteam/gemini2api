@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2025-05-16
+
+### Added
+- batchexecute 心跳 RPC（`otAQ7b`），初始化和每次 auto-refresh 后自动发送，模拟浏览器活跃行为
+- Cookie jar 增加 Set-Cookie 响应头解析，补充捕获 `response.cookies` 可能遗漏的 Cookie
+- `cookie_names()` 调试方法，返回当前所有持久化 Cookie 名称
+
+### Changed
+- `update_from_response` 双通道捕获：先从 `response.cookies`，再从 `Set-Cookie` 头补充
+- RotateCookies 现在自动携带完整 Cookie jar（SID/HSID/APISID/SAPISID 等）
+
 ## [0.5.1] - 2025-05-16
 
 ### Fixed

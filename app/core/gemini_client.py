@@ -33,6 +33,7 @@ GENERATE_URL = (
     "https://gemini.google.com/_/BardChatUi/data/"
     "assistant.lamda.BardFrontendService/StreamGenerate"
 )
+BATCHEXECUTE_URL = "https://gemini.google.com/_/BardChatUi/data/batchexecute"
 
 
 class GeminiWebClient:
@@ -70,6 +71,7 @@ class GeminiWebClient:
 
         if self._session_token:
             self._healthy = True
+            await self._send_heartbeat()
             logger.info("Gemini client ready")
         else:
             logger.warning("Token not found, rotating cookies")
@@ -276,6 +278,38 @@ class GeminiWebClient:
             logger.error(f"Rotation failed: {e}")
             return False
 
+    async def _send_heartbeat(self) -> bool:
+        """Send batchexecute RPC to simulate browser activity (settings sync)."""
+        if not self._session_token:
+            return False
+        try:
+            await apply_jitter("api_call")
+            await self._ensure_session_current()
+            self._clear_session_cookies()
+
+            rpc_id = "otAQ7b"
+            inner_payload = json.dumps([None, None, None, None, None, None, None, None, [1]])
+            req_data = json.dumps([[rpc_id, inner_payload, None, "generic"]])
+            form_data = {"f.req": req_data, "at": self._session_token}
+
+            cookies = self._get_cookies()
+            headers = self._get_headers("POST", content_type="application/x-www-form-urlencoded")
+
+            resp = await self._http.post(
+                BATCHEXECUTE_URL, data=form_data, cookies=cookies, headers=headers
+            )
+            self._cookie_jar.update_from_response(resp)
+
+            if resp.status_code == 200:
+                logger.debug("Heartbeat OK")
+                return True
+            else:
+                logger.warning(f"Heartbeat returned {resp.status_code}")
+                return False
+        except Exception as e:
+            logger.warning(f"Heartbeat error: {e}")
+            return False
+
     async def _auto_refresh_loop(self):
         interval = settings.refresh_interval * 60
         consecutive_failures = 0
@@ -292,6 +326,7 @@ class GeminiWebClient:
                 await self._obtain_session_token()
                 if self._session_token:
                     self._healthy = True
+                    await self._send_heartbeat()
                     logger.info("Auto-refresh: token OK")
                 else:
                     self._healthy = False

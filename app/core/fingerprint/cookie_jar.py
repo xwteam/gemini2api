@@ -44,7 +44,7 @@ class PersistentCookieJar:
             return result
 
     def update_from_response(self, response) -> None:
-        """从 curl_cffi 响应中提取并存储所有 Cookie"""
+        """从 curl_cffi 响应中提取并存储所有 Cookie（含 Set-Cookie 头解析）"""
         if not hasattr(response, "cookies"):
             return
         changed = False
@@ -60,9 +60,60 @@ class PersistentCookieJar:
                     )
                     changed = True
 
+        # 从 Set-Cookie 响应头补充捕获
+        raw_headers = getattr(response, "headers", None)
+        if raw_headers:
+            sc_values = []
+            if hasattr(raw_headers, "get_list"):
+                sc_values = raw_headers.get_list("set-cookie")
+            elif hasattr(raw_headers, "getlist"):
+                sc_values = raw_headers.getlist("set-cookie")
+            else:
+                v = raw_headers.get("set-cookie")
+                if v:
+                    sc_values = [v]
+            for sc in sc_values:
+                parsed = self._parse_set_cookie_header(sc)
+                if parsed:
+                    cn, cv = parsed
+                    with self._lock:
+                        ex = self._cookies.get(cn)
+                        if ex is None or ex.value != cv:
+                            self._cookies[cn] = StoredCookie(
+                                name=cn,
+                                value=cv,
+                                domain=".google.com",
+                                secure=cn.startswith("__Secure"),
+                            )
+                            changed = True
+
         if changed:
             self._persist()
-            logger.debug(f"Cookie 已更新: 共 {len(self._cookies)} 个")
+            names = sorted(self._cookies.keys())
+            logger.debug(f"Cookie jar updated: {len(self._cookies)} - {names}")
+
+    @staticmethod
+    def _parse_set_cookie_header(raw: str):
+        """解析单条 Set-Cookie 头"""
+        if not raw:
+            return None
+        try:
+            pair = raw.split(";", 1)[0].strip()
+            if "=" not in pair:
+                return None
+            n, v = pair.split("=", 1)
+            n = n.strip()
+            v = v.strip()
+            if not n:
+                return None
+            return (n, v)
+        except Exception:
+            return None
+
+    def cookie_names(self) -> list:
+        """返回当前所有 Cookie 名称"""
+        with self._lock:
+            return sorted(self._cookies.keys())
 
     def set(self, name: str, value: str, **kwargs) -> None:
         """手动设置单个 Cookie"""
