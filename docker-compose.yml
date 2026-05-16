@@ -12,7 +12,7 @@ services:
       - /tmp
       - /home/appuser/.cache
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5918/health"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:5918/health"]
       interval: 30s
       timeout: 10s
       retries: 3

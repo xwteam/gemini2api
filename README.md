@@ -48,6 +48,7 @@
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2025-05-16 17:30:00 | 轮换策略运行时生效、仪表盘系统信息改版（版本/Python/OS/内存/CPU/PID）、配置管理移入仪表盘、模型映射功能 |
 | 2025-05-16 16:10:00 | 新增设置页面 + API Key 管理 + 统一转发引擎（支持 OpenAI/Anthropic/Gemini/OpenRouter/自定义） |
 | 2025-05-16 15:30:00 | 用量统计优化：图表撑满、时间范围扩展、模型白名单过滤、中文化 |
 | 2025-05-16 14:20:00 | 结构化实时日志系统 + 中文界面优化（表格、过滤、分页、JSON 详情） |
@@ -104,9 +105,10 @@
 ### 🖥 Web 管理面板
 
 - 中文可视化管理界面，API Key 登录认证
-- 仪表盘：账号状态总览、可用模型列表、请求统计
+- 仪表盘：系统信息（版本/Python/OS/内存/CPU/PID/运行模式）、配置管理（轮换策略/并发上限）、账号状态总览、可用模型列表
 - 账号管理：添加/删除账号、单独更新 Cookie、健康检测
-- **设置页面**：可视化管理运行时配置（性能、速率限制、健康检查、账号管理等），修改即时生效
+- **设置页面**：可视化管理运行时配置（性能、速率限制、健康检查、账号管理等），修改即时生效并传播到运行时
+- **模型映射**：将请求中的模型名映射到实际使用的模型（如 gpt-4o → gemini-2.5-pro）
 - **API Key 管理**：集中管理第三方大模型 API Key（OpenAI/Anthropic/Gemini/OpenRouter/自定义），支持导入导出
 - Playground：在线测试 API 请求
 - 实时日志：结构化表格展示，支持方向过滤、文本搜索、分页、JSON 详情面板
@@ -438,6 +440,7 @@ response = client.chat.completions.create(
 | 方法 | 端点 | 功能 |
 |------|------|------|
 | GET | `/status` | 服务状态（账号池概览 + 轮询策略） |
+| GET | `/system-info` | 系统信息（版本/Python/OS/内存/CPU/PID/运行模式） |
 | GET | `/accounts` | 所有账号列表及状态 |
 | POST | `/accounts` | 动态添加新账号 |
 | DELETE | `/accounts/{id}` | 移除指定账号 |
@@ -464,6 +467,9 @@ response = client.chat.completions.create(
 | POST | `/logs/state` | 更新日志记录状态 |
 | POST | `/logs/clear` | 清空日志 |
 | GET | `/logs/{id}` | 单条日志详情 |
+| GET | `/model-mapping` | 获取所有模型映射 |
+| POST | `/model-mapping` | 添加/更新模型映射 |
+| DELETE | `/model-mapping/{alias}` | 删除模型映射 |
 
 ### 系统
 
@@ -559,10 +565,11 @@ gemini2api/
 │   ├── config.py               # Pydantic 配置管理
 │   ├── core/
 │   │   ├── gemini_client.py    # Gemini Web 核心客户端
-│   │   ├── account_pool.py     # 多账号池（负载均衡）
+│   │   ├── account_pool.py     # 多账号池（负载均衡 + 运行时策略切换）
 │   │   ├── auth.py             # API Key 验证
 │   │   ├── api_key_store.py    # 第三方 API Key 存储池
 │   │   ├── api_forwarder.py    # 统一转发引擎
+│   │   ├── model_mapping.py    # 模型名映射（别名→实际模型）
 │   │   ├── stream.py           # 流式工具函数
 │   │   └── fingerprint/        # 反检测与协议伪装
 │   │       ├── config.py       # 指纹配置管理（加载/保存/热更新）
@@ -581,13 +588,15 @@ gemini2api/
 │   │   ├── research.py
 │   │   ├── admin.py
 │   │   ├── settings.py         # 设置管理 API
-│   │   └── api_keys.py         # API Key 管理 API
+│   │   ├── api_keys.py         # API Key 管理 API
+│   │   └── model_mapping.py    # 模型映射 API
 │   └── utils/                  # 工具函数
 │       ├── tools.py            # 函数调用桥接
 │       └── prompt.py           # 消息格式化
 ├── data/                       # 持久化数据（Docker 卷挂载）
 │   ├── fingerprint.json        # 指纹配置（自动生成）
 │   ├── api-keys.json           # 第三方 API Key 存储
+│   ├── model-mapping.json      # 模型名映射配置
 │   ├── usage-stats.json        # 用量统计快照
 │   └── cookies/                # Cookie 持久化存储
 ├── static/                     # Web 管理面板
@@ -619,6 +628,9 @@ gemini2api/
 - [x] 设置页面（可视化配置管理）
 - [x] API Key 管理（第三方大模型 Key 集中管理）
 - [x] 统一转发引擎（一个接口调用所有大模型）
+- [x] 模型映射（别名→实际模型名，如 gpt-4o → gemini-2.5-pro）
+- [x] 轮换策略运行时热更新（设置修改即时生效）
+- [x] 仪表盘系统信息面板（版本/Python/OS/内存/CPU/PID/运行模式）
 - [ ] 对话上下文持久化
 - [ ] 图片/文件上传支持
 - [ ] Prometheus 监控指标
