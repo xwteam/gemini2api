@@ -48,6 +48,8 @@
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2025-05-16 12:50:00 | 新增用量统计系统：时序快照持久化、Summary/History API、前端 SVG 图表面板 |
+| 2025-05-16 10:30:00 | 新增 batchexecute 心跳 RPC + Cookie 完整性增强（Set-Cookie 头解析） |
 | 2025-05-16 00:40:00 | 修复 curl_cffi 跨域 Cookie 累积冲突，Cookie 热更新恢复正常 |
 | 2025-05-15 23:45:00 | 新增反检测与协议伪装系统：指纹一致性、完整 Cookie 持久化、Chrome 版本自动同步、请求时间抖动 |
 | 2025-05-15 23:10:00 | 替换 httpx 为 curl_cffi，模拟 Chrome TLS 指纹延长 session 寿命 |
@@ -432,6 +434,8 @@ response = client.chat.completions.create(
 | POST | `/reload-cookies` | 热更新 Cookie（无需重启容器） |
 | PUT | `/accounts/{id}/cookies` | 更新指定账号的 Cookie |
 | GET | `/health-history` | 最近健康检查记录 |
+| GET | `/usage-stats/summary` | 用量统计概览（累计请求数、错误率、延迟、轮换成功率） |
+| GET | `/usage-stats/history` | 历史趋势数据（支持 granularity 和 hours 参数） |
 | GET | `/verify` | 验证 API Key 有效性（登录用） |
 | GET | `/logs/stream` | SSE 实时日志流 |
 
@@ -499,6 +503,9 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 | `VERSION_SYNC_ENABLED` | ❌ | `true` | 启用 Chrome 版本自动同步 |
 | `VERSION_SYNC_INTERVAL` | ❌ | `24` | 版本同步间隔（小时） |
 | `JITTER_ENABLED` | ❌ | `true` | 启用请求时间抖动（模拟人类行为） |
+| `USAGE_STATS_ENABLED` | ❌ | `true` | 启用用量统计（时序快照 + 持久化） |
+| `USAGE_STATS_INTERVAL` | ❌ | `300` | 快照采集间隔（秒） |
+| `USAGE_STATS_RETENTION_DAYS` | ❌ | `30` | 历史数据保留天数 |
 
 ---
 
