@@ -1,5 +1,6 @@
 import re
 import json
+import time
 import asyncio
 import logging
 from pathlib import Path
@@ -45,8 +46,51 @@ KNOWN_MODELS = [
     "gemini-1.5-flash",
 ]
 
-MODEL_PATTERN = re.compile(r"models/(gemini-[\d]+\.[\d]+[\w\-]*)")
-MODEL_FALLBACK_PATTERN = re.compile(r"gemini-\d+\.\d+-[a-z]+-?[a-z]*(?:-preview)?(?:-\d{2}-\d{2})?")
+MODELS_CACHE_FILE = Path("data/models_cache.json")
+
+MODEL_VALID_PATTERN = re.compile(
+    r"gemini-(\d+)\.(\d+)-([a-z]+)(?:-([a-z]+))?(?:-preview)?(?:-\d{2}-\d{2})?"
+)
+
+
+def _filter_valid_models(raw_hits: list[str]) -> list[str]:
+    """只保留格式正确的模型名，排除明显无效的"""
+    valid = []
+    seen = set()
+    for m in raw_hits:
+        if m in seen:
+            continue
+        if not MODEL_VALID_PATTERN.match(m):
+            continue
+        if len(m) < 12 or len(m) > 50:
+            continue
+        # 排除明显是版本号片段的（如 gemini-1.0-ultra-latest-something-else）
+        parts = m.split("-")
+        if len(parts) > 7:
+            continue
+        seen.add(m)
+        valid.append(m)
+    return sorted(valid)
+
+
+def _load_models_cache() -> list[str]:
+    try:
+        if MODELS_CACHE_FILE.exists():
+            with open(MODELS_CACHE_FILE, "r") as f:
+                data = json.load(f)
+            return data.get("models", [])
+    except Exception:
+        pass
+    return []
+
+
+def _save_models_cache(models: list[str]):
+    try:
+        MODELS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(MODELS_CACHE_FILE, "w") as f:
+            json.dump({"models": models, "updated_at": time.time()}, f)
+    except Exception:
+        pass
 
 
 class GeminiWebClient:
@@ -145,8 +189,8 @@ class GeminiWebClient:
             else:
                 body = resp.text
                 token_match = re.search(r'"SNlM0e":"([^"]+)"', body)
-                model_hits = MODEL_FALLBACK_PATTERN.findall(body)
-                models_found = sorted(set(model_hits))
+                model_hits = re.findall(r"gemini-\d+\.\d+[a-zA-Z0-9.\-]+", body)
+                models_found = _filter_valid_models(model_hits)
 
                 result = {
                     "valid": token_match is not None,
@@ -242,17 +286,19 @@ class GeminiWebClient:
                 return
 
             model_hits = re.findall(r"gemini-\d+\.\d+[a-zA-Z0-9.\-]+", body)
-            discovered = sorted(set(m for m in model_hits if len(m) > 15))
+            discovered = _filter_valid_models(model_hits)
             if discovered:
                 whitelist = settings.model_whitelist.strip()
                 if whitelist:
                     allowed = [m.strip() for m in whitelist.split(",") if m.strip()]
                     discovered = [m for m in discovered if m in allowed]
                 self._available_models = discovered
+                _save_models_cache(discovered)
                 logger.info(f"Discovered {len(discovered)} models: {discovered[:5]}")
             elif not self._available_models:
-                self._available_models = list(KNOWN_MODELS)
-                logger.info(f"Using default model list: {KNOWN_MODELS[:3]}")
+                cached = _load_models_cache()
+                self._available_models = cached if cached else list(KNOWN_MODELS)
+                logger.info(f"Using {'cached' if cached else 'default'} model list ({len(self._available_models)})")
         except Exception as e:
             msg = f"Token extraction failed: {e}"
             logger.error(msg)
