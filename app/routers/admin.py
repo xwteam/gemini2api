@@ -107,8 +107,16 @@ async def system_info():
 
 @router.get("/check-account")
 async def check_all_accounts():
-    results = await account_pool.check_all()
-    return {"accounts": results}
+    import httpx
+    proxy_url = os.environ.get("BROWSER_PROXY_URL", "http://refresher:8001")
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(f"{proxy_url}/check-all")
+        if resp.status_code == 200:
+            return resp.json()
+        return {"accounts": []}
+    except Exception as e:
+        return {"accounts": [], "error": str(e)}
 
 
 @router.get("/health-history")
@@ -164,14 +172,18 @@ async def remove_account(account_id: str):
 
 @router.get("/accounts/{account_id}/check")
 async def check_single_account(account_id: str):
+    import httpx
+    proxy_url = os.environ.get("BROWSER_PROXY_URL", "http://refresher:8001")
     try:
-        result = await account_pool.check_account(account_id)
-        return result
-    except ValueError as e:
-        return JSONResponse(
-            status_code=404,
-            content={"error": {"message": str(e), "type": "not_found"}},
-        )
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(f"{proxy_url}/check-account/{account_id}")
+        if resp.status_code == 200:
+            return resp.json()
+        elif resp.status_code == 404:
+            return JSONResponse(status_code=404, content={"error": {"message": f"Account {account_id} not found", "type": "not_found"}})
+        return {"valid": False, "account_id": account_id, "error": resp.text[:200]}
+    except Exception as e:
+        return {"valid": False, "account_id": account_id, "error": str(e)}
 
 
 class UpdateCookiesRequest(BaseModel):

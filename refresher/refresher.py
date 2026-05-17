@@ -285,6 +285,40 @@ async def update_cookies(req: UpdateCookiesRequest):
     raise HTTPException(503, f"Account {req.account_id} failed to initialize with new cookies")
 
 
+@app.get("/check-account/{account_id}")
+async def check_account(account_id: str):
+    acc = pool.accounts.get(account_id)
+    if not acc:
+        raise HTTPException(404, f"Account {account_id} not found")
+    await acc.obtain_token()
+    if acc.healthy:
+        state_file = STATE_DIR / f"{account_id}.json"
+        await acc.context.storage_state(path=str(state_file))
+    return {
+        "account_id": account_id,
+        "valid": acc.healthy,
+        "has_token": bool(acc.session_token),
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+@app.get("/check-all")
+async def check_all():
+    results = []
+    for acc_id, acc in pool.accounts.items():
+        await acc.obtain_token()
+        if acc.healthy:
+            state_file = STATE_DIR / f"{acc_id}.json"
+            await acc.context.storage_state(path=str(state_file))
+        results.append({
+            "account_id": acc_id,
+            "valid": acc.healthy,
+            "has_token": bool(acc.session_token),
+            "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+    return {"accounts": results}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
