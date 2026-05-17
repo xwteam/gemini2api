@@ -1,29 +1,9 @@
 services:
-  refresher:
-    build: ./refresher
-    container_name: gemini-refresher
-    env_file:
-      - .env
-    environment:
-      - PYTHONUNBUFFERED=1
-      - MAX_CONCURRENT=3
-    volumes:
-      - ./data:/app/data
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
-
   gemini2api:
     build: .
     container_name: gemini2api
     env_file:
       - .env
-    environment:
-      - BROWSER_PROXY_URL=http://refresher:8001
     ports:
       - "5918:5918"
     volumes:
@@ -38,7 +18,22 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+    restart: unless-stopped
+
+  refresher:
+    build: ./refresher
+    container_name: gemini-refresher
+    profiles:
+      - refresher
+    env_file:
+      - .env
+    environment:
+      - GEMINI2API_URL=http://gemini2api:5918
+      - REFRESH_INTERVAL_SECONDS=480
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data
     depends_on:
-      refresher:
+      gemini2api:
         condition: service_healthy
     restart: unless-stopped

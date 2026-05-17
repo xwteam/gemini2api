@@ -1,10 +1,8 @@
-import os
 import re
 import json
 import time
 import asyncio
 import logging
-import httpx
 from pathlib import Path
 from threading import Lock
 from collections import deque
@@ -453,6 +451,9 @@ class GeminiWebClient:
         return outer
 
     async def generate(self, prompt: str, model: str, conversation_id: str = "") -> dict:
+        if not self._healthy:
+            raise RuntimeError("Client not ready")
+
         resolved = _resolve_model(model)
         if resolved not in GEMINI_MODELS:
             raise ValueError(
@@ -483,29 +484,26 @@ class GeminiWebClient:
         raise RuntimeError(f"Exhausted {settings.max_retries} retries: {last_err}")
 
     async def _send_request(self, prompt: str, model: str, conversation_id: str = "") -> dict:
-        resolved = _resolve_model(model)
-        model_headers = _build_model_header(resolved)
-        proxy_url = os.environ.get("BROWSER_PROXY_URL", "http://refresher:8001")
+        await apply_jitter("api_call")
+        await self._ensure_session_current()
+        self._clear_session_cookies()
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{proxy_url}/generate",
-                json={
-                    "prompt": prompt,
-                    "model": resolved,
-                    "account_id": self._account_id if hasattr(self, '_account_id') else "account-0",
-                    "conversation_id": conversation_id,
-                    "model_headers": model_headers,
-                },
-            )
+        resolved = _resolve_model(model)
+        encoded = self._encode_payload(prompt, resolved, conversation_id)
+        form_data = {"at": self._session_token, "f.req": encoded}
+        cookies = self._get_cookies()
+        headers = self._get_headers("POST", content_type="application/x-www-form-urlencoded")
+
+        model_headers = _build_model_header(resolved)
+        if model_headers:
+            headers.update(model_headers)
+
+        resp = await self._http.post(GENERATE_URL, data=form_data, cookies=cookies, headers=headers)
+        self._cookie_jar.update_from_response(resp)
 
         if resp.status_code >= 400:
-            detail = resp.json().get("detail", resp.text[:200]) if resp.headers.get("content-type", "").startswith("application/json") else resp.text[:200]
-            raise HTTPStatusError(resp.status_code, str(detail))
-
-        data = resp.json()
-        raw_response = data.get("raw_response", "")
-        return self._parse_output(raw_response)
+            raise HTTPStatusError(resp.status_code, resp.text[:200])
+        return self._parse_output(resp.text)
 
     def _parse_output(self, raw: str) -> dict:
         lines = raw.strip().split("\n")

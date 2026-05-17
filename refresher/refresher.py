@@ -1,85 +1,155 @@
 """
-Gemini Playwright Proxy — 浏览器代理服务
+Gemini Cookie Refresher - Playwright 自动续期
 
-所有 Gemini 对话请求通过真实 Chromium 浏览器发送，
-继承浏览器的 Cookie、TLS 指纹和 JS 执行环境，
-Google 只看到一个真实 Chrome 在操作。
+通过真实 Chromium 浏览器定时访问 Gemini 页面，
+触发 Google 前端 JS 自动续期 __Secure-1PSIDTS，
+然后将最新 Cookie 写入共享文件并通知 gemini2api 热更新。
 """
 import os
-import re
+import sys
 import json
 import time
-import asyncio
-import logging
-from pathlib import Path
-from contextlib import asynccontextmanager
+import requests as http_requests
+from playwright.sync_api import sync_playwright
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
-
-DATA_DIR = Path("/app/data")
-STATE_DIR = DATA_DIR / "browser_states"
-GEMINI_APP_URL = "https://gemini.google.com/app"
-GENERATE_URL = (
-    "https://gemini.google.com/_/BardChatUi/data/"
-    "assistant.lamda.BardFrontendService/StreamGenerate"
-)
-
-KEEPALIVE_INTERVAL = 300
-MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "3"))
-
-# PLACEHOLDER_REST
+DATA_DIR = "/app/data"
+STATE_DIR = os.path.join(DATA_DIR, "browser_states")
+COOKIES_OUTPUT = os.path.join(DATA_DIR, "refreshed_cookies.json")
+GEMINI2API_URL = os.environ.get("GEMINI2API_URL", "http://gemini2api:5918")
+API_KEY = os.environ.get("API_KEY", "")
+REFRESH_INTERVAL = int(os.environ.get("REFRESH_INTERVAL_SECONDS", "480"))
+SINGLE_RUN = os.environ.get("SINGLE_RUN", "false").lower() == "true"
 
 
-class AccountContext:
-    def __init__(self, account_id: str, context: BrowserContext, page: Page):
-        self.account_id = account_id
-        self.context = context
-        self.page = page
-        self.session_token = ""
-        self.healthy = False
-        self.last_refresh = 0.0
+def load_accounts():
+    accounts_file = os.path.join(DATA_DIR, "refresher_accounts.json")
+    if os.path.exists(accounts_file):
+        with open(accounts_file, "r") as f:
+            return json.load(f)
 
-    async def obtain_token(self):
-        try:
-            await self.page.goto(GEMINI_APP_URL, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(5)
-            content = await self.page.content()
-            match = re.search(r'"SNlM0e":"([^"]+)"', content)
-            if match:
-                self.session_token = match.group(1)
-                self.healthy = True
-                self.last_refresh = time.time()
-                logger.info(f"[{self.account_id}] Session token obtained")
+    psid = os.environ.get("GEMINI_PSID", "")
+    psidts = os.environ.get("GEMINI_PSIDTS", "")
+    if psid:
+        return [{"id": "account-0", "psid": psid, "psidts": psidts, "label": "Default"}]
+    return []
+
+
+def ensure_state_dir(account_id):
+    path = os.path.join(STATE_DIR, account_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def inject_cookies_to_state(state_dir, psid, psidts):
+    state_file = os.path.join(state_dir, "state.json")
+    if os.path.exists(state_file):
+        return
+    state = {
+        "cookies": [
+            {"name": "__Secure-1PSID", "value": psid, "domain": ".google.com", "path": "/", "secure": True, "httpOnly": True, "sameSite": "None"},
+            {"name": "__Secure-1PSIDTS", "value": psidts, "domain": ".google.com", "path": "/", "secure": True, "httpOnly": True, "sameSite": "None"},
+        ],
+        "origins": []
+    }
+    with open(state_file, "w") as f:
+        json.dump(state, f)
+    print(f"  [init] Injected initial cookies for first run")
+
+
+def refresh_account(browser, account):
+    account_id = account["id"]
+    label = account.get("label", account_id)
+    state_dir = ensure_state_dir(account_id)
+    state_file = os.path.join(state_dir, "state.json")
+
+    if not os.path.exists(state_file):
+        inject_cookies_to_state(state_dir, account["psid"], account.get("psidts", ""))
+
+    print(f"  [{label}] Opening browser context...")
+    context = browser.new_context(
+        storage_state=state_file,
+        locale="en-US",
+        timezone_id="America/New_York",
+    )
+    page = context.new_page()
+
+    try:
+        page.goto("https://gemini.google.com/app", timeout=90000, wait_until="domcontentloaded")
+        time.sleep(15)
+
+        cookies = context.cookies()
+        psid = next((c["value"] for c in cookies if c["name"] == "__Secure-1PSID"), None)
+        psidts = next((c["value"] for c in cookies if c["name"] == "__Secure-1PSIDTS"), None)
+
+        if psid and psidts:
+            context.storage_state(path=state_file)
+            print(f"  [{label}] OK - PSIDTS: {psidts[:20]}...")
+            return {"id": account_id, "label": label, "psid": psid, "psidts": psidts, "status": "active", "updated_at": time.time()}
+        else:
+            print(f"  [{label}] FAILED - Cookie not found, may need re-login")
+            return {"id": account_id, "label": label, "status": "expired", "updated_at": time.time()}
+    except Exception as e:
+        print(f"  [{label}] ERROR - {e}")
+        return {"id": account_id, "label": label, "status": "error", "error": str(e), "updated_at": time.time()}
+    finally:
+        context.close()
+
+
+def notify_gemini2api(account_id, psid, psidts):
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+
+    # 优先按账号 ID 精确更新（多账号隔离）
+    try:
+        resp = http_requests.put(
+            f"{GEMINI2API_URL}/admin/accounts/{account_id}/cookies",
+            json={"psid": psid, "psidts": psidts},
+            headers=headers,
+            timeout=10
+        )
+        if resp.status_code == 200:
+            print(f"  [notify] {account_id} cookies updated via PUT")
+            return True
+        elif resp.status_code == 404:
+            # 账号不存在，fallback 到全局 reload
+            resp2 = http_requests.post(
+                f"{GEMINI2API_URL}/admin/reload-cookies",
+                json={"psid": psid, "psidts": psidts},
+                headers=headers,
+                timeout=10
+            )
+            if resp2.status_code == 200:
+                print(f"  [notify] cookies reloaded via POST (account not in pool)")
                 return True
             else:
-                if "accounts.google.com" in content or "ServiceLogin" in content:
-                    logger.error(f"[{self.account_id}] Cookie expired - login redirect")
-                else:
-                    logger.error(f"[{self.account_id}] Token not found in page")
-                self.healthy = False
+                print(f"  [notify] reload failed: {resp2.status_code} {resp2.text[:100]}")
                 return False
-        except Exception as e:
-            logger.error(f"[{self.account_id}] Failed to obtain token: {e}")
-            self.healthy = False
+        else:
+            print(f"  [notify] PUT failed: {resp.status_code} {resp.text[:100]}")
             return False
+    except Exception as e:
+        print(f"  [notify] Failed to reach gemini2api: {e}")
+        return False
 
 
-class BrowserPool:
-    def __init__(self):
-        self.browser: Browser | None = None
-        self.accounts: dict[str, AccountContext] = {}
-        self.semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-        self._playwright = None
-        self._keepalive_task = None
+def refresh_all():
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n{'='*50}")
+    print(f"[{ts}] Starting cookie refresh cycle...")
+    print(f"{'='*50}")
 
-    async def start(self):
-        self._playwright = await async_playwright().start()
-        self.browser = await self._playwright.chromium.launch(
+    accounts = load_accounts()
+    if not accounts:
+        print("  [ERROR] No accounts configured!")
+        print("  Set GEMINI_PSID/GEMINI_PSIDTS env vars or create data/refresher_accounts.json")
+        return
+
+    os.makedirs(DATA_DIR, exist_ok=True)
+    results = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
             headless=True,
             args=[
                 "--no-sandbox",
@@ -89,263 +159,38 @@ class BrowserPool:
                 "--single-process",
                 "--no-zygote",
                 "--disable-extensions",
-                "--js-flags=--expose-gc",
             ]
         )
-        logger.info("Chromium browser started")
-        await self._init_accounts()
-        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
-    async def _init_accounts(self):
-        accounts = self._load_account_configs()
-        for acc in accounts:
-            await self._create_account_context(acc["id"], acc.get("psid", ""), acc.get("psidts", ""))
+        for i, account in enumerate(accounts):
+            result = refresh_account(browser, account)
+            results.append(result)
+            if i < len(accounts) - 1:
+                time.sleep(5)
 
-    def _load_account_configs(self) -> list[dict]:
-        accounts_file = DATA_DIR / "refresher_accounts.json"
-        if accounts_file.exists():
-            with open(accounts_file) as f:
-                return json.load(f)
-        psid = os.environ.get("GEMINI_PSID", "")
-        psidts = os.environ.get("GEMINI_PSIDTS", "")
-        if psid:
-            return [{"id": "account-0", "psid": psid, "psidts": psidts}]
-        return []
+        browser.close()
 
-    async def _create_account_context(self, account_id: str, psid: str, psidts: str):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        state_file = STATE_DIR / f"{account_id}.json"
+    with open(COOKIES_OUTPUT, "w") as f:
+        json.dump(results, f, indent=2)
 
-        if not state_file.exists() and psid:
-            state = {
-                "cookies": [
-                    {"name": "__Secure-1PSID", "value": psid, "domain": ".google.com", "path": "/", "secure": True, "httpOnly": True, "sameSite": "None"},
-                    {"name": "__Secure-1PSIDTS", "value": psidts, "domain": ".google.com", "path": "/", "secure": True, "httpOnly": True, "sameSite": "None"},
-                ],
-                "origins": []
-            }
-            with open(state_file, "w") as f:
-                json.dump(state, f)
+    active = [r for r in results if r.get("status") == "active"]
+    for acc in active:
+        notify_gemini2api(acc["id"], acc["psid"], acc["psidts"])
 
-        kwargs = {"storage_state": str(state_file)} if state_file.exists() else {}
-        context = await self.browser.new_context(**kwargs)
-        page = await context.new_page()
-        acc_ctx = AccountContext(account_id, context, page)
-        await acc_ctx.obtain_token()
-        if acc_ctx.healthy:
-            await context.storage_state(path=str(state_file))
-        self.accounts[account_id] = acc_ctx
-        logger.info(f"[{account_id}] Context created, healthy={acc_ctx.healthy}")
-
-    async def generate(self, prompt: str, model: str, account_id: str, conversation_id: str, model_headers: dict) -> dict:
-        await self._ensure_browser()
-        acc = self.accounts.get(account_id)
-        if not acc:
-            if self.accounts:
-                acc = next(iter(self.accounts.values()))
-            else:
-                raise HTTPException(503, "No accounts available")
-
-        if not acc.healthy:
-            raise HTTPException(503, f"Account {acc.account_id} is unhealthy")
-
-        async with self.semaphore:
-            return await self._do_generate(acc, prompt, model, conversation_id, model_headers)
-
-    async def _do_generate(self, acc: AccountContext, prompt: str, model: str, conversation_id: str, model_headers: dict) -> dict:
-        conv_param = conversation_id if conversation_id else None
-        inner = json.dumps([[prompt], None, conv_param, model])
-        encoded = json.dumps([None, inner])
-
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
-            "Origin": "https://gemini.google.com",
-            "Referer": "https://gemini.google.com/",
-            "X-Same-Domain": "1",
-        }
-        headers.update(model_headers)
-
-        form_body = f"at={acc.session_token}&f.req={encoded}"
-
-        try:
-            resp = await acc.page.request.post(
-                GENERATE_URL,
-                data=form_body,
-                headers=headers,
-                timeout=90000,
-            )
-            status = resp.status
-            body = await resp.text()
-
-            if status >= 400:
-                logger.error(f"[{acc.account_id}] Gemini returned {status}")
-                if status in (401, 403):
-                    acc.healthy = False
-                raise HTTPException(status, f"Gemini error: {status}")
-
-            return {"raw_response": body, "status": status}
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"[{acc.account_id}] Request failed: {e}")
-            raise HTTPException(500, f"Request failed: {e}")
-
-    async def _keepalive_loop(self):
-        while True:
-            await asyncio.sleep(KEEPALIVE_INTERVAL)
-            for acc_id, acc in self.accounts.items():
-                try:
-                    if time.time() - acc.last_refresh > KEEPALIVE_INTERVAL:
-                        logger.info(f"[{acc_id}] Keepalive refresh...")
-                        await acc.obtain_token()
-                        if acc.healthy:
-                            state_file = STATE_DIR / f"{acc_id}.json"
-                            await acc.context.storage_state(path=str(state_file))
-                except Exception as e:
-                    logger.error(f"[{acc_id}] Keepalive error: {e}")
-
-    async def _ensure_browser(self):
-        if not self.browser or not self.browser.is_connected():
-            logger.info("Browser closed or disconnected, restarting...")
-            try:
-                if self.browser:
-                    await self.browser.close()
-            except Exception:
-                pass
-            self.browser = await self._playwright.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-gpu",
-                    "--disable-dev-shm-usage",
-                    "--single-process",
-                    "--no-zygote",
-                    "--disable-extensions",
-                    "--js-flags=--expose-gc",
-                ]
-            )
-            logger.info("Browser restarted")
-
-    async def update_account_cookies(self, account_id: str, psid: str, psidts: str) -> bool:
-        if account_id in self.accounts:
-            try:
-                await self.accounts[account_id].context.close()
-            except Exception:
-                pass
-            del self.accounts[account_id]
-        await self._ensure_browser()
-        await self._create_account_context(account_id, psid, psidts)
-        return self.accounts.get(account_id, None) is not None and self.accounts[account_id].healthy
-
-    async def stop(self):
-        if self._keepalive_task:
-            self._keepalive_task.cancel()
-        for acc in self.accounts.values():
-            await acc.context.close()
-        if self.browser:
-            await self.browser.close()
-        if self._playwright:
-            await self._playwright.stop()
-
-
-pool = BrowserPool()
-
-
-class GenerateRequest(BaseModel):
-    prompt: str
-    model: str = "gemini-3-flash"
-    account_id: str = ""
-    conversation_id: str = ""
-    model_headers: dict = {}
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await pool.start()
-    yield
-    await pool.stop()
-
-
-app = FastAPI(lifespan=lifespan)
-
-
-@app.post("/generate")
-async def generate(req: GenerateRequest):
-    result = await pool.generate(
-        prompt=req.prompt,
-        model=req.model,
-        account_id=req.account_id,
-        conversation_id=req.conversation_id,
-        model_headers=req.model_headers,
-    )
-    return result
-
-
-@app.get("/health")
-async def health():
-    accounts_status = []
-    for acc_id, acc in pool.accounts.items():
-        accounts_status.append({
-            "id": acc_id,
-            "healthy": acc.healthy,
-            "last_refresh": acc.last_refresh,
-        })
-    return {
-        "status": "ok" if any(a["healthy"] for a in accounts_status) else "unhealthy",
-        "browser": pool.browser is not None,
-        "accounts": accounts_status,
-    }
-
-
-class UpdateCookiesRequest(BaseModel):
-    account_id: str = "account-0"
-    psid: str
-    psidts: str = ""
-
-
-@app.post("/update-cookies")
-async def update_cookies(req: UpdateCookiesRequest):
-    success = await pool.update_account_cookies(req.account_id, req.psid, req.psidts)
-    if success:
-        return {"status": "ok", "message": f"Account {req.account_id} cookies updated and browser reloaded"}
-    raise HTTPException(503, f"Account {req.account_id} failed to initialize with new cookies")
-
-
-@app.get("/check-account/{account_id}")
-async def check_account(account_id: str):
-    acc = pool.accounts.get(account_id)
-    if not acc:
-        raise HTTPException(404, f"Account {account_id} not found")
-    await acc.obtain_token()
-    if acc.healthy:
-        state_file = STATE_DIR / f"{account_id}.json"
-        await acc.context.storage_state(path=str(state_file))
-    return {
-        "account_id": account_id,
-        "valid": acc.healthy,
-        "has_token": bool(acc.session_token),
-        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-
-
-@app.get("/check-all")
-async def check_all():
-    results = []
-    for acc_id, acc in pool.accounts.items():
-        await acc.obtain_token()
-        if acc.healthy:
-            state_file = STATE_DIR / f"{acc_id}.json"
-            await acc.context.storage_state(path=str(state_file))
-        results.append({
-            "account_id": acc_id,
-            "valid": acc.healthy,
-            "has_token": bool(acc.session_token),
-            "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        })
-    return {"accounts": results}
+    print(f"\n  Summary: {len(active)}/{len(results)} accounts active")
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    if SINGLE_RUN:
+        refresh_all()
+        print("\n[Single run mode] Done, exiting.")
+        sys.exit(0)
+
+    print(f"Gemini Cookie Refresher started (interval: {REFRESH_INTERVAL}s)")
+    while True:
+        try:
+            refresh_all()
+        except Exception as e:
+            print(f"[FATAL] {e}")
+        print(f"\nSleeping {REFRESH_INTERVAL}s until next refresh...")
+        time.sleep(REFRESH_INTERVAL)

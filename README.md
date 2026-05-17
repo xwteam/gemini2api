@@ -48,15 +48,16 @@
 
 | 日期 | 更新内容 |
 |------|----------|
-| 2025-05-17 16:40:00 | 架构重构：Playwright 代理模式，所有请求通过真实浏览器发送，Cookie 自动保活，多账号 Context 隔离 |
-| 2025-05-17 15:30:00 | 对话上下文持久化（混合模式）：Gemini 原生 conversation_id 多轮续接 + 本地备份 + 自动 fallback |
-| 2025-05-17 14:00:00 | 新增 Playwright Cookie 自动续期模块（refresher），支持多账号轮询刷新，无缝对接 gemini2api 热更新 |
-| 2025-05-17 09:00:00 | 新增多语言切换（简体中文/繁體中文/English/日本語/한국어），确认弹窗美化为自定义 Modal |
+| 2025-05-17 08:00:00 | 对话上下文持久化（混合模式）：Gemini 原生 conversation_id 多轮续接 + 本地备份 + 自动 fallback |
+| 2025-05-17 06:00:00 | 新增 Playwright Cookie 自动续期模块（refresher），支持多账号轮询刷新，无缝对接 gemini2api 热更新 |
+| 2025-05-17 02:00:00 | 多语言覆盖全部页面（仪表盘/账号/日志/测试/统计/API/设置），修复 MutationObserver 无限循环导致页面卡死 |
+| 2025-05-17 01:00:00 | 新增多语言切换（简体中文/繁體中文/English/日本語/한국어），确认弹窗美化为自定义 Modal |
 | 2025-05-16 19:00:00 | 新增服务重启按钮（右上角控制栏），支持一键重启服务 |
 | 2025-05-16 18:40:00 | 日志持久化到 data/logs.json（重启不丢失）、每页15条；QR公告改为从 GitHub 仓库 api/ 目录远程获取，所有部署实例共享公告内容 |
 | 2025-05-16 18:00:00 | 仪表盘新增运行时间实时显示、二维码卡片（文字/图片从 api/ 目录动态加载，修改无需重建）、图片点击放大；版本号统一为 APP_VERSION 常量 |
 | 2025-05-16 17:30:00 | 轮换策略运行时生效、仪表盘系统信息改版（版本/Python/OS/内存/CPU/PID）、配置管理移入仪表盘、模型映射功能 |
 | 2025-05-16 16:10:00 | 新增设置页面 + API Key 管理 + 统一转发引擎（支持 OpenAI/Anthropic/Gemini/OpenRouter/自定义） |
+| 2025-05-16 15:30:00 | 用量统计优化：图表撑满、时间范围扩展、模型白名单过滤、中文化 |
 
 ---
 
@@ -275,23 +276,19 @@ docker compose logs -f
 > [!TIP]
 > 不创建 `accounts.json` 时，服务自动使用 `.env` 中的单账号模式。也可以通过 `POST /admin/accounts` API 在运行时动态添加账号。
 
-### Cookie 自动保活（Playwright 代理模式）
+### Cookie 自动续期（可选）
 
-所有 Gemini 对话请求通过内置的 Playwright 真实浏览器发送（不再使用 curl_cffi 直接请求），Google 只看到一个真实 Chrome 在操作，Cookie 由浏览器每 5 分钟自动保活，大幅延长 session 寿命。
+Gemini 的 `__Secure-1PSIDTS` Cookie 约 10 分钟过期。启用 refresher 模块后，Playwright 会定时用真实浏览器访问 Gemini 页面触发自动续期，并通知 gemini2api 热更新，实现 Cookie 永不过期。
 
 ```bash
-# 默认启动即包含浏览器代理（无需额外参数）
-docker compose up -d
+# 启动主服务 + Cookie 自动续期
+docker compose --profile refresher up -d
 
-# 查看浏览器代理日志
+# 查看 refresher 日志
 docker logs gemini-refresher -f
 ```
 
-**架构说明**：
-- `gemini-refresher`：Chromium 浏览器代理服务，常驻运行，每个账号独立 BrowserContext（Cookie 完全隔离）
-- `gemini2api`：轻量 API 路由，所有 Gemini 请求转发给 refresher 处理
-
-**多账号配置**：创建 `data/refresher_accounts.json`：
+**多账号配置**：创建 `data/refresher_accounts.json`，每个账号独立浏览器状态隔离：
 
 ```json
 [
@@ -301,10 +298,10 @@ docker logs gemini-refresher -f
 ```
 
 > [!TIP]
-> 每个账号使用独立的 Playwright BrowserContext，Cookie/Storage 完全隔离，不会互相污染。不配置此文件时自动使用 `.env` 中的单账号。
+> 多账号时 `id` 字段必须与 `accounts.json` 中的 ID 一致，refresher 会按 ID 精确更新对应账号的 Cookie，不会串号。不配置此文件时自动使用 `.env` 中的单账号。
 
 > [!NOTE]
-> 内存实测：refresher（Chromium 常驻）~230MB + 每多一个账号约 +25MB。2GB 内存服务器可稳定运行 5-6 个账号。
+> refresher 使用 Chromium 无头浏览器，首次构建镜像约 1.5GB。运行时每 8 分钟启动浏览器刷新一次，峰值内存约 400-600MB，建议服务器至少 2GB 内存 + 2GB SWAP。
 
 ### 3. 验证
 

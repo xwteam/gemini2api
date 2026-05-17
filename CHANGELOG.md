@@ -7,12 +7,10 @@
 ## [Unreleased]
 
 ### Added
-- **Playwright 代理模式**：所有 Gemini 请求通过真实 Chromium 浏览器发送，不再使用 curl_cffi 直接请求
-- refresher 改为 FastAPI 浏览器代理服务（端口 8001），gemini2api 转发请求到 refresher
-- 单 Chromium 实例常驻，多账号通过独立 BrowserContext 完全隔离（Cookie/Storage/Cache 互不可见）
-- 每 5 分钟自动 keepalive 保活 Cookie，无需手动干预
-- 内存优化：refresher ~230MB，gemini2api ~60MB，2GB 服务器可稳定运行 5-6 个账号
+- Playwright Cookie 自动续期模块（`refresher/`），真实 Chromium 浏览器定时刷新 Cookie
 - 支持多账号串行刷新，每个账号独立浏览器状态隔离（独立 Context + 独立 state 文件）
+- 多账号按 `account_id` 精确推送 Cookie（`PUT /admin/accounts/{id}/cookies`），不会串号
+- 账号间 5 秒延迟，防止同 IP 快速切换触发 Google 风控
 - 刷新完成后自动通知 gemini2api 热更新，零手动操作
 - docker-compose profile 支持：`--profile refresher` 可选启用
 - 极限 Chromium 优化参数（单进程/禁GPU/禁扩展），降低内存占用

@@ -32,50 +32,42 @@ class AddAccountRequest(BaseModel):
 
 @router.post("/reload-cookies")
 async def reload_cookies(req: ReloadCookiesRequest = None):
-    import httpx
-    proxy_url = os.environ.get("BROWSER_PROXY_URL", "http://refresher:8001")
-
-    psid = ""
-    psidts = ""
     if req and (req.psid or req.psidts):
-        psid = req.psid
-        psidts = req.psidts or ""
+        for account in account_pool.accounts:
+            if account.client:
+                result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
+                if result.get("success"):
+                    return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
+        return JSONResponse(
+            status_code=503,
+            content={"error": {"message": result.get("error", "Cookie reload failed"), "type": "reload_error"}},
+        )
     else:
         from app.config import Settings
         try:
             fresh = Settings()
-            psid = fresh.gemini_psid
-            psidts = fresh.gemini_psidts
+            for account in account_pool.accounts:
+                if account.client:
+                    result = await account.client.reload_cookies(
+                        psid=fresh.gemini_psid,
+                        psidts=fresh.gemini_psidts,
+                    )
+                    if result.get("success"):
+                        return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
+            return JSONResponse(
+                status_code=503,
+                content={"error": {"message": result.get("error", "Cookie reload failed"), "type": "reload_error"}},
+            )
         except Exception as e:
             return JSONResponse(
                 status_code=500,
                 content={"error": {"message": f"Failed to read .env: {e}", "type": "config_error"}},
             )
 
-    if not psid:
-        return JSONResponse(
-            status_code=400,
-            content={"error": {"message": "No PSID provided", "type": "invalid_request"}},
-        )
-
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{proxy_url}/update-cookies",
-                json={"account_id": "account-0", "psid": psid, "psidts": psidts},
-            )
-        if resp.status_code == 200:
-            return {"status": "ok", "message": "Cookies reloaded, browser session refreshed", "healthy": True}
-        detail = resp.json().get("detail", "Unknown error") if resp.headers.get("content-type", "").startswith("application/json") else resp.text[:200]
-        return JSONResponse(
-            status_code=503,
-            content={"error": {"message": f"Browser reload failed: {detail}", "type": "reload_error"}},
-        )
-    except Exception as e:
-        return JSONResponse(
-            status_code=503,
-            content={"error": {"message": f"Failed to reach browser proxy: {e}", "type": "proxy_error"}},
-        )
+    return JSONResponse(
+        status_code=503,
+        content={"error": {"message": "No accounts available", "type": "reload_error"}},
+    )
 
 
 @router.get("/status")
@@ -107,16 +99,8 @@ async def system_info():
 
 @router.get("/check-account")
 async def check_all_accounts():
-    import httpx
-    proxy_url = os.environ.get("BROWSER_PROXY_URL", "http://refresher:8001")
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(f"{proxy_url}/check-all")
-        if resp.status_code == 200:
-            return resp.json()
-        return {"accounts": []}
-    except Exception as e:
-        return {"accounts": [], "error": str(e)}
+    results = await account_pool.check_all()
+    return {"accounts": results}
 
 
 @router.get("/health-history")
@@ -172,18 +156,14 @@ async def remove_account(account_id: str):
 
 @router.get("/accounts/{account_id}/check")
 async def check_single_account(account_id: str):
-    import httpx
-    proxy_url = os.environ.get("BROWSER_PROXY_URL", "http://refresher:8001")
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(f"{proxy_url}/check-account/{account_id}")
-        if resp.status_code == 200:
-            return resp.json()
-        elif resp.status_code == 404:
-            return JSONResponse(status_code=404, content={"error": {"message": f"Account {account_id} not found", "type": "not_found"}})
-        return {"valid": False, "account_id": account_id, "error": resp.text[:200]}
-    except Exception as e:
-        return {"valid": False, "account_id": account_id, "error": str(e)}
+        result = await account_pool.check_account(account_id)
+        return result
+    except ValueError as e:
+        return JSONResponse(
+            status_code=404,
+            content={"error": {"message": str(e), "type": "not_found"}},
+        )
 
 
 class UpdateCookiesRequest(BaseModel):
@@ -193,26 +173,24 @@ class UpdateCookiesRequest(BaseModel):
 
 @router.put("/accounts/{account_id}/cookies")
 async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
-    import httpx
-    proxy_url = os.environ.get("BROWSER_PROXY_URL", "http://refresher:8001")
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{proxy_url}/update-cookies",
-                json={"account_id": account_id, "psid": req.psid, "psidts": req.psidts},
+    for account in account_pool.accounts:
+        if account.id == account_id:
+            if account.client:
+                result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
+                if result.get("success"):
+                    return {"status": "ok", "message": f"Account {account_id} cookies updated"}
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": {"message": result.get("error", "Cookie reload failed"), "type": "reload_error"}},
+                )
+            return JSONResponse(
+                status_code=503,
+                content={"error": {"message": "Account client not initialized", "type": "client_error"}},
             )
-        if resp.status_code == 200:
-            return {"status": "ok", "message": f"Account {account_id} cookies updated, browser reloaded"}
-        detail = resp.json().get("detail", "Unknown error") if resp.headers.get("content-type", "").startswith("application/json") else resp.text[:200]
-        return JSONResponse(
-            status_code=503,
-            content={"error": {"message": f"Browser reload failed: {detail}", "type": "reload_error"}},
-        )
-    except Exception as e:
-        return JSONResponse(
-            status_code=503,
-            content={"error": {"message": f"Failed to reach browser proxy: {e}", "type": "proxy_error"}},
-        )
+    return JSONResponse(
+        status_code=404,
+        content={"error": {"message": f"Account {account_id} not found", "type": "not_found"}},
+    )
 
 
 @router.get("/verify")
