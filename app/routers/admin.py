@@ -196,3 +196,16 @@ async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
 @router.get("/verify")
 async def verify_token():
     return {"status": "ok"}
+
+
+@router.post("/restart")
+async def restart_server():
+    import threading
+    import signal
+
+    def _restart():
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_restart, daemon=True).start()
+    return {"status": "ok", "message": "Server restarting..."}

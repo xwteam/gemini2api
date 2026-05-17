@@ -199,6 +199,47 @@ function throttle(func, limit) {
     };
 }
 
+function showConfirm({ title = '确认操作', message = '', confirmText = '确认', cancelText = '取消', type = 'warning' }) {
+    return new Promise((resolve) => {
+        const iconMap = { warning: 'fa-exclamation-triangle', danger: 'fa-trash-alt', info: 'fa-info-circle' };
+        const colorMap = { warning: 'var(--warning-color, #f59e0b)', danger: 'var(--danger-color)', info: 'var(--primary-color)' };
+        const icon = iconMap[type] || iconMap.warning;
+        const color = colorMap[type] || colorMap.warning;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay active';
+        overlay.style.bottom = '0';
+        overlay.innerHTML = `
+            <div style="background:var(--bg-primary);border-radius:var(--radius-xl,16px);width:90%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,0.3);animation:modalIn 0.2s ease">
+                <div style="padding:2rem;text-align:center">
+                    <div style="width:56px;height:56px;border-radius:50%;background:${color}15;display:inline-flex;align-items:center;justify-content:center;margin-bottom:1rem">
+                        <i class="fas ${icon}" style="font-size:1.5rem;color:${color}"></i>
+                    </div>
+                    <h3 style="margin:0 0 0.5rem;font-size:1.125rem;color:var(--text-primary)">${title}</h3>
+                    <p style="margin:0;color:var(--text-secondary);font-size:0.875rem;line-height:1.5">${message}</p>
+                </div>
+                <div style="display:flex;gap:0.75rem;padding:0 2rem 2rem;justify-content:center">
+                    <button class="confirm-cancel-btn" style="flex:1;padding:0.625rem 1.25rem;border-radius:var(--radius-lg,10px);border:1px solid var(--border-color);background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;font-size:0.875rem;font-weight:500;transition:all 0.2s">${cancelText}</button>
+                    <button class="confirm-ok-btn" style="flex:1;padding:0.625rem 1.25rem;border-radius:var(--radius-lg,10px);border:none;background:${color};color:#fff;cursor:pointer;font-size:0.875rem;font-weight:600;transition:all 0.2s">${confirmText}</button>
+                </div>
+            </div>
+        `;
+
+        const close = (result) => {
+            overlay.style.opacity = '0';
+            setTimeout(() => overlay.remove(), 200);
+            resolve(result);
+        };
+
+        overlay.querySelector('.confirm-cancel-btn').onclick = () => close(false);
+        overlay.querySelector('.confirm-ok-btn').onclick = () => close(true);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+
+        document.body.appendChild(overlay);
+        overlay.querySelector('.confirm-ok-btn').focus();
+    });
+}
+
 // 导出函数
 export {
     maskString,
@@ -210,5 +251,6 @@ export {
     escapeHtml,
     formatFileSize,
     debounce,
-    throttle
+    throttle,
+    showConfirm
 };

@@ -5,11 +5,13 @@
 import { initializeComponents } from './component-loader.js';
 import { initThemeSwitcher } from './theme-switcher.js';
 import { initAuth, apiCall, logout } from './auth.js';
-import { showToast, formatNumber, getStatusBadge, maskString, copyToClipboard } from './utils.js';
+import { showToast, formatNumber, getStatusBadge, maskString, copyToClipboard, showConfirm } from './utils.js';
 import { initUsageStats, loadUsageStats } from './usage-chart.js';
 import { initLogs } from './logs.js';
 import { initSettings, loadSettings } from './settings.js';
 import { initApiKeys, loadApiKeys } from './api-keys.js';
+import { initI18n, t } from './i18n.js';
+import { initLanguageSwitcher } from './language-switcher.js';
 
 let isAppInitialized = false;
 
@@ -358,7 +360,14 @@ async function checkAccount(accountId) {
 }
 
 async function removeAccount(accountId) {
-    if (!confirm('确定要删除此账号吗？此操作不可撤销。')) return;
+    const confirmed = await showConfirm({
+        title: t('confirm.delete.title'),
+        message: t('confirm.delete.message'),
+        confirmText: t('confirm.delete.btn'),
+        cancelText: t('confirm.cancel'),
+        type: 'danger'
+    });
+    if (!confirmed) return;
 
     try {
         showToast('正在删除...', 'info');
@@ -652,24 +661,49 @@ function initEventListeners() {
     const restartBtn = document.getElementById('restartBtn');
     if (restartBtn) {
         restartBtn.addEventListener('click', async () => {
-            if (confirm('确定要重启服务吗？')) {
-                restartBtn.classList.add('restarting');
-                try {
-                    await apiCall('/admin/restart', { method: 'POST' });
-                    showToast('服务正在重启...', 'success');
-                } catch (error) {
-                    showToast('重启失败: ' + error.message, 'error');
-                    restartBtn.classList.remove('restarting');
-                }
-            }
+            const confirmed = await showConfirm({
+                title: t('confirm.restart.title'),
+                message: t('confirm.restart.message'),
+                confirmText: t('confirm.restart.btn'),
+                cancelText: t('confirm.cancel'),
+                type: 'warning'
+            });
+            if (!confirmed) return;
+            restartBtn.classList.add('restarting');
+            showToast(t('toast.restarting'), 'success');
+            try {
+                await apiCall('POST', '/admin/restart');
+            } catch (e) {}
+            setTimeout(() => {
+                const check = setInterval(async () => {
+                    try {
+                        const resp = await fetch('/health');
+                        if (resp.ok) {
+                            clearInterval(check);
+                            window.location.reload();
+                        }
+                    } catch (e) {}
+                }, 1500);
+                setTimeout(() => {
+                    clearInterval(check);
+                    window.location.reload();
+                }, 15000);
+            }, 2000);
         });
     }
 
     // Logout
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) {
-        logoutBtn.addEventListener('click', () => {
-            if (confirm('确定要退出登录吗？')) logout();
+        logoutBtn.addEventListener('click', async () => {
+            const confirmed = await showConfirm({
+                title: t('confirm.logout.title'),
+                message: t('confirm.logout.message'),
+                confirmText: t('confirm.logout.btn'),
+                cancelText: t('confirm.cancel'),
+                type: 'info'
+            });
+            if (confirmed) logout();
         });
     }
 
@@ -699,6 +733,8 @@ async function initApp() {
 
     initElements();
     initThemeSwitcher();
+    initI18n();
+    initLanguageSwitcher();
     initNavigation();
     initEventListeners();
     initLogs();
