@@ -1,5 +1,6 @@
 services:
   gemini2api:
+    image: ghcr.io/xwteam/gemini2api:latest
     build: .
     container_name: gemini2api
     env_file:

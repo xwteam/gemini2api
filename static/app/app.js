@@ -650,7 +650,7 @@ async function handleCheckUpdate() {
 
     if (updateInfo && updateInfo.has_update) {
         // Show update command dialog
-        const updateCmd = 'cd /home/ubuntu/gemini2api && git pull origin main && docker compose up -d --build';
+        const updateCmd = 'docker compose pull && docker compose up -d';
         const confirmed = await showConfirm({
             title: t('confirm.update.title') + ` v${updateInfo.latest}`,
             message: t('confirm.update.message') + `\n\n${updateCmd}`,
