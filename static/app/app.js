@@ -128,6 +128,14 @@ async function loadDashboard() {
         updatePlaygroundModels(modelsSet);
         await loadSystemInfo();
         await loadQrCards();
+
+        // Bind and auto-check update button (must be after DOM is loaded)
+        const updateBtn = document.getElementById('checkUpdateBtn');
+        if (updateBtn && !updateBtn._bound) {
+            updateBtn._bound = true;
+            updateBtn.addEventListener('click', handleCheckUpdate);
+            checkForUpdate();
+        }
     } catch (error) {
         console.error('加载仪表盘失败:', error);
     }
@@ -606,6 +614,93 @@ async function copyModel(model) {
 }
 
 // ============================================================================
+// Update Check
+// ============================================================================
+
+let updateInfo = null;
+
+async function checkForUpdate() {
+    try {
+        const data = await apiCall('GET', '/admin/check-update');
+        updateInfo = data;
+        updateCheckButton(data);
+    } catch (error) {
+        console.error('检查更新失败:', error);
+    }
+}
+
+function updateCheckButton(data) {
+    const btn = document.getElementById('checkUpdateBtn');
+    if (!btn) return;
+
+    const icon = btn.querySelector('i');
+    const text = btn.querySelector('span');
+
+    if (data.has_update) {
+        btn.classList.remove('btn-outline');
+        btn.classList.add('btn-success');
+        if (icon) icon.className = 'fas fa-arrow-up';
+        if (text) text.textContent = t('dashboard.updateAvailable') + ' v' + data.latest;
+    } else {
+        btn.classList.remove('btn-success');
+        btn.classList.add('btn-outline');
+        if (icon) icon.className = 'fas fa-check';
+        if (text) text.textContent = t('dashboard.upToDate');
+    }
+}
+
+async function handleCheckUpdate() {
+    const btn = document.getElementById('checkUpdateBtn');
+    if (!btn) return;
+
+    if (updateInfo && updateInfo.has_update) {
+        // Perform update
+        const confirmed = await showConfirm({
+            title: t('confirm.update.title'),
+            message: t('confirm.update.message'),
+            confirmText: t('confirm.update.btn'),
+            cancelText: t('confirm.cancel'),
+            type: 'warning'
+        });
+        if (!confirmed) return;
+
+        btn.disabled = true;
+        const text = btn.querySelector('span');
+        if (text) text.textContent = t('dashboard.updating');
+
+        try {
+            await apiCall('POST', '/admin/update');
+            showToast(t('dashboard.updating'), 'success');
+
+            // Wait for service to restart
+            setTimeout(() => {
+                const check = setInterval(async () => {
+                    try {
+                        const resp = await fetch('/health');
+                        if (resp.ok) {
+                            clearInterval(check);
+                            window.location.reload();
+                        }
+                    } catch (e) {}
+                }, 2000);
+                setTimeout(() => {
+                    clearInterval(check);
+                    window.location.reload();
+                }, 60000);
+            }, 3000);
+        } catch (error) {
+            showToast(t('toast.error'), 'error');
+            btn.disabled = false;
+        }
+    } else {
+        // Check for update
+        btn.disabled = true;
+        await checkForUpdate();
+        btn.disabled = false;
+    }
+}
+
+// ============================================================================
 // Event Listeners
 // ============================================================================
 
@@ -725,6 +820,12 @@ function initEventListeners() {
     const refreshBtn = document.getElementById('refreshAccountStatusBtn');
     if (refreshBtn) {
         refreshBtn.addEventListener('click', loadDashboard);
+    }
+
+    // Check update button
+    const checkUpdateBtn = document.getElementById('checkUpdateBtn');
+    if (checkUpdateBtn) {
+        checkUpdateBtn.addEventListener('click', handleCheckUpdate);
     }
 
     // Mobile menu toggle
