@@ -644,13 +644,32 @@ function updateCheckButton(data) {
     }
 }
 
+function extractLocalizedNotes(body) {
+    if (!body) return '';
+    const lang = localStorage.getItem('gemini2api_lang') || 'zh-CN';
+    const marker = `<!-- ${lang} -->`;
+    const idx = body.indexOf(marker);
+    if (idx === -1) {
+        const enIdx = body.indexOf('<!-- en-US -->');
+        if (enIdx !== -1) {
+            const start = enIdx + '<!-- en-US -->'.length;
+            const nextMarker = body.indexOf('<!--', start);
+            return (nextMarker === -1 ? body.slice(start) : body.slice(start, nextMarker)).trim();
+        }
+        return body.replace(/<!--.*?-->/g, '').trim().split('\n').slice(0, 10).join('\n');
+    }
+    const start = idx + marker.length;
+    const nextMarker = body.indexOf('<!--', start);
+    return (nextMarker === -1 ? body.slice(start) : body.slice(start, nextMarker)).trim();
+}
+
 async function handleCheckUpdate() {
     const btn = document.getElementById('checkUpdateBtn');
     if (!btn) return;
 
     if (updateInfo && updateInfo.has_update) {
         const updateCmd = 'docker compose pull && docker compose up -d';
-        const releaseNotes = updateInfo.release_notes || '';
+        const releaseNotes = extractLocalizedNotes(updateInfo.release_notes || '');
 
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay active';
