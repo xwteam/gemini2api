@@ -662,9 +662,15 @@ gemini2api/
 
 ---
 
-## 🤝 贡献
+## ☕ 赞赏 & 共享
 
-欢迎 PR 和 Issue。
+> 完整内容请查看 [SPONSORS.md](SPONSORS.md)
+
+觉得有帮助？请作者喝杯咖啡，或加入微信交流群获取使用帮助。二维码见页面顶部。
+
+Gemini2API 主要由个人维护，欢迎通过代码、文档、修复或 PR 参与建设。也感谢所有在 Issues 里提交 bug 复现、日志、兼容性反馈和功能建议的用户，这些反馈直接推动了项目的迭代。
+
+**参与贡献：**
 
 1. Fork 本仓库
 2. 创建分支 `git checkout -b feature/your-feature`

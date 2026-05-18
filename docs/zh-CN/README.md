@@ -462,7 +462,9 @@ response = client.chat.completions.create(
 
 ---
 
-## 🤝 贡献
+## ☕ 赞赏 & 共享
+
+觉得有帮助？请作者喝杯咖啡，或加入微信交流群获取使用帮助。完整内容请查看 [SPONSORS.md](SPONSORS.md)。
 
 欢迎 PR 和 Issue。
 

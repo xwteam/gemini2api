@@ -377,6 +377,19 @@ print(msg.content[0].text)
 
 ---
 
+## ☕ 후원 & 기여
+
+도움이 되셨나요? 작성자에게 커피를 사주거나 WeChat 그룹에 가입하여 지원을 받으세요. 자세한 내용은 [SPONSORS.md](SPONSORS.md)를 참조하세요.
+
+PR과 Issue를 환영합니다.
+
+1. 이 저장소를 포크하기
+2. 브랜치 생성 `git checkout -b feature/your-feature`
+3. 코드 커밋 `git commit -m "feat: add something"`
+4. 푸시 및 풀 리퀘스트 생성
+
+---
+
 ## 📄 라이선스
 
 이 프로젝트는 [비상업적 라이선스 (Non-Commercial)](../../LICENSE)를 채택합니다:

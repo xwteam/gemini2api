@@ -462,7 +462,9 @@ response = client.chat.completions.create(
 
 ---
 
-## 🤝 Contributing
+## ☕ Support & Contribute
+
+Find this helpful? Buy the author a coffee or join the WeChat group for support. For full details, see [SPONSORS.md](SPONSORS.md).
 
 PRs and Issues welcome.
 
