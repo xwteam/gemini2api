@@ -633,18 +633,13 @@ function updateCheckButton(data) {
     const btn = document.getElementById('checkUpdateBtn');
     if (!btn) return;
 
-    const icon = btn.querySelector('i');
     const text = btn.querySelector('span');
 
     if (data.has_update) {
         btn.classList.remove('btn-outline');
         btn.classList.add('btn-success');
-        if (icon) icon.className = 'fas fa-arrow-up';
         if (text) text.textContent = t('dashboard.updateAvailable') + ' v' + data.latest;
     } else {
-        btn.classList.remove('btn-success');
-        btn.classList.add('btn-outline');
-        if (icon) icon.className = 'fas fa-check';
         if (text) text.textContent = t('dashboard.upToDate');
     }
 }
