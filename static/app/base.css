@@ -399,6 +399,16 @@ body {
     font-size: 0.8125rem;
 }
 
+.btn-success {
+    background: var(--success-color);
+    color: #fff;
+    border-color: var(--success-color);
+}
+
+.btn-success:hover {
+    opacity: 0.9;
+}
+
 .btn-lg {
     padding: 0.875rem 1.5rem;
     font-size: 1rem;
