@@ -7,7 +7,8 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates wget git && \
+    ca-certificates wget git curl && \
+    curl -fsSL https://get.docker.com | sh && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

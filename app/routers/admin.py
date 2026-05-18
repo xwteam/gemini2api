@@ -240,21 +240,40 @@ async def check_update():
 
 @router.post("/update")
 async def perform_update():
-    """Perform one-click update by pulling latest code and rebuilding containers"""
+    """Perform one-click update: git pull + rebuild + restart"""
     import subprocess
     import threading
 
     def _update():
         time.sleep(0.5)
         try:
-            # Execute update commands in the host project directory
+            repo_path = "/app/repo"
+            # Git pull
+            result = subprocess.run(
+                ["git", "-C", repo_path, "pull", "origin", "main"],
+                capture_output=True, text=True, timeout=60,
+                env={**os.environ, "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1"}
+            )
+            logger.info(f"Git pull: {result.stdout.strip()} {result.stderr.strip()}")
+
+            if result.returncode != 0:
+                logger.error(f"Git pull failed: {result.stderr}")
+                return
+
+            # Rebuild and restart via docker socket
             subprocess.run(
-                ["sh", "-c", "cd /app/repo && git pull origin main && docker compose build && docker compose up -d"],
-                timeout=300,
-                capture_output=True
+                ["docker", "compose", "-f", f"{repo_path}/docker-compose.yml", "build", "--quiet"],
+                capture_output=True, timeout=300
+            )
+            subprocess.run(
+                ["docker", "compose", "-f", f"{repo_path}/docker-compose.yml", "up", "-d"],
+                capture_output=True, timeout=60
             )
         except Exception as e:
             logger.error(f"Update failed: {e}")
+
+    threading.Thread(target=_update, daemon=True).start()
+    return {"status": "ok", "message": "Update started, service will restart shortly..."}
 
     threading.Thread(target=_update, daemon=True).start()
     return {"status": "ok", "message": "Update started, service will restart shortly..."}
