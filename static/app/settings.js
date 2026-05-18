@@ -110,9 +110,9 @@ function renderModelMapping() {
   const entries = Object.entries(modelMappings);
 
   let html = '<div class="settings-group">';
-  html += '<h3><i class="fas fa-exchange-alt"></i> 模型映射</h3>';
-  html += '<p class="mapping-desc">将请求中的模型名映射到实际使用的模型</p>';
-  html += '<div class="mapping-header"><span>别名</span><span>目标模型</span><span></span></div>';
+  html += '<h3><i class="fas fa-exchange-alt"></i> <span data-i18n="settings.modelMapping">' + t('settings.modelMapping') + '</span></h3>';
+  html += '<p class="mapping-desc" data-i18n="settings.modelMappingDesc">' + t('settings.modelMappingDesc') + '</p>';
+  html += '<div class="mapping-header"><span data-i18n="settings.requestModel">' + t('settings.requestModel') + '</span><span data-i18n="settings.actualModel">' + t('settings.actualModel') + '</span><span></span></div>';
 
   for (const [alias, target] of entries) {
     html += '<div class="mapping-row" data-alias="' + alias + '">';
@@ -123,13 +123,13 @@ function renderModelMapping() {
   }
 
   html += '<div class="mapping-row mapping-new">';
-  html += '<input type="text" class="form-control" id="new-mapping-alias" placeholder="别名 (如 gpt-4o)">';
-  html += '<input type="text" class="form-control" id="new-mapping-target" placeholder="目标模型 (如 gemini-2.5-pro)">';
+  html += '<input type="text" class="form-control" id="new-mapping-alias" data-i18n-placeholder="settings.aliasPlaceholder" placeholder="' + t('settings.aliasPlaceholder') + '">';
+  html += '<input type="text" class="form-control" id="new-mapping-target" data-i18n-placeholder="settings.targetPlaceholder" placeholder="' + t('settings.targetPlaceholder') + '">';
   html += '<button class="btn-icon btn-add-mapping" id="btn-add-mapping"><i class="fas fa-plus"></i></button>';
   html += '</div>';
   html += '</div>';
   html += '<div class="mapping-actions">';
-  html += '<button class="btn btn-primary" id="btn-save-mapping">' + t('settings.saveMapping') + '</button>';
+  html += '<button class="btn btn-primary" id="btn-save-mapping"><span data-i18n="settings.saveMapping">' + t('settings.saveMapping') + '</span></button>';
   html += '</div>';
   html += '</div>';
 

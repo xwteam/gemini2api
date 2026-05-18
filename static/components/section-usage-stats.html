@@ -10,28 +10,28 @@
             <div class="stat-icon"><i class="fas fa-paper-plane"></i></div>
             <div class="stat-info">
                 <h3 id="us-total-requests">0</h3>
-                <p>总请求数</p>
+                <p data-i18n="usage.totalRequests">总请求数</p>
             </div>
         </div>
         <div class="stat-card">
             <div class="stat-icon"><i class="fas fa-exclamation-triangle"></i></div>
             <div class="stat-info">
                 <h3 id="us-error-rate">0%</h3>
-                <p>错误率</p>
+                <p data-i18n="usage.errorRate">错误率</p>
             </div>
         </div>
         <div class="stat-card">
             <div class="stat-icon"><i class="fas fa-clock"></i></div>
             <div class="stat-info">
                 <h3 id="us-avg-latency">0ms</h3>
-                <p>平均延迟</p>
+                <p data-i18n="usage.avgLatency">平均延迟</p>
             </div>
         </div>
         <div class="stat-card">
             <div class="stat-icon"><i class="fas fa-sync-alt"></i></div>
             <div class="stat-info">
                 <h3 id="us-rotation-rate">0%</h3>
-                <p>轮换成功率</p>
+                <p data-i18n="usage.rotationRate">轮换成功率</p>
             </div>
         </div>
     </div>
@@ -40,15 +40,15 @@
     <div class="usage-chart-panel">
         <div class="chart-controls">
             <div class="control-group">
-                <label>粒度:</label>
+                <label data-i18n="usage.granularity">粒度:</label>
                 <div class="btn-group" id="us-granularity">
-                    <button class="btn btn-sm btn-outline" data-value="five_min">5分钟</button>
-                    <button class="btn btn-sm btn-outline active" data-value="hourly">小时</button>
-                    <button class="btn btn-sm btn-outline" data-value="daily">天</button>
+                    <button class="btn btn-sm btn-outline" data-value="five_min" data-i18n="usage.fiveMin">5分钟</button>
+                    <button class="btn btn-sm btn-outline active" data-value="hourly" data-i18n="usage.hourly">小时</button>
+                    <button class="btn btn-sm btn-outline" data-value="daily" data-i18n="usage.daily">天</button>
                 </div>
             </div>
             <div class="control-group">
-                <label>时间范围:</label>
+                <label data-i18n="usage.timeRange">时间范围:</label>
                 <div class="btn-group" id="us-timerange">
                     <button class="btn btn-sm btn-outline" data-value="1">1h</button>
                     <button class="btn btn-sm btn-outline" data-value="6">6h</button>
@@ -60,7 +60,7 @@
                 </div>
             </div>
             <button class="btn btn-sm btn-outline" id="us-refresh-btn">
-                <i class="fas fa-sync-alt"></i> 刷新
+                <i class="fas fa-sync-alt"></i> <span data-i18n="usage.refresh">刷新</span>
             </button>
         </div>
 
@@ -74,7 +74,7 @@
 
     <!-- Model Distribution -->
     <div class="usage-model-panel">
-        <h3><i class="fas fa-cube"></i> 模型分布</h3>
+        <h3><i class="fas fa-cube"></i> <span data-i18n="usage.modelDistribution">模型分布</span></h3>
         <div id="us-model-table" class="model-distribution-table">
             <div class="chart-loading">
                 <i class="fas fa-spinner fa-spin"></i> 加载中...

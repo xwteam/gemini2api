@@ -6,35 +6,35 @@
     <div class="playground-container">
         <!-- Left Panel: Request Config -->
         <div class="playground-panel">
-            <h3>请求配置</h3>
+            <h3 data-i18n="playground.config">请求配置</h3>
             <div class="form-group">
-                <label class="form-label">模型</label>
+                <label class="form-label" data-i18n="playground.model">模型</label>
                 <select id="pg-model" class="form-control">
                     <option value="">加载中...</option>
                 </select>
             </div>
             <div class="form-group">
-                <label class="form-label">消息内容</label>
-                <textarea id="pg-message" class="form-control" placeholder="输入消息..." rows="10"></textarea>
-                <span class="form-hint">Enter 发送，Shift + Enter 换行</span>
+                <label class="form-label" data-i18n="playground.message">消息内容</label>
+                <textarea id="pg-message" class="form-control" data-i18n-placeholder="playground.inputPlaceholder" placeholder="输入消息..." rows="10"></textarea>
+                <span class="form-hint" data-i18n="playground.hint">Enter 发送，Shift + Enter 换行</span>
             </div>
             <div class="flex gap-1">
                 <button class="btn btn-primary" id="pg-send">
-                    <i class="fas fa-paper-plane"></i> 发送
+                    <i class="fas fa-paper-plane"></i> <span data-i18n="playground.send">发送</span>
                 </button>
                 <button class="btn btn-outline" id="pg-clear-btn">
-                    <i class="fas fa-redo-alt"></i> 新对话
+                    <i class="fas fa-redo-alt"></i> <span data-i18n="playground.newChat">新对话</span>
                 </button>
             </div>
         </div>
 
         <!-- Right Panel: Chat -->
         <div class="playground-panel chat-panel">
-            <h3>对话</h3>
+            <h3 data-i18n="playground.chat">对话</h3>
             <div id="pg-chat" class="chat-container">
                 <div class="chat-placeholder">
                     <i class="fas fa-comment-dots"></i>
-                    <p>发送消息开始对话</p>
+                    <p data-i18n="playground.startChat">发送消息开始对话</p>
                 </div>
             </div>
         </div>

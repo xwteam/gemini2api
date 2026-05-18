@@ -5,12 +5,12 @@
         <div class="log-controls">
             <div class="search-box">
                 <i class="fas fa-search"></i>
-                <input type="text" id="log-search" placeholder="搜索日志..." />
+                <input type="text" id="log-search" data-i18n-placeholder="logs.search" placeholder="搜索日志..." />
             </div>
             <div class="btn-group" id="log-direction">
-                <button class="btn btn-sm active" data-value="all">全部</button>
-                <button class="btn btn-sm" data-value="ingress">入站</button>
-                <button class="btn btn-sm" data-value="egress">出站</button>
+                <button class="btn btn-sm active" data-value="all" data-i18n="logs.all">全部</button>
+                <button class="btn btn-sm" data-value="ingress" data-i18n="logs.ingress">入站</button>
+                <button class="btn btn-sm" data-value="egress" data-i18n="logs.egress">出站</button>
             </div>
             <div class="log-actions">
                 <button class="btn btn-sm btn-outline" id="log-toggle-btn" title="Pause/Resume">
@@ -28,25 +28,25 @@
             <table class="logs-table">
                 <thead>
                     <tr>
-                        <th>时间</th>
-                        <th>方向</th>
-                        <th>方法</th>
-                        <th>路径</th>
-                        <th>状态</th>
-                        <th>延迟</th>
-                        <th>模型</th>
+                        <th data-i18n="logs.time">时间</th>
+                        <th data-i18n="logs.direction">方向</th>
+                        <th data-i18n="logs.method">方法</th>
+                        <th data-i18n="logs.path">路径</th>
+                        <th data-i18n="logs.status">状态</th>
+                        <th data-i18n="logs.latency">延迟</th>
+                        <th data-i18n="logs.model">模型</th>
                     </tr>
                 </thead>
                 <tbody id="logs-tbody"></tbody>
             </table>
             <div class="logs-empty" id="logs-empty">
                 <i class="fas fa-file-alt"></i>
-                <p>暂无日志</p>
+                <p data-i18n="logs.noLogs">暂无日志</p>
             </div>
         </div>
         <div class="logs-detail" id="logs-detail">
             <div class="detail-header">
-                <h4>详情</h4>
+                <h4 data-i18n="logs.detail">详情</h4>
                 <button class="btn btn-sm btn-outline" id="log-detail-close">
                     <i class="fas fa-times"></i>
                 </button>
@@ -57,11 +57,11 @@
 
     <div class="logs-pagination">
         <button class="btn btn-sm btn-outline" id="log-prev-btn">
-            <i class="fas fa-chevron-left"></i> 上一页
+            <i class="fas fa-chevron-left"></i> <span data-i18n="logs.prevPage">上一页</span>
         </button>
         <span id="log-page-info">-</span>
         <button class="btn btn-sm btn-outline" id="log-next-btn">
-            下一页 <i class="fas fa-chevron-right"></i>
+            <span data-i18n="logs.nextPage">下一页</span> <i class="fas fa-chevron-right"></i>
         </button>
     </div>
 </section>

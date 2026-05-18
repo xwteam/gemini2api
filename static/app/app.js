@@ -143,7 +143,7 @@ function startUptimeTimer(initialSeconds) {
         const h = Math.floor((seconds % 86400) / 3600);
         const m = Math.floor((seconds % 3600) / 60);
         const s = seconds % 60;
-        setText('uptime-display', d + '天 ' + h + '小时 ' + m + '分 ' + s + '秒');
+        setText('uptime-display', d + t('time.days') + ' ' + h + t('time.hours') + ' ' + m + t('time.minutes') + ' ' + s + t('time.seconds'));
         seconds++;
     }
     update();
@@ -236,7 +236,7 @@ function renderAccountStatusGrid(accounts) {
                 <span class="value">${formatNumber(account.error_count || 0)}</span>
             </div>
             <div class="account-detail">
-                <span class="label">并发</span>
+                <span class="label">${t('accounts.concurrency')}</span>
                 <span class="value">${account.active_requests || 0}</span>
             </div>
             <div class="account-detail">
