@@ -6,7 +6,22 @@
 
 ## [Unreleased]
 
-## [1.6.3] - 2025-05-31
+## [1.6.4] - 2026-05-31
+
+### Added
+- 三家接口全部暴露标准裸路径，主流 SDK 开箱即用、无需改 base_url 后缀：
+  - OpenAI：`/v1/chat/completions`、`/v1/models`
+  - Claude：`/v1/messages`、`/v1/messages/count_tokens`
+  - Gemini：`/v1beta/models/{m}:generateContent`、`/v1beta/models/{m}:streamGenerateContent`、`/v1beta/models`
+- 原有带前缀路径（`/openai/v1`、`/claude/v1`、`/gemini/v1beta`）全部保留，向后兼容
+
+### Fixed
+- 修复部署机制：`docker-compose.yml` 由 `build: .` 改为 `image: ghcr.io/xwteam/gemini2api:latest`，`docker compose pull` 真正生效（此前因 build 优先，pull 被忽略，生产长期跑本地旧镜像导致面板版本号卡住）
+
+### Notes
+- 裸 `/v1/models` 归 OpenAI 格式独占（同一路径无法同时返回两种格式）；Claude 模型列表仍可通过 `/claude/v1/models` 获取
+
+## [1.6.3] - 2026-05-31
 
 ### Added
 - 图片/文件上传支持：OpenAI（image_url）、Claude（image.source）、Gemini（inline_data）三格式多模态

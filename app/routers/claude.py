@@ -17,10 +17,13 @@ from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tok
 from app.utils.prompt import build_prompt_from_messages, extract_attachments
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/claude/v1", tags=["Claude"])
+# router：对话主入口（messages），同时挂在 /claude/v1 和裸 /v1（开箱即用）
+router = APIRouter(tags=["Claude"])
+# models_router：模型列表/详情，仅挂在 /claude/v1，避免裸 /v1/models 与 OpenAI 撞车
+models_router = APIRouter(tags=["Claude"])
 
 
-@router.get("/models")
+@models_router.get("/models")
 async def list_models():
     models = gemini_client.models
     data = [
@@ -34,7 +37,7 @@ async def list_models():
     return ClaudeModelList(data=data)
 
 
-@router.get("/models/{model_id:path}")
+@models_router.get("/models/{model_id:path}")
 async def get_model(model_id: str):
     if model_id not in gemini_client.models:
         return JSONResponse(

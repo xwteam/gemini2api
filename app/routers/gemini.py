@@ -22,7 +22,7 @@ from app.utils.prompt import build_prompt_from_messages
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/gemini/v1beta")
+router = APIRouter(tags=["Gemini"])
 
 
 def _parse_system(system_instruction) -> str | None:

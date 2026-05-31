@@ -24,3 +24,6 @@ Thumbs.db
 # Cache
 .cookies/
 *.log
+
+# Runtime data (bind-mounted in prod via ./data:/app/data)
+data/

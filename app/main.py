@@ -180,8 +180,16 @@ async def log_capture_middleware(request: Request, call_next):
 
 app.include_router(openai.router, prefix="/openai/v1")
 app.include_router(openai.router, prefix="/v1")  # 标准 OpenAI 路径，兼容 OpenClaw 等客户端
-app.include_router(claude.router)
-app.include_router(gemini.router)
+
+# Claude：完整端点挂 /claude/v1；裸 /v1 仅暴露对话入口（messages），
+# 模型列表 models_router 不挂裸 /v1，避免 /v1/models 与 OpenAI 撞车
+app.include_router(claude.models_router, prefix="/claude/v1")
+app.include_router(claude.router, prefix="/claude/v1")
+app.include_router(claude.router, prefix="/v1")  # 标准 Claude 路径（/v1/messages），兼容 Claude 官方 SDK
+
+# Gemini：/v1beta 与 /v1 不同段，完整端点可同时挂 /gemini/v1beta 和裸 /v1beta
+app.include_router(gemini.router, prefix="/gemini/v1beta")
+app.include_router(gemini.router, prefix="/v1beta")  # 标准 Gemini 路径，兼容 Gemini 官方 SDK
 app.include_router(research.router)
 app.include_router(admin.router)
 app.include_router(logs_router.router)

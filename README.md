@@ -146,9 +146,9 @@
 │                                                             │
 │  Client (OpenAI SDK / Claude SDK / Gemini SDK / cURL)       │
 │       |                                                     │
-│  POST /openai/v1/chat/completions                           │
-│  POST /claude/v1/messages                                   │
-│  POST /gemini/v1beta/models/:m:generateContent              │
+│  POST /v1/chat/completions   (或 /openai/v1/...)            │
+│  POST /v1/messages           (或 /claude/v1/...)            │
+│  POST /v1beta/models/:m:generateContent (或 /gemini/...)    │
 │       |                                                     │
 │       v                                                     │
 │  +-----------+    +----------------+    +---------------+   │
@@ -423,23 +423,25 @@ response = client.chat.completions.create(
 <details>
 <summary><b>点击展开完整端点列表</b></summary>
 
-### OpenAI 兼容（`/openai/v1`）
+> **两套路径并存**：每家接口同时提供「带前缀路径」和「标准裸路径」。标准裸路径让官方 SDK 填 `base_url` 时无需加后缀，开箱即用；带前缀路径用于三家明确区分。下表「端点」列基于带前缀路径，括号内标注等价的裸路径。
+
+### OpenAI 兼容（`/openai/v1` 或裸 `/v1`）
 
 | 方法 | 端点 | 功能 |
 |------|------|------|
 | GET | `/models` | 可用模型列表 |
 | POST | `/chat/completions` | 对话补全（支持流式 + 工具调用） |
 
-### Claude 兼容（`/claude/v1`）
+### Claude 兼容（`/claude/v1`；对话入口同时挂裸 `/v1`）
 
 | 方法 | 端点 | 功能 |
 |------|------|------|
-| GET | `/models` | 模型列表 |
-| GET | `/models/{id}` | 模型详情 |
-| POST | `/messages` | 消息生成（支持流式 + 工具调用） |
-| POST | `/messages/count_tokens` | Token 计数估算 |
+| GET | `/models` | 模型列表（仅 `/claude/v1`，裸 `/v1/models` 归 OpenAI 格式） |
+| GET | `/models/{id}` | 模型详情（仅 `/claude/v1`） |
+| POST | `/messages` | 消息生成（支持流式 + 工具调用，裸 `/v1/messages` 可用） |
+| POST | `/messages/count_tokens` | Token 计数估算（裸 `/v1/messages/count_tokens` 可用） |
 
-### Gemini 原生（`/gemini/v1beta`）
+### Gemini 原生（`/gemini/v1beta` 或裸 `/v1beta`）
 
 | 方法 | 端点 | 功能 |
 |------|------|------|
