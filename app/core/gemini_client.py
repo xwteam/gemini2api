@@ -763,6 +763,13 @@ class GeminiWebClient:
                 if payload[1]:
                     conv_id = str(payload[1])
 
+        # 生图时模型文本里会带占位 URL（googleusercontent.com/image_generation_content/...），
+        # 它没有实际意义（真图在 images 里），过滤掉，避免显示成网址
+        if images:
+            text_content = re.sub(
+                r'https?://googleusercontent\.com/image_generation_content/\d+', '', text_content
+            ).strip()
+
         return {"text": text_content, "conversation_id": conv_id, "images": images}
 
     @staticmethod

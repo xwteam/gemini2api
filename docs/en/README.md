@@ -58,8 +58,10 @@
 
 | Date | Update |
 |------|--------|
-| 2026-05-31 21:00:00 | v1.6.6 - 🖼️ Local hosting for generated images: the chat APIs now return accessible local URLs (`/images/{id}`) for generated images instead of base64, so CLI/agent clients can render them properly (base64 doesn't display in these clients); images are auto-cleaned up periodically |
-| 2026-05-31 19:00:00 | v1.6.5 - 🎨 AI image generation: added OpenAI-compatible `/v1/images/generations` endpoint (returns `b64_json`); all three chat APIs auto-embed generated images into replies (markdown / image block / inlineData) |
+| 2026-06-01 00:18:01 | v1.6.8 - 🖼️ Image generation no longer returns the googleusercontent placeholder URL: this meaningless placeholder is now filtered out, so only the image itself is returned |
+| 2026-06-01 00:02:09 | v1.6.7 - 🖼️ Fixed model test in the control panel not showing images: generated images now render directly instead of being displayed as markdown text/URL |
+| 2026-05-31 23:41:15 | v1.6.6 - 🖼️ Local hosting for generated images: the chat APIs now return accessible local URLs (`/images/{id}`) for generated images instead of base64, so CLI/agent clients can render them properly (base64 doesn't display in these clients); images are auto-cleaned up periodically |
+| 2026-05-31 22:36:53 | v1.6.5 - 🎨 AI image generation: added OpenAI-compatible `/v1/images/generations` endpoint (returns `b64_json`); all three chat APIs auto-embed generated images into replies (markdown / image block / inlineData) |
 | 2026-05-31 17:00:00 | v1.6.4 - All three APIs expose standard bare paths (/v1/chat/completions, /v1/messages, /v1beta/...) — major SDKs work out of the box; fixed deployment mechanism (docker-compose switched from build to image, so docker compose pull actually takes effect) |
 | 2026-05-31 14:10:00 | v1.6.3 - Image/file upload support (OpenAI/Claude/Gemini multimodal); models now use real web data + stable fixed names (gemini-pro/flash/flash-thinking); cookies no longer lost on restart |
 | 2026-05-19 20:00:00 | v1.6.2 - Session auto-expires and logs out after 5 minutes of inactivity |

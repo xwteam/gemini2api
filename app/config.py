@@ -8,7 +8,7 @@ from pydantic import field_validator
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.6.7"
+APP_VERSION = "1.6.8"
 
 
 def _generate_api_key() -> str:
