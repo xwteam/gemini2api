@@ -58,6 +58,9 @@
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2026-05-31 17:00:00 | v1.6.4 - 三家接口暴露标准裸路径（/v1/chat/completions、/v1/messages、/v1beta/...），主流 SDK 开箱即用；修复部署机制（docker-compose 由 build 改 image，docker compose pull 真正生效） |
+| 2026-05-31 14:10:00 | v1.6.3 - 图片/文件上传支持（OpenAI/Claude/Gemini 多模态）；模型改用网页版真实数据 + 对外固定稳定名（gemini-pro/flash/flash-thinking）；重启不再丢 Cookie |
+| 2026-05-19 20:00:00 | v1.6.2 - 会话 5 分钟无操作自动过期登出 |
 | 2025-05-18 16:30:00 | v1.6.1 - 深色主题全面修复、检查更新弹窗美化、GitHub Actions 自动构建镜像、failover 故障转移策略 |
 | 2025-05-17 23:20:00 | 模型列表统一为用户友好名称，新增思考模式（gemini-2.5-flash-thinking）和 Pro 模式，Playground 对话上下文修复 |
 | 2025-05-17 22:30:00 | 容器时区修正为 Asia/Shanghai，日志显示北京时间 |

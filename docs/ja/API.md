@@ -22,6 +22,28 @@ curl -H "x-api-key: sk-あなたのキー" \
 
 > **ヒント**: API Key は `.env` ファイルまたはログから確認できます。
 
+## 標準ベアパス
+
+v1.6.4 以降、各 API は 2 種類のパスに対応しています。
+
+### プレフィックス付きパス
+
+プロバイダーごとに明示的なパスを使用します（以下のエンドポイント文書はこちらを使用）：
+
+- OpenAI: `/openai/v1/chat/completions`、`/openai/v1/models`
+- Claude: `/claude/v1/messages`、`/claude/v1/messages/count_tokens`
+- Gemini: `/gemini/v1beta/models/{model}:generateContent`、`:streamGenerateContent`
+
+### 標準ベアパス（v1.6.4 新規）
+
+主要 SDK が `base_url` にサフィックス不要でそのまま動作します：
+
+- **OpenAI**: `/v1/chat/completions`、`/v1/models`
+- **Claude**: `/v1/messages`、`/v1/messages/count_tokens`
+- **Gemini**: `/v1beta/models/{model}:generateContent`、`:streamGenerateContent`、`/v1beta/models`
+
+> **重要**: ベアパス `/v1/models` は OpenAI 形式を返します（1 つのパスで 2 つの形式は返せません）。Claude 形式のモデル一覧が必要な場合は `/claude/v1/models` を使用してください。
+
 ## OpenAI 互換 API
 
 OpenAI SDK と互換性のあるエンドポイントです。

@@ -58,6 +58,9 @@
 
 | 날짜 | 업데이트 내용 |
 |------|----------|
+| 2026-05-31 17:00:00 | v1.6.4 - 세 가지 API 모두 표준 베어 경로(/v1/chat/completions, /v1/messages, /v1beta/...) 노출, 주요 SDK 즉시 사용 가능; 배포 메커니즘 수정(docker-compose를 build에서 image로 변경하여 docker compose pull이 실제로 작동) |
+| 2026-05-31 14:10:00 | v1.6.3 - 이미지/파일 업로드 지원(OpenAI/Claude/Gemini 멀티모달); 모델을 웹 버전 실제 데이터로 변경 + 고정 안정 이름(gemini-pro/flash/flash-thinking); 재시작 시 Cookie 손실 없음 |
+| 2026-05-19 20:00:00 | v1.6.2 - 5분간 작업이 없으면 세션 자동 만료 및 로그아웃 |
 | 2025-05-18 16:30:00 | v1.6.1 - 다크 테마 전면 수정, 업데이트 확인 대화상자 미화, GitHub Actions 자동 이미지 빌드, failover 장애 조치 전략 |
 | 2025-05-17 23:20:00 | 모델 목록을 사용자 친화적 이름으로 통일, 사고 모드(gemini-2.5-flash-thinking) 및 Pro 모드 추가, Playground 대화 컨텍스트 수정 |
 | 2025-05-17 22:30:00 | 컨테이너 시간대를 Asia/Shanghai로 수정, 로그에 베이징 시간 표시 |

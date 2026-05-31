@@ -58,6 +58,9 @@
 
 | Date | Update |
 |------|--------|
+| 2026-05-31 17:00:00 | v1.6.4 - All three APIs expose standard bare paths (/v1/chat/completions, /v1/messages, /v1beta/...) — major SDKs work out of the box; fixed deployment mechanism (docker-compose switched from build to image, so docker compose pull actually takes effect) |
+| 2026-05-31 14:10:00 | v1.6.3 - Image/file upload support (OpenAI/Claude/Gemini multimodal); models now use real web data + stable fixed names (gemini-pro/flash/flash-thinking); cookies no longer lost on restart |
+| 2026-05-19 20:00:00 | v1.6.2 - Session auto-expires and logs out after 5 minutes of inactivity |
 | 2025-05-18 16:30:00 | v1.6.1 - Dark theme comprehensive fixes, update check dialog beautification, GitHub Actions auto-build images, failover strategy |
 | 2025-05-17 23:20:00 | Unified model list to user-friendly names, added thinking mode (gemini-2.5-flash-thinking) and Pro mode, fixed Playground conversation context |
 | 2025-05-17 22:30:00 | Fixed container timezone to Asia/Shanghai, logs show Beijing time |

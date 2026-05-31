@@ -18,6 +18,22 @@ curl -H "x-api-key: sk-your-api-key" http://localhost:5918/...
 
 > **注意：** API Key 在首次啟動時自動生成，格式為 `sk-` 前綴 + 32 位隨機字元。
 
+## 路徑說明
+
+自 v1.6.4 起，每家介面同時支援兩套路徑：
+
+**帶前綴路徑（三家明確區分）：**
+- OpenAI：`/openai/v1`
+- Claude：`/claude/v1`
+- Gemini：`/gemini/v1beta`
+
+**標準裸路徑（v1.6.4 新增，主流 SDK 填 base_url 無需加後綴開箱即用）：**
+- OpenAI：`/v1/chat/completions`、`/v1/models`
+- Claude：`/v1/messages`、`/v1/messages/count_tokens`
+- Gemini：`/v1beta/models/{model}:generateContent`、`:streamGenerateContent`、`/v1beta/models`
+
+> **重要：** 裸 `/v1/models` 回傳 OpenAI 格式（同一路徑無法同時回傳兩種格式）；需要 Claude 格式的模型列表請用 `/claude/v1/models`。
+
 ## OpenAI 相容 API（`/openai/v1`）
 
 ### GET /models

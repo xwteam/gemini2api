@@ -20,6 +20,38 @@ curl -H "x-api-key: sk-당신의키"
 
 > API Key는 `.env` 파일의 `API_KEY` 값 또는 서비스 시작 로그에서 확인 가능합니다.
 
+## 표준 베어 경로
+
+v1.6.4부터 각 API는 두 가지 경로 형식을 지원합니다:
+
+### 접두사 경로 (제공자별 명시)
+
+아래 엔드포인트 문서에서 사용하는 형식입니다:
+
+- OpenAI: `/openai/v1/chat/completions`, `/openai/v1/models`
+- Claude: `/claude/v1/messages`, `/claude/v1/messages/count_tokens`
+- Gemini: `/gemini/v1beta/models/{model}:generateContent`, `:streamGenerateContent`
+
+### 표준 베어 경로 (v1.6.4 신규)
+
+주요 SDK가 `base_url`에 접미사 없이 즉시 작동하도록 표준 경로를 노출합니다:
+
+**OpenAI 형식**:
+- `/v1/chat/completions`
+- `/v1/models`
+
+**Claude 형식**:
+- `/v1/messages`
+- `/v1/messages/count_tokens`
+
+**Gemini 형식**:
+- `/v1beta/models/{model}:generateContent`
+- `/v1beta/models/{model}:streamGenerateContent`
+- `/v1beta/models`
+
+> [!IMPORTANT]
+> 베어 `/v1/models`는 OpenAI 형식을 반환합니다(하나의 경로로 두 형식을 반환할 수 없음). Claude 형식 모델 목록이 필요하면 `/claude/v1/models`를 사용하세요.
+
 ## OpenAI 호환 API
 
 ### POST /openai/v1/chat/completions

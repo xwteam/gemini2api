@@ -22,6 +22,22 @@ curl http://localhost:5918/health \
   -H "Authorization: Bearer sk-your-api-key"
 ```
 
+## Standard Bare Paths
+
+As of v1.6.4, each API supports two sets of paths:
+
+**Prefixed paths** (explicit per-provider, used in the endpoint documentation below):
+- OpenAI: `/openai/v1/chat/completions`, `/openai/v1/models`
+- Claude: `/claude/v1/messages`, `/claude/v1/messages/count_tokens`, `/claude/v1/models`
+- Gemini: `/gemini/v1beta/models/{model}:generateContent`, `/gemini/v1beta/models/{model}:streamGenerateContent`, `/gemini/v1beta/models`
+
+**Standard bare paths** (new in v1.6.4, major SDKs work out of the box without suffix on base_url):
+- OpenAI: `/v1/chat/completions`, `/v1/models`
+- Claude: `/v1/messages`, `/v1/messages/count_tokens`
+- Gemini: `/v1beta/models/{model}:generateContent`, `/v1beta/models/{model}:streamGenerateContent`, `/v1beta/models`
+
+**Important**: The bare `/v1/models` endpoint returns OpenAI format (a single path cannot return two formats). For the Claude-format model list, use `/claude/v1/models`.
+
 ## OpenAI Compatible API
 
 These endpoints follow OpenAI API format and are compatible with OpenAI SDKs.

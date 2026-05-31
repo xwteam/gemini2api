@@ -32,6 +32,37 @@ docker compose logs | grep "API_KEY"
 cat .env | grep API_KEY
 ```
 
+## 路径说明
+
+从 v1.6.4 起，每家接口同时支持两套路径：
+
+### 带前缀路径（三家明确区分）
+
+- OpenAI: `/openai/v1/chat/completions`、`/openai/v1/models`
+- Claude: `/claude/v1/messages`、`/claude/v1/messages/count_tokens`、`/claude/v1/models`
+- Gemini: `/gemini/v1beta/models/{model}:generateContent`、`:streamGenerateContent`、`/gemini/v1beta/models`
+
+下文各端点文档基于这套路径。
+
+### 标准裸路径（v1.6.4 新增，主流 SDK 开箱即用）
+
+主流 SDK 填写 `base_url` 时无需添加后缀，直接使用标准路径：
+
+**OpenAI 格式**：
+- `/v1/chat/completions`
+- `/v1/models`
+
+**Claude 格式**：
+- `/v1/messages`
+- `/v1/messages/count_tokens`
+
+**Gemini 格式**：
+- `/v1beta/models/{model}:generateContent`
+- `/v1beta/models/{model}:streamGenerateContent`
+- `/v1beta/models`
+
+**重要说明**：裸路径 `/v1/models` 返回 OpenAI 格式的模型列表（同一路径无法同时返回两种格式）。如需 Claude 格式的模型列表，请使用 `/claude/v1/models`。
+
 ## 错误响应
 
 所有错误响应遵循以下格式：
