@@ -1,6 +1,7 @@
 import re
 import json
 import time
+import random
 import asyncio
 import logging
 from pathlib import Path
@@ -163,6 +164,11 @@ def _extract_push_id(body: str) -> str:
     return _DEFAULT_PUSH_ID
 
 
+def _rand_reqid() -> int:
+    """batchexecute 需要的 _reqid 参数。"""
+    return random.randint(10000, 99999)
+
+
 
 class GeminiWebClient:
     def __init__(self, psid: str | None = None, psidts: str | None = None):
@@ -186,9 +192,21 @@ class GeminiWebClient:
         fingerprint_config.load()
 
         self._cookie_jar = PersistentCookieJar(self._psid)
-        self._cookie_jar.set("__Secure-1PSID", self._psid)
-        if self._psidts:
-            self._cookie_jar.set("__Secure-1PSIDTS", self._psidts)
+        # cookie_jar 启动时已从磁盘加载持久化 Cookie。
+        # 若磁盘有有效的 PSID/PSIDTS（面板更新后持久化的最新值），优先用磁盘的，
+        # 避免被 .env 里的旧值覆盖导致重启丢 Cookie。
+        persisted = self._cookie_jar.get_all()
+        disk_psid = persisted.get("__Secure-1PSID")
+        disk_psidts = persisted.get("__Secure-1PSIDTS")
+        if disk_psid:
+            self._psid = disk_psid
+            if disk_psidts:
+                self._psidts = disk_psidts
+            logger.info("Loaded persisted cookies from disk")
+        else:
+            self._cookie_jar.set("__Secure-1PSID", self._psid)
+            if self._psidts:
+                self._cookie_jar.set("__Secure-1PSIDTS", self._psidts)
 
         self._current_target = header_builder.get_impersonate_target()
         self._http = AsyncSession(
@@ -421,7 +439,9 @@ class GeminiWebClient:
             return False
 
     async def _send_heartbeat(self) -> bool:
-        """Send batchexecute RPC to simulate browser activity (settings sync)."""
+        """调 otAQ7b(GetUserStatus) RPC：既保活又拉取账号真实可用模型。
+        必须带正确的 URL params 和 x-goog-ext header，否则 Google 返回 400。
+        """
         if not self._session_token:
             return False
         try:
@@ -430,15 +450,28 @@ class GeminiWebClient:
             self._clear_session_cookies()
 
             rpc_id = "otAQ7b"
-            inner_payload = json.dumps([None, None, None, None, None, None, None, None, [1]])
-            req_data = json.dumps([[rpc_id, inner_payload, None, "generic"]])
+            # RPCData.serialize 格式：[rpcid, payload, null, "generic"]，外层再包一层 [[...]]
+            req_data = json.dumps([[[rpc_id, "[]", None, "generic"]]])
             form_data = {"f.req": req_data, "at": self._session_token}
+
+            params = {
+                "rpcids": rpc_id,
+                "hl": "en",
+                "_reqid": str(_rand_reqid()),
+                "rt": "c",
+                "source-path": "/app",
+            }
 
             cookies = self._get_cookies()
             headers = self._get_headers("POST", content_type="application/x-www-form-urlencoded")
+            headers.update({
+                "x-goog-ext-525001261-jspb": "[1,null,null,null,null,null,null,null,[4]]",
+                "x-goog-ext-73010989-jspb": "[0]",
+                "X-Same-Domain": "1",
+            })
 
             resp = await self._http.post(
-                BATCHEXECUTE_URL, data=form_data, cookies=cookies, headers=headers
+                BATCHEXECUTE_URL, params=params, data=form_data, cookies=cookies, headers=headers
             )
             self._cookie_jar.update_from_response(resp)
 
