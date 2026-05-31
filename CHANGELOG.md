@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.6.7] - 2026-05-31
+
+### Fixed
+- 🖼️ 控制面板模型测试：生成的图片现在直接渲染为图片显示，不再显示成 markdown 文本/URL（之前用 textContent 纯文本展示，markdown 图链接显示成了原始文字）
+- 面板回复中的图片（markdown `![](url)` / data URI / `/images/` 链接）统一解析渲染为 `<img>`
+
 ## [1.6.6] - 2026-05-31
 
 ### Added

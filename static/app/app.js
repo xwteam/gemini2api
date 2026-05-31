@@ -580,7 +580,7 @@ async function sendPlaygroundRequest() {
                     const delta = chunk.choices?.[0]?.delta?.content || '';
                     if (delta) {
                         content += delta;
-                        aiBubble.textContent = content;
+                        aiBubble.textContent = content;  // 流式过程显示文本
                         chatContainer.scrollTop = chatContainer.scrollHeight;
                     }
                 } catch {}
@@ -590,6 +590,9 @@ async function sendPlaygroundRequest() {
         if (!content) {
             aiBubble.textContent = '无响应内容';
         } else {
+            // 流式结束：把图片（markdown/URL/dataURI）渲染成 <img>，其余文本转义显示
+            aiBubble.innerHTML = _pgRenderContent(content);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
             _pgMessages.push({ role: 'assistant', content: content });
         }
     } catch (error) {
@@ -601,6 +604,34 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// 把 AI 回复渲染成 HTML：markdown 图片 ![](url)、裸图片 URL/data URI → <img>，其余文本转义
+function _pgRenderContent(text) {
+    if (!text) return '';
+    const imgs = [];
+    let s = text;
+    // 1) markdown 图片 ![alt](url)
+    s = s.replace(/!\[[^\]]*\]\((data:image\/[^)]+|https?:\/\/[^)\s]+)\)/g, (m, url) => {
+        const i = imgs.push(url) - 1;
+        return ` IMG${i} `;
+    });
+    // 2) 裸的 data:image 或 /images/ 图片 URL
+    s = s.replace(/(data:image\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)/g, (m, url) => {
+        const i = imgs.push(url) - 1;
+        return ` IMG${i} `;
+    });
+    s = s.replace(/(https?:\/\/[^\s)]+\/images\/[^\s)]+\.(?:png|jpg|jpeg|webp|gif))/gi, (m, url) => {
+        const i = imgs.push(url) - 1;
+        return ` IMG${i} `;
+    });
+    // 转义剩余文本，再把占位符还原成 <img>
+    let html = escapeHtml(s);
+    imgs.forEach((url, i) => {
+        html = html.replace(` IMG${i} `,
+            `<img src="${url}" class="chat-img" alt="generated image">`);
+    });
+    return html;
 }
 
 function clearPlayground() {
