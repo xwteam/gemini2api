@@ -204,19 +204,139 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 
 右上角点击登出按钮，退出登录。
 
+## 图片上传
+
+Gemini2API 支持多模态内容，包括图片和文件上传。支持三种 API 格式的图片传输。
+
+### OpenAI 格式
+
+在 `messages` 数组中使用 `image_url` 类型，支持 Base64 Data URI 和远程 HTTP URL：
+
+**Base64 图片示例**：
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{
+    "model": "gemini-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "这是什么"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**远程 URL 图片示例**：
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{
+    "model": "gemini-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "分析这张图片"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://example.com/image.jpg"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Claude 格式
+
+在 `content` 数组中使用 `image` 类型：
+
+```bash
+curl -X POST http://localhost:5918/claude/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{
+    "model": "gemini-flash",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "这是什么"},
+          {
+            "type": "image",
+            "source": {
+              "type": "base64",
+              "media_type": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Gemini 原生格式
+
+在 `parts` 数组中使用 `inlineData`：
+
+```bash
+curl -X POST http://localhost:5918/gemini/v1beta/models/gemini-flash:generateContent \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          {"text": "这是什么"},
+          {
+            "inlineData": {
+              "mimeType": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Web 面板上传
+
+在 Playground 测试页面，点击"添加图片"按钮可直接上传本地图片进行测试。
+
 ## 支持的模型
 
-### Gemini Web 模型
+### 对外固定稳定模型名
+
+Gemini2API 对外提供 3 个固定的稳定模型名，永不变更。这些模型名作为 API 契约，客户端可以长期使用而无需担心模型名变化：
 
 | 模型名称 | 说明 |
 |---------|------|
-| `gemini-2.5-pro` | 最新的 Pro 模型，性能最强 |
-| `gemini-2.5-flash` | 快速模型，适合实时应用 |
-| `gemini-2.5-flash-thinking` | Flash 思考模式 |
-| `gemini-2.0-flash` | 稳定的 Flash 模型 |
-| `gemini-2.0-flash-thinking` | Flash 思考模式 |
-| `gemini-1.5-pro` | 上一代 Pro 模型 |
-| `gemini-1.5-flash` | 上一代 Flash 模型 |
+| `gemini-pro` | Pro 模型，性能最强，适合复杂任务 |
+| `gemini-flash` | 快速模型，低延迟，适合实时应用 |
+| `gemini-flash-thinking` | 思考模型，支持深度推理和分析 |
+
+**内部自动映射**：服务内部会根据你的 Google 账号订阅等级（Advanced/Plus/Basic）自动映射到当前真实可用的模型版本。无论账号等级如何变化、Google 灰度发布如何调整、服务重启等，客户端始终使用这 3 个固定名称，无需修改。
+
+**旧别名兼容**：为了向后兼容，以下旧模型名仍然支持：
+- `gemini-2.5-pro`、`gemini-2.0-flash`、`gemini-2.0-flash-thinking` 等
 
 ### 第三方模型
 

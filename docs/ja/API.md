@@ -44,13 +44,19 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-2.5-pro",
+      "id": "gemini-pro",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-2.5-flash",
+      "id": "gemini-flash",
+      "object": "model",
+      "created": 1715970000,
+      "owned_by": "gemini"
+    },
+    {
+      "id": "gemini-flash-thinking",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
@@ -84,8 +90,8 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|-----|------|------|
-| `model` | string | ✅ | モデル名（例: `gemini-2.5-pro`） |
-| `messages` | array | ✅ | メッセージ配列 |
+| `model` | string | ✅ | モデル名（例: `gemini-flash`） |
+| `messages` | array | ✅ | メッセージ配列。`content` は文字列またはオブジェクト配列（マルチモーダル対応） |
 | `stream` | boolean | ❌ | ストリーミング有効（デフォルト: false） |
 | `temperature` | number | ❌ | 創造性（0.0-2.0、デフォルト: 1.0） |
 | `max_tokens` | integer | ❌ | 最大トークン数 |
@@ -93,6 +99,29 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 | `conversation_id` | string | ❌ | 会話 ID（コンテキスト保持用） |
 | `tools` | array | ❌ | 関数定義配列 |
 | `tool_choice` | string | ❌ | 関数選択戦略 |
+
+**マルチモーダル content 形式:**
+
+`content` は文字列（テキストのみ）またはオブジェクト配列（テキストと画像対応）：
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "text", "text": "これは何ですか"},
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+      }
+    }
+  ]
+}
+```
+
+対応する content タイプ：
+- `text`：プレーンテキストコンテンツ
+- `image_url`：画像、Base64 Data URI（`data:image/...;base64,...`）とリモート HTTP URL をサポート
 
 **メッセージ形式:**
 

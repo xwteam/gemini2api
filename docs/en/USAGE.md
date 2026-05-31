@@ -151,21 +151,145 @@ Manage the service from the top-right control bar:
 - **Restart Service**: Click the restart icon to restart the service (useful after configuration changes)
 - **Logout**: Click to log out and return to login screen
 
+## Image Upload
+
+Gemini2API supports multimodal content including image and file uploads. Three API formats are supported for image transmission.
+
+### OpenAI Format
+
+Use `image_url` type in the `messages` array. Supports both Base64 Data URI and remote HTTP URLs:
+
+**Base64 Image Example:**
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "gemini-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "What is this"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**Remote URL Image Example:**
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "gemini-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "Analyze this image"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://example.com/image.jpg"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Claude Format
+
+Use `image` type in the `content` array:
+
+```bash
+curl -X POST http://localhost:5918/claude/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "gemini-flash",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "What is this"},
+          {
+            "type": "image",
+            "source": {
+              "type": "base64",
+              "media_type": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Gemini Native Format
+
+Use `inlineData` in the `parts` array:
+
+```bash
+curl -X POST http://localhost:5918/gemini/v1beta/models/gemini-flash:generateContent \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          {"text": "What is this"},
+          {
+            "inlineData": {
+              "mimeType": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Web Panel Upload
+
+In the Playground test page, click the "Add Image" button to upload local images for testing.
+
 ## Supported Models
 
-Gemini2API provides access to these models:
+Gemini2API provides 3 fixed stable model names that never change. These serve as the API contract, allowing clients to use them long-term without worrying about model name changes:
 
-| Model ID | Description | Capabilities |
-|----------|-------------|--------------|
-| `gemini-2.5-pro` | Latest Gemini Pro model | Advanced reasoning, long context |
-| `gemini-2.5-flash` | Fast Gemini model | Quick responses, lower latency |
-| `gemini-2.5-flash-thinking` | Flash with extended thinking | Deep analysis, reasoning |
-| `gemini-2.0-flash` | Previous generation Flash | Stable, widely compatible |
-| `gemini-2.0-flash-thinking` | Flash with thinking mode | Reasoning and analysis |
-| `gemini-1.5-pro` | Older Pro model | Legacy support |
-| `gemini-1.5-flash` | Older Flash model | Legacy support |
+| Model ID | Description |
+|----------|-------------|
+| `gemini-pro` | Pro model with strongest performance, suitable for complex tasks |
+| `gemini-flash` | Fast model with low latency, suitable for real-time applications |
+| `gemini-flash-thinking` | Thinking model supporting deep reasoning and analysis |
 
-Model availability depends on your Google account permissions. Free accounts and Gemini Advanced accounts may see different models.
+**Internal Auto-Mapping**: The service automatically maps these fixed names to the actual available models based on your Google account subscription level (Advanced/Plus/Basic). Regardless of account tier changes, Google rollouts, or service restarts, clients always use these 3 fixed names without modification.
+
+**Legacy Alias Compatibility**: For backward compatibility, older model names are still supported:
+- `gemini-2.5-pro`, `gemini-2.0-flash`, `gemini-2.0-flash-thinking`, etc.
+
+### Third-Party Models
+
+Supported via API Key pool:
+- **OpenAI**: gpt-4o, gpt-4-turbo, gpt-3.5-turbo, etc.
+- **Anthropic**: claude-3-opus, claude-3-sonnet, claude-3-haiku, etc.
+- **Google Gemini**: via official API Key
+- **OpenRouter**: all models on OpenRouter platform
 
 ## Third-Party Client Integration
 

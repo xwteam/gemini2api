@@ -180,39 +180,145 @@ API 使用状況の統計情報を表示します。
 | 🔄 | サービス再起動 |
 | 🚪 | ログアウト |
 
+## 画像アップロード
+
+Gemini2API はマルチモーダルコンテンツをサポートしており、画像やファイルのアップロードが可能です。3 つの API 形式での画像転送に対応しています。
+
+### OpenAI 形式
+
+`messages` 配列で `image_url` タイプを使用します。Base64 Data URI とリモート HTTP URL の両方をサポートしています。
+
+**Base64 画像の例**：
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{
+    "model": "gemini-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "これは何ですか"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**リモート URL 画像の例**：
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{
+    "model": "gemini-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "この画像を分析してください"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://example.com/image.jpg"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Claude 形式
+
+`content` 配列で `image` タイプを使用します。
+
+```bash
+curl -X POST http://localhost:5918/claude/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{
+    "model": "gemini-flash",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "これは何ですか"},
+          {
+            "type": "image",
+            "source": {
+              "type": "base64",
+              "media_type": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Gemini ネイティブ形式
+
+`parts` 配列で `inlineData` を使用します。
+
+```bash
+curl -X POST http://localhost:5918/gemini/v1beta/models/gemini-flash:generateContent \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          {"text": "これは何ですか"},
+          {
+            "inlineData": {
+              "mimeType": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Web パネルでのアップロード
+
+Playground テストページで「画像を追加」ボタンをクリックすると、ローカル画像を直接アップロードしてテストできます。
+
 ## 対応モデル
 
-Gemini2API は以下のモデルをサポートしています。
-
-### Gemini 3 シリーズ
-
-| モデル名 | 説明 | 最大トークン |
-|---------|------|------------|
-| `gemini-3-pro` | 最新の高性能モデル | 128K |
-| `gemini-3-flash` | 高速・軽量モデル | 128K |
-| `gemini-3-flash-thinking` | 思考モード搭載 | 128K |
-| `gemini-3-pro-plus` | Pro 限定・高容量 | 256K |
-| `gemini-3-flash-plus` | Pro 限定・高速版 | 256K |
-| `gemini-3-flash-thinking-plus` | Pro 限定・思考モード | 256K |
-
-### Gemini 2 シリーズ
+Gemini2API は 3 つの固定された安定したモデル名を対外的に提供しており、これらは変更されません。これらのモデル名は API コントラクトとして機能し、クライアントは長期間使用できます。
 
 | モデル名 | 説明 |
 |---------|------|
-| `gemini-2.5-pro` | 最新 Pro モデル |
-| `gemini-2.5-flash` | 最新 Flash モデル |
-| `gemini-2.5-flash-thinking` | 思考モード |
-| `gemini-2.0-flash` | 安定版 Flash |
-| `gemini-2.0-flash-thinking` | 安定版思考モード |
+| `gemini-pro` | Pro モデル、最高性能、複雑なタスクに適している |
+| `gemini-flash` | 高速モデル、低遅延、リアルタイムアプリケーションに適している |
+| `gemini-flash-thinking` | 思考モデル、深い推論と分析をサポート |
 
-### Gemini 1 シリーズ
+**内部自動マッピング**：サービスは Google アカウントのサブスクリプションレベル（Advanced/Plus/Basic）に基づいて、これらの固定名を現在利用可能な実際のモデルバージョンに自動的にマップします。アカウントレベルの変更、Google のロールアウト、サービスの再起動など、どのような状況でも、クライアントは常にこれら 3 つの固定名を使用でき、変更は不要です。
 
-| モデル名 | 説明 |
-|---------|------|
-| `gemini-1.5-pro` | 旧 Pro モデル |
-| `gemini-1.5-flash` | 旧 Flash モデル |
+**レガシーエイリアスの互換性**：後方互換性のため、以下の古いモデル名もサポートされています：
+- `gemini-2.5-pro`、`gemini-2.0-flash`、`gemini-2.0-flash-thinking` など
 
-> **ヒント**: 利用可能なモデルはアカウントの権限によって異なります。無料アカウントと Gemini Advanced アカウントで異なる場合があります。
+### サードパーティモデル
+
+API Key プール経由でサポート：
+- **OpenAI**：gpt-4o、gpt-4-turbo、gpt-3.5-turbo など
+- **Anthropic**：claude-3-opus、claude-3-sonnet、claude-3-haiku など
+- **Google Gemini**：公式 API Key 経由
+- **OpenRouter**：OpenRouter プラットフォームのすべてのモデル
 
 ## サードパーティクライアント接続
 

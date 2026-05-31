@@ -48,14 +48,37 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 
 | 파라미터 | 타입 | 필수 | 설명 |
 |---------|------|------|------|
-| `model` | string | ✅ | 모델 ID (예: gemini-2.0-flash) |
-| `messages` | array | ✅ | 메시지 배열 |
+| `model` | string | ✅ | 모델 ID (예: gemini-flash) |
+| `messages` | array | ✅ | 메시지 배열. `content`는 문자열 또는 객체 배열 (멀티모달 지원) |
 | `stream` | boolean | ❌ | 스트리밍 응답 (기본값: false) |
 | `temperature` | number | ❌ | 응답 창의성 (0.0-2.0, 기본값: 0.7) |
 | `max_tokens` | integer | ❌ | 최대 응답 길이 (기본값: 4096) |
 | `top_p` | number | ❌ | 누적 확률 샘플링 (0.0-1.0) |
 | `conversation_id` | string | ❌ | 대화 컨텍스트 ID |
 | `tools` | array | ❌ | 함수 호출 도구 정의 |
+
+**멀티모달 content 형식**:
+
+`content`는 문자열 (텍스트만) 또는 객체 배열 (텍스트와 이미지 지원):
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "text", "text": "이것은 무엇입니까"},
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+      }
+    }
+  ]
+}
+```
+
+지원되는 content 타입:
+- `text`: 순수 텍스트 콘텐츠
+- `image_url`: 이미지, Base64 Data URI (`data:image/...;base64,...`) 및 원격 HTTP URL 지원
 
 **메시지 형식**:
 
@@ -131,13 +154,19 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-2.5-pro",
+      "id": "gemini-pro",
       "object": "model",
       "created": 1234567890,
       "owned_by": "google"
     },
     {
-      "id": "gemini-2.0-flash",
+      "id": "gemini-flash",
+      "object": "model",
+      "created": 1234567890,
+      "owned_by": "google"
+    },
+    {
+      "id": "gemini-flash-thinking",
       "object": "model",
       "created": 1234567890,
       "owned_by": "google"

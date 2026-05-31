@@ -42,13 +42,19 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-2.5-pro",
+      "id": "gemini-pro",
       "object": "model",
       "created": 1715970000,
       "owned_by": "google"
     },
     {
-      "id": "gemini-2.5-flash",
+      "id": "gemini-flash",
+      "object": "model",
+      "created": 1715970000,
+      "owned_by": "google"
+    },
+    {
+      "id": "gemini-flash-thinking",
       "object": "model",
       "created": 1715970000,
       "owned_by": "google"
@@ -81,8 +87,8 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `model` | string | Yes | Model ID (e.g., `gemini-2.5-pro`) |
-| `messages` | array | Yes | Message history with `role` and `content` |
+| `model` | string | Yes | Model ID (e.g., `gemini-flash`) |
+| `messages` | array | Yes | Message history with `role` and `content`. `content` can be a string or array of objects (supports multimodal) |
 | `stream` | boolean | No | Enable streaming (default: false) |
 | `temperature` | number | No | Randomness 0-2 (default: 1.0) |
 | `max_tokens` | number | No | Max response length (default: 4096) |
@@ -90,6 +96,29 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 | `tools` | array | No | Function definitions for tool calling |
 | `tool_choice` | string | No | `auto`, `required`, or function name |
 | `conversation_id` | string | No | Maintain context across requests |
+
+**Multimodal Content Format:**
+
+`content` can be a string (text only) or array of objects (supports text and images):
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "text", "text": "What is this"},
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+      }
+    }
+  ]
+}
+```
+
+Supported content types:
+- `text`: Plain text content
+- `image_url`: Image supporting Base64 Data URI (`data:image/...;base64,...`) and remote HTTP URLs
 
 **Response (Non-Streaming):**
 ```json

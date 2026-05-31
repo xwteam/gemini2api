@@ -36,13 +36,19 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-2.5-pro",
+      "id": "gemini-pro",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-2.5-flash",
+      "id": "gemini-flash",
+      "object": "model",
+      "created": 1715970000,
+      "owned_by": "gemini"
+    },
+    {
+      "id": "gemini-flash-thinking",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
@@ -75,14 +81,37 @@ curl http://localhost:5918/openai/v1/models \
 
 | 參數 | 類型 | 必填 | 說明 |
 |------|------|------|------|
-| `model` | string | ✅ | 模型名稱（如 gemini-2.5-pro） |
-| `messages` | array | ✅ | 訊息陣列，每個訊息包含 role 和 content |
+| `model` | string | ✅ | 模型名稱（如 gemini-flash） |
+| `messages` | array | ✅ | 訊息陣列，每個訊息包含 role 和 content。`content` 可以是字串或物件陣列（支援多模態） |
 | `stream` | boolean | ❌ | 是否流式輸出（預設 false） |
 | `temperature` | number | ❌ | 溫度參數，0-2（預設 0.7） |
 | `max_tokens` | number | ❌ | 最大回應 token 數 |
 | `conversation_id` | string | ❌ | 對話 ID，用於維持上下文 |
 | `tools` | array | ❌ | 函數定義陣列 |
 | `tool_choice` | string | ❌ | 工具選擇策略（auto/required/none） |
+
+**多模態 content 格式**：
+
+`content` 可以是字串（純文字）或物件陣列（支援文字和圖片）：
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "text", "text": "這是什麼"},
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+      }
+    }
+  ]
+}
+```
+
+支援的 content 類型：
+- `text`：純文字內容
+- `image_url`：圖片，支援 Base64 Data URI（`data:image/...;base64,...`）和遠端 HTTP URL
 
 **非流式回應：**
 ```json

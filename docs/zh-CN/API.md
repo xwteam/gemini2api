@@ -74,13 +74,19 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-2.5-pro",
+      "id": "gemini-pro",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-2.0-flash",
+      "id": "gemini-flash",
+      "object": "model",
+      "created": 1715970000,
+      "owned_by": "gemini"
+    },
+    {
+      "id": "gemini-flash-thinking",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
@@ -97,8 +103,8 @@ curl http://localhost:5918/openai/v1/models \
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `model` | string | 是 | 模型名称，如 `gemini-2.0-flash` |
-| `messages` | array | 是 | 消息列表，每条消息包含 `role` 和 `content` |
+| `model` | string | 是 | 模型名称，如 `gemini-flash` |
+| `messages` | array | 是 | 消息列表，每条消息包含 `role` 和 `content`。`content` 可以是字符串或对象数组（支持多模态） |
 | `stream` | boolean | 否 | 是否流式返回，默认 false |
 | `temperature` | number | 否 | 温度参数，0-2，默认 1 |
 | `top_p` | number | 否 | Top-P 采样，0-1，默认 1 |
@@ -106,6 +112,29 @@ curl http://localhost:5918/openai/v1/models \
 | `tools` | array | 否 | 函数调用工具列表 |
 | `tool_choice` | string | 否 | 工具选择策略，`auto`/`required`/`none` |
 | `conversation_id` | string | 否 | 对话 ID，用于维护上下文 |
+
+**多模态 content 格式**：
+
+`content` 可以是字符串（纯文本）或对象数组（支持文本和图片）：
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "text", "text": "这是什么"},
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+      }
+    }
+  ]
+}
+```
+
+支持的 content 类型：
+- `text`：纯文本内容
+- `image_url`：图片，支持 Base64 Data URI（`data:image/...;base64,...`）和远程 HTTP URL
 
 **非流式请求示例**：
 

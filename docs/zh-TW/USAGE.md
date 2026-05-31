@@ -109,27 +109,147 @@ Playground 允許你直接測試 API 請求：
 - **服務重啟**：一鍵重啟服務
 - **登出**：退出登入
 
+## 圖片上傳
+
+Gemini2API 支援多模態內容，包括圖片和檔案上傳。支援三種 API 格式的圖片傳輸。
+
+### OpenAI 格式
+
+在 `messages` 陣列中使用 `image_url` 類型，支援 Base64 Data URI 和遠端 HTTP URL：
+
+**Base64 圖片示例**：
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "gemini-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "這是什麼"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**遠端 URL 圖片示例**：
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "gemini-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "分析這張圖片"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://example.com/image.jpg"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Claude 格式
+
+在 `content` 陣列中使用 `image` 類型：
+
+```bash
+curl -X POST http://localhost:5918/claude/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "gemini-flash",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "這是什麼"},
+          {
+            "type": "image",
+            "source": {
+              "type": "base64",
+              "media_type": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Gemini 原生格式
+
+在 `parts` 陣列中使用 `inlineData`：
+
+```bash
+curl -X POST http://localhost:5918/gemini/v1beta/models/gemini-flash:generateContent \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "contents": [
+      {
+        "parts": [
+          {"text": "這是什麼"},
+          {
+            "inlineData": {
+              "mimeType": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Web 面板上傳
+
+在 Playground 測試頁面，點擊「新增圖片」按鈕可直接上傳本機圖片進行測試。
+
 ## 支援的模型
 
-### Gemini 模型
+### 對外固定穩定模型名
+
+Gemini2API 對外提供 3 個固定的穩定模型名，永不變更。這些模型名作為 API 契約，客戶端可以長期使用而無需擔心模型名變化：
 
 | 模型名稱 | 說明 |
 |---------|------|
-| `gemini-3-pro` | 最新 Pro 模型，高效能 |
-| `gemini-3-flash` | 快速模型，低延遲 |
-| `gemini-3-flash-thinking` | 帶思考模式的 Flash |
-| `gemini-3-pro-plus` | Pro Plus 版本（需 Gemini Advanced） |
-| `gemini-3-flash-plus` | Flash Plus 版本（需 Gemini Advanced） |
-| `gemini-3-flash-thinking-plus` | 思考 Plus 版本（需 Gemini Advanced） |
-| `gemini-2.5-pro` | 前代 Pro 模型 |
-| `gemini-2.5-flash` | 前代 Flash 模型 |
-| `gemini-2.5-flash-thinking` | 前代思考模型 |
-| `gemini-2.0-flash` | 舊版 Flash 模型 |
-| `gemini-2.0-flash-thinking` | 舊版思考模型 |
-| `gemini-1.5-pro` | 1.5 代 Pro 模型 |
-| `gemini-1.5-flash` | 1.5 代 Flash 模型 |
+| `gemini-pro` | Pro 模型，效能最強，適合複雜任務 |
+| `gemini-flash` | 快速模型，低延遲，適合即時應用 |
+| `gemini-flash-thinking` | 思考模型，支援深度推理和分析 |
 
-> **注意：** 可用模型取決於你的 Google 帳號權限。免費帳號和 Gemini Advanced 帳號看到的模型不同。
+**內部自動對應**：服務內部會根據你的 Google 帳號訂閱等級（Advanced/Plus/Basic）自動對應到當前真實可用的模型版本。無論帳號等級如何變化、Google 灰度發佈如何調整、服務重啟等，客戶端始終使用這 3 個固定名稱，無需修改。
+
+**舊別名相容**：為了向後相容，以下舊模型名仍然支援：
+- `gemini-2.5-pro`、`gemini-2.0-flash`、`gemini-2.0-flash-thinking` 等
+
+### 第三方模型
+
+通過 API Key 池支援：
+- **OpenAI**：gpt-4o、gpt-4-turbo、gpt-3.5-turbo 等
+- **Anthropic**：claude-3-opus、claude-3-sonnet、claude-3-haiku 等
+- **Google Gemini**：通過官方 API Key
+- **OpenRouter**：支援 OpenRouter 平台的所有模型
 
 ## 第三方客戶端整合
 
