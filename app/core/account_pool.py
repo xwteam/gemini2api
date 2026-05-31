@@ -262,6 +262,11 @@ class AccountPool:
     @property
     def models(self) -> list[str]:
         from app.core.gemini_client import MODEL_ALIASES
+        # 优先用活跃账号从网页版状态接口发现的真实可用模型
+        for a in self._accounts:
+            if a.status == AccountStatus.ACTIVE and a.client and a.client.models:
+                return sorted(set(a.client.models))
+        # 回退：暴露所有已知别名
         return sorted(MODEL_ALIASES.keys())
 
     @property
