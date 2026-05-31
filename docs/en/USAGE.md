@@ -268,6 +268,43 @@ curl -X POST http://localhost:5918/gemini/v1beta/models/gemini-flash:generateCon
 
 In the Playground test page, click the "Add Image" button to upload local images for testing.
 
+## AI Image Generation
+
+Gemini2API can generate images from text. Image generation is triggered by the prompt itself: simply ask the model to create an image in the conversation (for example, "generate an image of..."). All three chat endpoints support this, OpenAI `/v1/chat/completions`, Claude `/v1/messages`, and Gemini `/v1beta/...:generateContent`. A dedicated OpenAI-compatible endpoint, `/v1/images/generations`, is also available.
+
+### Chat Endpoint
+
+Ask for an image in a normal chat request:
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "gemini-pro",
+    "messages": [
+      {"role": "user", "content": "generate an image of a cute cat"}
+    ]
+  }'
+```
+
+### Dedicated Endpoint
+
+Use the OpenAI-compatible image generation endpoint:
+
+```bash
+curl -X POST http://localhost:5918/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "gemini-pro",
+    "prompt": "a cute cat",
+    "n": 1
+  }'
+```
+
+Chat endpoints return a locally hosted image URL (such as `http://localhost:5918/images/xxx.png`) that you can open or render directly. The `/v1/images/generations` endpoint returns `b64_json` instead. In both cases the image is the full-resolution original (for example, 1408x768).
+
 ## Supported Models
 
 Gemini2API provides 3 fixed stable model names that never change. These serve as the API contract, allowing clients to use them long-term without worrying about model name changes:

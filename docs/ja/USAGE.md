@@ -297,6 +297,43 @@ curl -X POST http://localhost:5918/gemini/v1beta/models/gemini-flash:generateCon
 
 Playground テストページで「画像を追加」ボタンをクリックすると、ローカル画像を直接アップロードしてテストできます。
 
+## AI 画像生成
+
+Gemini2API はプロンプトによる画像生成に対応しています。会話の中で「画像を生成して」や英語で "generate an image of ..." と伝えるだけで画像が生成されます。3 つの会話 API（OpenAI `/v1/chat/completions`、Claude `/v1/messages`、Gemini `/v1beta/...:generateContent`）すべてで利用できるほか、画像生成専用の OpenAI 互換エンドポイント `/v1/images/generations` も用意されています。
+
+### 会話 API での画像生成
+
+メッセージ内で画像生成を指示するだけです。
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{
+    "model": "gemini-pro",
+    "messages": [
+      {"role": "user", "content": "generate an image of a cute cat"}
+    ]
+  }'
+```
+
+### 画像生成専用エンドポイント
+
+OpenAI 互換の `/v1/images/generations` を使用します。
+
+```bash
+curl -X POST http://localhost:5918/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{
+    "model": "gemini-pro",
+    "prompt": "a cute cat",
+    "n": 1
+  }'
+```
+
+会話 API は生成された画像のローカル URL（`http://あなたのアドレス/images/xxx.png`）を返すため、ブラウザで直接開いたりレンダリングしたりできます。一方、`/v1/images/generations` は `b64_json` 形式で画像データを返します。いずれの場合も、画像は元の解像度（例: 1408×768）のまま返されます。
+
 ## 対応モデル
 
 Gemini2API は 3 つの固定された安定したモデル名を対外的に提供しており、これらは変更されません。これらのモデル名は API コントラクトとして機能し、クライアントは長期間使用できます。

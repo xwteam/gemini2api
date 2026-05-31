@@ -321,6 +321,47 @@ curl -X POST http://localhost:5918/gemini/v1beta/models/gemini-flash:generateCon
 
 在 Playground 测试页面，点击"添加图片"按钮可直接上传本地图片进行测试。
 
+## AI 生成图片
+
+Gemini2API 支持通过 AI 生成图片，靠 prompt 触发：只要在对话中说"画一张……图"或英文 "generate an image of..."，即可生成图片。三个对话接口都支持——OpenAI 的 `/v1/chat/completions`、Claude 的 `/v1/messages`、Gemini 原生的 `/v1beta/...:generateContent`。此外还提供了专用的 OpenAI 兼容接口 `/v1/images/generations`。
+
+### 对话生图
+
+在对话接口的 `messages` 中描述要生成的图片即可：
+
+```bash
+curl -X POST http://localhost:5918/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{
+    "model": "gemini-pro",
+    "messages": [
+      {"role": "user", "content": "generate an image of a cute cat"}
+    ]
+  }'
+```
+
+### 专用生图接口
+
+通过 `/v1/images/generations` 接口直接生成图片：
+
+```bash
+curl -X POST http://localhost:5918/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{
+    "model": "gemini-pro",
+    "prompt": "a cute cat",
+    "n": 1
+  }'
+```
+
+### 返回格式说明
+
+- **对话接口**：返回图片的本地访问 URL（形如 `http://你的地址/images/xxx.png`），可直接打开或在前端渲染。
+- **`/v1/images/generations`**：返回 `b64_json` 字段（Base64 编码的图片数据）。
+- 生成的图片均为全分辨率原图（如 1408×768）。
+
 ## 支持的模型
 
 ### 对外固定稳定模型名
