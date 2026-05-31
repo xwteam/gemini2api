@@ -12,7 +12,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_URL = "https://content-push.googleapis.com/upload/"
+UPLOAD_URL = "https://content-push.googleapis.com/upload"
 
 MAX_REMOTE_SIZE = 20 * 1024 * 1024  # 远程 URL 下载上限 20MB
 
@@ -55,22 +55,28 @@ async def upload_file(http, cookies: dict, base_headers: dict, push_id: str,
     """上传单个文件，返回 Gemini 的文件标识符（形如 /contrib_service/ttl_1d/...）。
     失败返回 None。
     """
-    headers = dict(base_headers)
-    headers.update({
-        "Push-ID": push_id or "feeds/mcudyrk2a4khkz",
-        "X-Goog-Upload-Command": "start, upload, finalize",
-        "X-Goog-Upload-Protocol": "multipart",
-        "X-Goog-Upload-Header-Content-Length": str(len(data)),
-        "X-Tenant-Id": "bard-storage",
+    # 极简 header（对齐 HanaokaYuzu/Gemini-API 实测可用的协议）：
+    # 只要 Origin/Referer/X-Tenant-Id/Push-ID，不要任何 X-Goog-Upload-* 和指纹基础头，
+    # 否则 Google 按 resumable 协议解析导致 "Multipart body does not contain 2 or 3 parts"
+    headers = {
         "Origin": "https://gemini.google.com",
         "Referer": "https://gemini.google.com/",
-    })
-    headers.pop("Content-Type", None)
+        "X-Tenant-Id": "bard-storage",
+        "Push-ID": push_id or "feeds/mcudyrk2a4khkz",
+    }
 
     try:
+        from curl_cffi import CurlMime
+        mime_form = CurlMime()
+        mime_form.addpart(
+            name="file",
+            content_type=mime,
+            filename=filename,
+            data=data,
+        )
         resp = await http.post(
             UPLOAD_URL,
-            files={"file": (filename, data, mime)},
+            multipart=mime_form,
             cookies=cookies,
             headers=headers,
             timeout=60,
