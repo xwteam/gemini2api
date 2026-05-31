@@ -58,6 +58,7 @@
 
 | 日期 | 更新內容 |
 |------|----------|
+| 2026-05-31 21:00:00 | v1.6.6 - 🖼️ 生成圖片本機託管：對話介面的生圖結果改為回傳可存取的本機 URL（/images/{id}），讓 CLI/agent 用戶端也能正常渲染顯示（base64 在這類用戶端無法顯示）；圖片定期自動清理 |
 | 2026-05-31 19:00:00 | v1.6.5 - 🎨 AI 生成圖片：新增 OpenAI 相容 /v1/images/generations 介面（回傳 b64_json）；三家對話介面偵測到生成圖片自動嵌入回覆（markdown / image block / inlineData） |
 | 2026-05-31 17:00:00 | v1.6.4 - 三家介面暴露標準裸路徑（/v1/chat/completions、/v1/messages、/v1beta/...），主流 SDK 開箱即用；修復部署機制（docker-compose 由 build 改 image，docker compose pull 真正生效） |
 | 2026-05-31 14:10:00 | v1.6.3 - 圖片/檔案上傳支援（OpenAI/Claude/Gemini 多模態）；模型改用網頁版真實資料 + 對外固定穩定名（gemini-pro/flash/flash-thinking）；重啟不再遺失 Cookie |
