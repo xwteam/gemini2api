@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [1.6.12] - 2026-06-02
+
+### Fixed
+- 🛠️ **修复 agent（如 Hermes）带 tools 时生图被压制、工具调用畸形**：agent 客户端每个请求都带 tools 参数，导致两个问题——
+  - **生图被压制**：带 tools 时工具模拟提示词会劫持 Gemini，让它"以为自己只是文本AI画不了图"。现在**检测到明确生图意图时自动跳过工具模拟、直接生图**（即使带 tools），Hermes 里说"画图"能正常出图。
+  - **工具调用畸形 JSON 透传**：Gemini Web 非原生 function-calling 模型（已确认网页版逆向端点不支持原生工具调用，提示词模拟是唯一路径），模拟工具调用时常输出畸形 JSON（对象当数组、缺引号、被 markdown 包裹、夹带解释文字），之前直接当文本透传给客户端。现在**多层容错解析**：剥离 markdown 代码块、提取 JSON 子串、容忍单对象/缺 status/OpenAI 风格嵌套；无法挽救的畸形工具 JSON 不再透传垃圾，降级为干净提示。
+- 🔧 **修复 Gemini 原生接口（/v1beta）工具调用返回文本而非 `functionCall`**：之前 Gemini 格式接口的工具调用把工具 JSON 当文本塞回 parts，现在正确转成原生 `functionCall` part（`{name, args}`）。
+
+### Changed
+- 改进工具调用提示词：更严格的 JSON 格式约束 + few-shot 示例 + 允许 ```json 代码块包裹，降低模型写畸形的概率。
+- 生图意图检测收窄关键词（必须是明确的画图/生成图片表达），避免"生成报告""create a plan"等被误判为生图。
+
 ## [1.6.11] - 2026-06-02
 
 ### Added

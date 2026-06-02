@@ -13,7 +13,7 @@ from app.models.claude import (
     ClaudeRequest, ClaudeResponse, ContentBlock, ClaudeUsage,
     ClaudeModelInfo, ClaudeModelList,
 )
-from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tokens
+from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tokens, is_image_generation_intent
 from app.utils.prompt import build_prompt_from_messages, extract_attachments
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,10 @@ async def create_message(req: ClaudeRequest, request: Request):
     attachments = extract_attachments(messages_raw)
 
     has_tools = bool(req.tools)
+    # 生图意图优先：带 tools 但明确生图意图时跳过工具模拟，直接生图（否则生图被压制）
+    if has_tools and is_image_generation_intent(prompt):
+        has_tools = False
+        logger.info("检测到生图意图，跳过工具调用模拟，直接生图")
     if has_tools:
         tools_raw = [
             {"name": t.name, "description": t.description, "parameters": t.input_schema}

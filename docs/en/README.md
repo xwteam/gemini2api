@@ -58,6 +58,7 @@
 
 | Date | Update |
 |------|--------|
+| 2026-06-02 16:37:57 | v1.6.12 - 🛠️ Fixed agent (e.g. Hermes) with tools suppressing image generation and malformed tool call JSON passthrough: auto-detect image generation intent to skip tool simulation and generate directly; multi-layer fault-tolerant parsing for tool calls (strip markdown/extract JSON/tolerate malformation), no more malformed passthrough; Gemini native API tool calls now correctly return functionCall |
 | 2026-06-02 13:04:39 | v1.6.11 - 🔁 Intelligent 503 failover: when Google intermittently rate-limits datacenter IPs with 503, multi-account setups now auto-switch to the next available account (immediate failover when one hits 503), rate-limited accounts enter 30s cooldown without being marked as invalid; single-account 5xx errors only retry quickly without long backoff waste |
 | 2026-06-01 20:21:43 | v1.6.10 - ⚡ True streaming output: all three APIs now use genuine incremental streaming (push the first character as soon as it's generated, no longer waiting for a full chunk to fake character-by-character output), chat experience dramatically improved; 🚀 Massively increased concurrency: single-account concurrency 3→8, and queues when full instead of immediately erroring with "No available accounts", agents no longer fail on concurrent requests |
 | 2026-06-01 00:32:16 | v1.6.9 - 🖼️ Generated images now returned at full resolution: previously downloaded a compressed thumbnail (512px); now appends `=s0` to get the original size (e.g. 1408×768) |

@@ -18,7 +18,7 @@ from app.models.openai import (
     ModelList, ModelInfo, UsageInfo,
     ImageGenerationRequest, ImageData, ImageResponse,
 )
-from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tokens
+from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tokens, is_image_generation_intent
 from app.utils.prompt import build_prompt_from_messages, extract_attachments
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,11 @@ async def chat_completions(req: ChatRequest, request: Request):
         prompt = build_prompt_from_messages(messages_raw)
 
     has_tools = bool(req.tools)
+    # 生图意图优先：即使带 tools（agent 每请求都带），只要是明确生图意图就跳过工具模拟，
+    # 直接走生图，否则工具 prompt 会压制 Gemini 的图片生成能力。
+    if has_tools and is_image_generation_intent(prompt):
+        has_tools = False
+        logger.info("检测到生图意图，跳过工具调用模拟，直接生图")
     if has_tools:
         tools_raw = [t.model_dump() for t in req.tools]
         prompt = build_tool_prompt(prompt, tools_raw, req.tool_choice)
@@ -381,11 +386,6 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
 
 
 
-# 触发生图的关键词（prompt 不含时自动加前缀）
-_GEN_KEYWORDS = ("generate", "draw", "create an image", "create a picture",
-                 "画", "生成", "绘制", "画一", "做一张", "做个图")
-
-
 @router.post("/images/generations")
 async def images_generations(req: ImageGenerationRequest):
     """OpenAI 兼容的图片生成接口。靠 prompt 触发 Gemini Web 生图，
@@ -395,9 +395,8 @@ async def images_generations(req: ImageGenerationRequest):
         return JSONResponse(status_code=400,
             content={"error": {"message": "prompt is required", "type": "invalid_request_error"}})
 
-    # 确保 prompt 含生图意图，否则加前缀
-    low = raw_prompt.lower()
-    if not any(k in low or k in raw_prompt for k in _GEN_KEYWORDS):
+    # 确保 prompt 含生图意图，否则加前缀（复用公共意图检测）
+    if not is_image_generation_intent(raw_prompt):
         prompt = f"Generate an image of {raw_prompt}"
     else:
         prompt = raw_prompt

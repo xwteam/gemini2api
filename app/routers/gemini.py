@@ -17,7 +17,7 @@ from app.models.gemini import (
     GeminiModelInfo,
     GeminiModelList,
 )
-from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tokens
+from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tokens, is_image_generation_intent
 from app.utils.prompt import build_prompt_from_messages
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
     prompt = build_prompt_from_messages(messages, system=system)
 
     has_tools = False
-    if req.tools:
+    if req.tools and not is_image_generation_intent(prompt):
         function_declarations = []
         for tool in req.tools:
             if tool.function_declarations:
@@ -118,10 +118,20 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
 
     response_text = result.get("text", "")
 
+    # 工具调用：解析成 Gemini 原生 functionCall part（而非把工具 JSON 当文本塞回去）
+    tool_parts = []
     if has_tools:
         parsed = parse_tool_response(response_text)
         if isinstance(parsed, dict):
-            response_text = parsed.get("content", response_text)
+            if parsed.get("type") == "tool_calls":
+                for tc in parsed["tool_calls"]:
+                    tool_parts.append({"functionCall": {
+                        "name": tc["name"],
+                        "args": tc.get("arguments", {}),
+                    }})
+                response_text = ""  # 工具调用时不再带文本
+            else:
+                response_text = parsed.get("content", response_text)
 
     prompt_tokens = estimate_tokens(prompt)
     completion_tokens = estimate_tokens(response_text)
@@ -136,14 +146,20 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
                          for im in gen_images if im.get("id"))
         if urls:
             text_part = (response_text + "\n\n" + urls) if response_text.strip() else urls
-    parts = [{"text": text_part}]
-    for im in gen_images:
-        parts.append({"inlineData": {"mimeType": im.get("mime", "image/png"), "data": im["b64"]}})
+    # 工具调用 part 优先；否则文本 part + 图片
+    if tool_parts:
+        parts = tool_parts
+        finish = "STOP"
+    else:
+        parts = [{"text": text_part}]
+        for im in gen_images:
+            parts.append({"inlineData": {"mimeType": im.get("mime", "image/png"), "data": im["b64"]}})
+        finish = "STOP"
 
     gemini_response = {
         "candidates": [{
             "content": {"parts": parts, "role": "model"},
-            "finishReason": "STOP",
+            "finishReason": finish,
             "index": 0,
         }],
         "usageMetadata": {
@@ -167,7 +183,7 @@ async def stream_generate_content(model: str, req: GeminiRequest):
     prompt = build_prompt_from_messages(messages, system=system)
 
     has_tools = False
-    if req.tools:
+    if req.tools and not is_image_generation_intent(prompt):
         function_declarations = []
         for tool in req.tools:
             if tool.function_declarations:
