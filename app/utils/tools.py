@@ -43,7 +43,8 @@ def is_image_generation_intent(text: str) -> bool:
 _IMG_NOUNS = ("图", "图片", "图像", "海报", "插画", "照片", "壁纸", "logo", "头像", "封面",
               "image", "picture", "poster", "photo", "drawing", "illustration", "wallpaper", "avatar")
 _IMG_VERBS = ("画", "生成", "绘", "做", "设计", "出", "整", "来", "搞", "弄", "制作", "帮我", "给我",
-              "draw", "generate", "create", "make", "design", "render")
+              "想要", "要", "想", "需要", "求", "来一", "来个", "来张",
+              "draw", "generate", "create", "make", "design", "render", "want", "need")
 
 
 def maybe_image_generation_intent(text: str) -> bool:
