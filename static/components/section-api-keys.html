@@ -21,7 +21,7 @@
         <h3><i class="fas fa-plus-circle"></i> <span data-i18n="apiKeys.addTitle">添加 API Key</span></h3>
         <div class="ak-form-grid">
             <div class="form-group">
-                <label data-i18n="apiKeys.provider">Provider</label>
+                <label for="ak-provider" data-i18n="apiKeys.provider">Provider</label>
                 <select id="ak-provider">
                     <option value="openai">OpenAI</option>
                     <option value="anthropic">Anthropic</option>
@@ -31,15 +31,15 @@
                 </select>
             </div>
             <div class="form-group">
-                <label data-i18n="apiKeys.key">API Key</label>
+                <label for="ak-apikey" data-i18n="apiKeys.key">API Key</label>
          <input type="text" id="ak-apikey" data-i18n-placeholder="apiKeys.keyPlaceholder" placeholder="sk-...">
             </div>
             <div class="form-group">
-                <label data-i18n="apiKeys.baseUrl">Base URL</label>
+                <label for="ak-baseurl" data-i18n="apiKeys.baseUrl">Base URL</label>
                 <input type="text" id="ak-baseurl" data-i18n-placeholder="apiKeys.baseUrlPlaceholder" placeholder="自动填充">
             </div>
             <div class="form-group">
-                <label data-i18n="apiKeys.label">标签 (可选)</label>
+                <label for="ak-label" data-i18n="apiKeys.label">标签 (可选)</label>
                 <input type="text" id="ak-label" data-i18n-placeholder="apiKeys.labelPlaceholder" placeholder="例如: 生产环境">
             </div>
         </div>

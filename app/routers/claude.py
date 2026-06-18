@@ -15,6 +15,7 @@ from app.models.claude import (
 )
 from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tokens, is_image_generation_intent
 from app.utils.prompt import build_prompt_from_messages, extract_attachments
+from app.core.limiter import limiter, dynamic_rate_limit, rate_limit_exempt
 
 logger = logging.getLogger(__name__)
 # router：对话主入口（messages），同时挂在 /claude/v1 和裸 /v1（开箱即用）
@@ -52,6 +53,7 @@ async def get_model(model_id: str):
 
 
 @router.post("/messages")
+@limiter.limit(dynamic_rate_limit, exempt_when=rate_limit_exempt)
 async def create_message(req: ClaudeRequest, request: Request):
     messages_raw = [m.model_dump() for m in req.messages]
     prompt = build_prompt_from_messages(messages_raw, system=req.system)

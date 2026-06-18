@@ -294,7 +294,8 @@ async function handleBatchDelete() {
 
 async function handleExport() {
     try {
-        const data = await apiCall('GET', '/admin/api-keys/export');
+        // 契约：批次2 后 export 默认脱敏，导出可再导入的明文需 reveal=true（VULN-002）
+        const data = await apiCall('GET', '/admin/api-keys/export?reveal=true');
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');

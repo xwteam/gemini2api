@@ -8,6 +8,8 @@ from pathlib import Path
 from threading import Lock
 from dataclasses import dataclass, asdict
 
+from app.utils.atomic_io import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 COOKIE_STORE_DIR = Path("data/cookies")
@@ -158,7 +160,13 @@ class PersistentCookieJar:
             return
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            for item in data:
+        except Exception as e:
+            logger.warning(f"Cookie 加载失败: {e}")
+            return
+        if not isinstance(data, list):
+            return
+        for item in data:
+            try:
                 self._cookies[item["name"]] = StoredCookie(
                     name=item["name"],
                     value=item["value"],
@@ -168,9 +176,9 @@ class PersistentCookieJar:
                     secure=item.get("secure", True),
                     http_only=item.get("http_only", True),
                 )
-            logger.info(f"已加载 {len(self._cookies)} 个持久化 Cookie")
-        except Exception as e:
-            logger.warning(f"Cookie 加载失败: {e}")
+            except (KeyError, TypeError):
+                continue  # 坏记录单条跳过，保留其余有效 Cookie（VULN-010 读容错）
+        logger.info(f"已加载 {len(self._cookies)} 个持久化 Cookie")
 
     def _try_migrate_legacy(self):
         """从旧的 .cookies/ 目录迁移"""
@@ -191,6 +199,6 @@ class PersistentCookieJar:
 
     def _persist(self):
         path = self._store_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
         data = [asdict(c) for c in self._cookies.values()]
-        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        # 原子写，避免写入中途崩溃损坏 Cookie 文件（VULN-010）
+        atomic_write_json(path, data, ensure_ascii=False)

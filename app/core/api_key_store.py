@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app.utils.atomic_io import atomic_write_json
+
 
 PROVIDER_CATALOG = {
     "openai": {
@@ -149,13 +151,12 @@ class ApiKeyPool:
             return False
 
     def _save(self):
-        self.file_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             entry_id: asdict(entry)
             for entry_id, entry in self.entries.items()
         }
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # 原子写，避免写入中途崩溃把 api-keys.json 截断损坏（VULN-010）
+        atomic_write_json(self.file_path, data, indent=2, ensure_ascii=False)
 
     def _load(self):
         if not self.file_path.exists():
@@ -163,9 +164,15 @@ class ApiKeyPool:
         try:
             with open(self.file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self.entries = {
-                entry_id: ApiKeyEntry(**entry_data)
-                for entry_id, entry_data in data.items()
-            }
-        except (json.JSONDecodeError, TypeError, KeyError):
-            self.entries = {}
+        except (json.JSONDecodeError, OSError):
+            return  # 文件损坏/不可读：保持空，不抛
+        if not isinstance(data, dict):
+            return
+        loaded: dict[str, ApiKeyEntry] = {}
+        for entry_id, entry_data in data.items():
+            try:
+                loaded[entry_id] = ApiKeyEntry(**entry_data)
+            except (TypeError, KeyError):
+                # 坏记录单条跳过，保留其余有效记录，绝不清库（VULN-010 读容错）
+                continue
+        self.entries = loaded

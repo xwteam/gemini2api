@@ -15,10 +15,10 @@
 </section>
 
 <!-- Add Account Modal -->
-<div id="addAccountModal" class="modal">
+<div id="addAccountModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="addAccountTitle">
     <div class="modal-content">
         <div class="modal-header">
-            <h3 data-i18n="accounts.add">添加账号</h3>
+            <h3 id="addAccountTitle" data-i18n="accounts.add">添加账号</h3>
             <button class="modal-close" aria-label="Close">
                 <i class="fas fa-times"></i>
             </button>
@@ -45,7 +45,7 @@
 </div>
 
 <!-- Update Cookie Modal -->
-<div id="updateCookieModal" class="modal">
+<div id="updateCookieModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="updateCookieTitle">
     <div class="modal-content">
         <div class="modal-header">
             <h3 id="updateCookieTitle" data-i18n="accounts.updateCookie">更新 Cookie</h3>

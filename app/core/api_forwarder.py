@@ -4,6 +4,7 @@ Forward chat completion requests to third-party LLM providers.
 
 import json
 import logging
+import time
 import uuid
 from typing import AsyncGenerator
 
@@ -84,21 +85,20 @@ async def _forward_openai_compatible(
     if req.tool_choice is not None:
         payload["tool_choice"] = req.tool_choice
 
+    if req.stream:
+        # 关键修复：client 生命周期交给流生成器内部（async with），
+        # 避免「函数返回即关闭 client，生成器迭代时连接已关」导致流式转发失效。
+        return StreamingResponse(
+            _proxy_openai_stream(url, headers, payload, entry.provider),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        )
+
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
-            if req.stream:
-                response = await client.post(url, headers=headers, json=payload, timeout=300.0)
-                response.raise_for_status()
-
-                return StreamingResponse(
-                    _proxy_openai_stream(response),
-                    media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-                )
-            else:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                return JSONResponse(content=response.json())
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return JSONResponse(content=response.json())
 
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error forwarding to {entry.provider}: {e}")
@@ -133,11 +133,35 @@ async def _forward_openai_compatible(
         )
 
 
-async def _proxy_openai_stream(response: httpx.Response) -> AsyncGenerator[str, None]:
-    """Proxy OpenAI-compatible SSE stream as-is."""
-    async for line in response.aiter_lines():
-        if line.strip():
-            yield f"{line}\n"
+async def _proxy_openai_stream(
+    url: str, headers: dict, payload: dict, provider: str
+) -> AsyncGenerator[str, None]:
+    """Proxy OpenAI-compatible SSE stream as-is.
+
+    生成器自身持有 httpx client 与流连接的生命周期（async with），
+    保证流式期间连接存活（修复「client 提前关闭、迭代时连接已关」的失效）。
+    """
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    try:
+                        detail = json.loads(body)
+                    except Exception:
+                        detail = {"error": {"message": body.decode("utf-8", "replace")[:500],
+                                            "type": "api_error"}}
+                    yield f"data: {json.dumps(detail)}\n\n"
+                    return
+                async for line in response.aiter_lines():
+                    if line.strip():
+                        yield f"{line}\n"
+    except httpx.RequestError as e:
+        logger.error(f"Request error streaming from {provider}: {e}")
+        yield f"data: {json.dumps({'error': {'message': f'Failed to connect to {provider}: {e}', 'type': 'connection_error'}})}\n\n"
+    except Exception as e:
+        logger.error(f"Unexpected error streaming from {provider}: {e}")
+        yield f"data: {json.dumps({'error': {'message': f'Internal error: {e}', 'type': 'internal_error'}})}\n\n"
 
 
 async def _forward_anthropic(
@@ -189,25 +213,23 @@ async def _forward_anthropic(
             })
         payload["tools"] = anthropic_tools
 
+    if req.stream:
+        # 关键修复：同 openai 流式，client 生命周期交给流生成器内部，保证流式期间连接存活
+        return StreamingResponse(
+            _convert_anthropic_stream(url, headers, payload, entry.model),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        )
+
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
-            if req.stream:
-                response = await client.post(url, headers=headers, json=payload, timeout=300.0)
-                response.raise_for_status()
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            anthropic_response = response.json()
 
-                return StreamingResponse(
-                    _convert_anthropic_stream(response, entry.model),
-                    media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-                )
-            else:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                anthropic_response = response.json()
-
-                # Convert Anthropic response to OpenAI format
-                openai_response = _convert_anthropic_to_openai(anthropic_response, entry.model)
-                return JSONResponse(content=openai_response)
+            # Convert Anthropic response to OpenAI format
+            openai_response = _convert_anthropic_to_openai(anthropic_response, entry.model)
+            return JSONResponse(content=openai_response)
 
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error forwarding to Anthropic: {e}")
@@ -293,7 +315,9 @@ def _convert_anthropic_to_openai(anthropic_response: dict, model: str) -> dict:
     return {
         "id": completion_id,
         "object": "chat.completion",
-        "created": int(anthropic_response.get("id", "").split("_")[-1]) if "_" in anthropic_response.get("id", "") else 0,
+        # 修复：Anthropic 消息 id 形如 msg_01AbC...（非数字尾），原 int(id.split("_")[-1])
+        # 必抛 ValueError 致非流式转发恒 500。created 语义即响应生成时间，直接用当前时间戳。
+        "created": int(time.time()),
         "model": model,
         "choices": [{
             "index": 0,
@@ -304,8 +328,38 @@ def _convert_anthropic_to_openai(anthropic_response: dict, model: str) -> dict:
     }
 
 
-async def _convert_anthropic_stream(response: httpx.Response, model: str) -> AsyncGenerator[str, None]:
-    """Convert Anthropic SSE stream to OpenAI format."""
+async def _convert_anthropic_stream(
+    url: str, headers: dict, payload: dict, model: str
+) -> AsyncGenerator[str, None]:
+    """Convert Anthropic SSE stream to OpenAI format.
+
+    生成器自身持有 httpx client 与流连接的生命周期（async with），保证流式期间连接存活
+    （修复「client 提前关闭、迭代时连接已关」的失效）。
+    """
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    try:
+                        detail = json.loads(body)
+                    except Exception:
+                        detail = {"error": {"message": body.decode("utf-8", "replace")[:500],
+                                            "type": "api_error"}}
+                    yield f"data: {json.dumps(detail)}\n\n"
+                    return
+                async for chunk in _anthropic_stream_to_openai(response, model):
+                    yield chunk
+    except httpx.RequestError as e:
+        logger.error(f"Request error streaming from Anthropic: {e}")
+        yield f"data: {json.dumps({'error': {'message': f'Failed to connect to Anthropic: {e}', 'type': 'connection_error'}})}\n\n"
+    except Exception as e:
+        logger.error(f"Unexpected error streaming from Anthropic: {e}")
+        yield f"data: {json.dumps({'error': {'message': f'Internal error: {e}', 'type': 'internal_error'}})}\n\n"
+
+
+async def _anthropic_stream_to_openai(response: httpx.Response, model: str) -> AsyncGenerator[str, None]:
+    """把已建立的 Anthropic SSE 响应逐行转换为 OpenAI chunk（内部 helper，连接由调用方持有）。"""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
     async for line in response.aiter_lines():

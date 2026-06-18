@@ -207,7 +207,19 @@ const translations = {
         'usage.fiveMin': '5分钟',
         'usage.hourly': '小时',
         'usage.daily': '天',
-        'accounts.concurrency': '并发'
+        'accounts.concurrency': '并发',
+        'status.active': '活跃',
+        'status.inactive': '不活跃',
+        'status.error': '错误',
+        'status.disabled': '已禁用',
+        'common.close': '关闭',
+        'login.errEmpty': '请输入 API 密钥',
+        'login.errWrong': '密码错误。还剩 {n} 次尝试机会。',
+        'login.errLocked': '尝试次数已用完，请稍后再试。',
+        'login.errFailed': '登录失败，请稍后重试',
+        'login.errNetwork': '网络错误，请检查连接',
+        'login.loggingIn': '登录中...',
+        'login.success': '登录成功'
     },
 // PLACEHOLDER_MORE_LANGS
     'en-US': {
@@ -418,7 +430,19 @@ const translations = {
         'usage.fiveMin': '5 min',
         'usage.hourly': 'Hourly',
         'usage.daily': 'Daily',
-        'accounts.concurrency': 'Concurrency'
+        'accounts.concurrency': 'Concurrency',
+        'status.active': 'Active',
+        'status.inactive': 'Inactive',
+        'status.error': 'Error',
+        'status.disabled': 'Disabled',
+        'common.close': 'Close',
+        'login.errEmpty': 'Please enter your API key',
+        'login.errWrong': 'Wrong password. {n} attempt(s) left.',
+        'login.errLocked': 'Too many attempts. Please try again later.',
+        'login.errFailed': 'Login failed, please try again',
+        'login.errNetwork': 'Network error, please check your connection',
+        'login.loggingIn': 'Logging in...',
+        'login.success': 'Success'
     },
     'ja-JP': {
         'header.title': 'Gemini2API',
@@ -628,7 +652,19 @@ const translations = {
         'usage.fiveMin': '5分',
         'usage.hourly': '時間',
         'usage.daily': '日',
-        'accounts.concurrency': '同時接続'
+        'accounts.concurrency': '同時接続',
+        'status.active': 'アクティブ',
+        'status.inactive': '非アクティブ',
+        'status.error': 'エラー',
+        'status.disabled': '無効',
+        'common.close': '閉じる',
+        'login.errEmpty': 'APIキーを入力してください',
+        'login.errWrong': 'パスワードが違います。残り {n} 回。',
+        'login.errLocked': '試行回数の上限に達しました。後でお試しください。',
+        'login.errFailed': 'ログインに失敗しました。再試行してください',
+        'login.errNetwork': 'ネットワークエラー。接続を確認してください',
+        'login.loggingIn': 'ログイン中...',
+        'login.success': '成功'
     },
 // PLACEHOLDER_KO
     'ko-KR': {
@@ -840,7 +876,19 @@ const translations = {
         'usage.fiveMin': '5분',
         'usage.hourly': '시간',
         'usage.daily': '일',
-        'accounts.concurrency': '동시 접속'
+        'accounts.concurrency': '동시 접속',
+        'status.active': '활성',
+        'status.inactive': '비활성',
+        'status.error': '오류',
+        'status.disabled': '비활성화',
+        'common.close': '닫기',
+        'login.errEmpty': 'API 키를 입력하세요',
+        'login.errWrong': '비밀번호가 틀렸습니다. {n}회 남았습니다.',
+        'login.errLocked': '시도 횟수를 초과했습니다. 나중에 다시 시도하세요.',
+        'login.errFailed': '로그인 실패, 다시 시도하세요',
+        'login.errNetwork': '네트워크 오류, 연결을 확인하세요',
+        'login.loggingIn': '로그인 중...',
+        'login.success': '성공'
     },
     'zh-TW': {
         'header.title': 'Gemini2API',
@@ -1051,7 +1099,19 @@ const translations = {
         'usage.fiveMin': '5分鐘',
         'usage.hourly': '小時',
         'usage.daily': '天',
-        'accounts.concurrency': '並發'
+        'accounts.concurrency': '並發',
+        'status.active': '活躍',
+        'status.inactive': '不活躍',
+        'status.error': '錯誤',
+        'status.disabled': '已停用',
+        'common.close': '關閉',
+        'login.errEmpty': '請輸入 API 金鑰',
+        'login.errWrong': '密碼錯誤。還剩 {n} 次嘗試機會。',
+        'login.errLocked': '嘗試次數已用完，請稍後再試。',
+        'login.errFailed': '登入失敗，請稍後重試',
+        'login.errNetwork': '網路錯誤，請檢查連線',
+        'login.loggingIn': '登入中...',
+        'login.success': '登入成功'
     }
 };
 

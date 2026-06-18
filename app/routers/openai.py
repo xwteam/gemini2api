@@ -20,6 +20,7 @@ from app.models.openai import (
 )
 from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tokens, is_image_generation_intent, maybe_image_generation_intent
 from app.utils.prompt import build_prompt_from_messages, extract_attachments
+from app.core.limiter import limiter, dynamic_rate_limit, rate_limit_exempt
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["OpenAI"])
@@ -65,6 +66,7 @@ async def list_models(request: Request):
 
 
 @router.post("/chat/completions")
+@limiter.limit(dynamic_rate_limit, exempt_when=rate_limit_exempt)
 async def chat_completions(req: ChatRequest, request: Request):
     model_mapping = request.app.state.model_mapping
     resolved_model = model_mapping.resolve(req.model)

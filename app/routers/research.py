@@ -146,7 +146,8 @@ async def deep_research(request: DeepResearchRequest):
 
     try:
         result = await _perform_deep_research(
-            request.query, model, request.language, request.max_s        )
+            request.query, model, request.language, request.max_sources
+        )
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

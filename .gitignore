@@ -30,3 +30,17 @@ data/
 
 # 个人监控脚本（含本地服务器信息，不开源）
 monitor_session.sh
+
+# Secrets / credentials — never commit (accounts.json holds real Google cookies)
+accounts.json
+*.pem
+*.key
+*_id_ed25519
+*_rsa
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/

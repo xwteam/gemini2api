@@ -8,13 +8,13 @@ from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
-from app.config import settings, APP_VERSION
+from app.config import settings, APP_VERSION, mask_secret
 from app.core.account_pool import account_pool
-from app.core.auth import verify_api_key
+from app.core.auth import verify_api_key, verify_admin_key
+from app.core.limiter import limiter
 from app.core.fingerprint.version_sync import version_sync_loop
 from app.core.usage_stats import UsageStatsStore
 from app.core.usage_timer import snapshot_loop
@@ -40,13 +40,11 @@ logging.basicConfig(
 logging.getLogger("app").setLevel(log_level)
 logger = logging.getLogger(__name__)
 
-limiter = Limiter(key_func=get_remote_address)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up...")
-    logger.info(f"API Key: {settings.api_key}")
+    logger.info(f"API Key: {mask_secret(settings.api_key)}")
     await account_pool.initialize()
 
     app.state.log_store = LogStore()
@@ -153,26 +151,49 @@ app = FastAPI(
     dependencies=[Depends(verify_api_key)],
 )
 
+# CORS 可配置（VULN-007）。默认 cors_allow_origins="*" + cors_allow_credentials=True → 与原行为完全一致；
+# 运维可经环境变量 CORS_ALLOW_ORIGINS（逗号分隔白名单）+ CORS_ALLOW_CREDENTIALS=false 收紧。
+_cors_origins = (
+    ["*"]
+    if settings.cors_allow_origins.strip() == "*"
+    else [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
+    allow_credentials=settings.cors_allow_credentials,
 )
 
-if settings.rate_limit_enabled:
-    app.state.limiter = limiter
+# 限流（P0-2）：始终挂载基础设施；是否真正生效由对话端点装饰器的 exempt_when 按
+# settings.rate_limit_enabled 动态决定。默认 rate_limit_enabled=False → 全部旁路，零回归。
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
 
-    @app.exception_handler(RateLimitExceeded)
-    async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
-        return JSONResponse(
-            status_code=429,
-            content={"error": {"message": "Rate limit exceeded", "type": "rate_limit"}},
-        )
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"error": {"message": "Rate limit exceeded", "type": "rate_limit"}},
+    )
 
 
 SKIP_LOG_PREFIXES = ("/static/", "/favicon.ico", "/admin/logs")
+
+import re as _re
+
+# VULN-008：日志脱敏。避免 ?token=sk-xxx / 路径中出现的 key 进入结构化日志。
+_TOKEN_SCRUB_RE = _re.compile(r"(token=)[^&\s]+", _re.IGNORECASE)
+_SK_SCRUB_RE = _re.compile(r"sk-[A-Za-z0-9]{4,}")
+
+
+def _scrub_sensitive(text: str) -> str:
+    if not text:
+        return text
+    scrubbed = _TOKEN_SCRUB_RE.sub(r"\1****", text)
+    return _SK_SCRUB_RE.sub("sk-****", scrubbed)
 
 
 @app.middleware("http")
@@ -213,7 +234,7 @@ async def log_capture_middleware(request: Request, call_next):
     log_store = request.app.state.log_store
     record = create_log_record(
         method=method,
-        path=path,
+        path=_scrub_sensitive(path),
         direction=direction,
         model=model,
         status=status,
@@ -238,12 +259,15 @@ app.include_router(claude.router, prefix="/v1")  # 标准 Claude 路径（/v1/me
 app.include_router(gemini.router, prefix="/gemini/v1beta")
 app.include_router(gemini.router, prefix="/v1beta")  # 标准 Gemini 路径，兼容 Gemini 官方 SDK
 app.include_router(research.router)
-app.include_router(admin.router)
-app.include_router(logs_router.router)
-app.include_router(usage_stats_router.router)
-app.include_router(settings_router.router)
-app.include_router(api_keys_router.router)
-app.include_router(model_mapping_router.router)
+# 管理类路由（/admin/*）改由 verify_admin_key 鉴权（VULN-001 权限分离）。
+# 默认 admin_api_key 为空 → 回退 api_key，单 key 仍可用全部管理功能，零回归。
+_admin_deps = [Depends(verify_admin_key)]
+app.include_router(admin.router, dependencies=_admin_deps)
+app.include_router(logs_router.router, dependencies=_admin_deps)
+app.include_router(usage_stats_router.router, dependencies=_admin_deps)
+app.include_router(settings_router.router, dependencies=_admin_deps)
+app.include_router(api_keys_router.router, dependencies=_admin_deps)
+app.include_router(model_mapping_router.router, dependencies=_admin_deps)
 
 
 @app.get("/health")

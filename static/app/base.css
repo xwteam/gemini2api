@@ -21,7 +21,8 @@
     /* 文本色 */
     --text-primary: #0f172a;
     --text-secondary: #475569;
-    --text-tertiary: #94a3b8;
+    /* a11y：原 #94a3b8 在白底约 2.6:1 不达 AA；改 #64748b 约 4.8:1 达标 */
+    --text-tertiary: #64748b;
 
     /* 边框和分割线 */
     --border-color: #e2e8f0;
@@ -538,6 +539,9 @@ textarea.form-control {
     transform: translateX(100%);
     transition: all 0.3s ease;
     pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
 }
 
 .toast.show {
@@ -1035,4 +1039,17 @@ summary:hover {
         opacity: 1;
         transform: scale(1);
     }
+}
+
+/* ===== 无障碍 a11y ===== */
+/* 键盘可见焦点环（WCAG 2.4.7）：仅键盘聚焦时出现，不影响鼠标点击体验 */
+:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+}
+
+/* 暗色主题：主色 #34d399 偏亮，白字对比度仅 ~1.9:1；改用深色字 ~9:1 达 AA */
+[data-theme="dark"] .btn-primary,
+[data-theme="dark"] .btn-success {
+    color: #0b1f17;
 }

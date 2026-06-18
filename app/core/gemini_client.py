@@ -67,9 +67,6 @@ _FAMILY_DEFAULT = {
     "flash-thinking": "gemini-3-flash-thinking",
 }
 
-# 运行时由账号状态接口填充：family -> 该账号真实可用的内部模型名
-_RUNTIME_FAMILY_MODEL: dict[str, str] = {}
-
 MODEL_ALIASES = {
     # 旧版别名 → 公开名（再由公开名按账号动态解析），保留兼容
     "gemini-2.5-pro": "gemini-pro",
@@ -94,17 +91,21 @@ def _build_id_alias_map() -> dict[str, str]:
 
 
 
-def _resolve_model(model_name: str) -> str:
+def _resolve_model(model_name: str, family_model: dict[str, str] | None = None) -> str:
     """把用户请求的模型名解析为账号当前真实可用的内部模型名。
     1. 旧别名 → 公开名
     2. 公开名（gemini-pro/flash/flash-thinking）→ 账号当前该 family 真实可用的内部模型
-       （运行时由状态接口填充 _RUNTIME_FAMILY_MODEL，没有则用 family 默认）
+       （family_model 为账号实例映射，缺省/未命中则用 family 默认）
     3. 已经是内部模型名（gemini-3-*）→ 原样
+
+    family_model: 账号实例的 family→真实模型映射（P0-5：避免模块级全局被多账号污染）。
+                  路由层仅做模型名校验时不传，退回 _FAMILY_DEFAULT。
     """
     name = MODEL_ALIASES.get(model_name, model_name)
     if name in _PUBLIC_FAMILY:
         family = _PUBLIC_FAMILY[name]
-        return _RUNTIME_FAMILY_MODEL.get(family) or _FAMILY_DEFAULT[family]
+        fm = family_model or {}
+        return fm.get(family) or _FAMILY_DEFAULT[family]
     return name
 
 
@@ -288,6 +289,11 @@ class GeminiWebClient:
         self._push_id: str = ""
         self._available_models: list[str] = []
         self._lock = Lock()
+        # 按账号实例存储 family→真实内部模型，避免模块级全局被多账号互相覆盖（P0-5）
+        self._family_model: dict[str, str] = {}
+        # 自愈单飞锁（asyncio）：并发命中 "not ready" 时只触发一次 reload_cookies（Issue#1-C）。
+        # 注意：上面的 self._lock 是 threading.Lock，不支持 async with，故另设异步锁。
+        self._heal_lock = asyncio.Lock()
         self._healthy = False
         self._refresh_task: asyncio.Task | None = None
         self._health_check_task: asyncio.Task | None = None
@@ -761,8 +767,8 @@ class GeminiWebClient:
     def _parse_models_from_status(self, raw: str):
         """从 otAQ7b（GetUserStatus）响应解析账号真实可用模型。
         响应结构：part_body[15] 是模型数组，每项 [model_id, display_name, description]。
-        把账号真实可用的内部模型按 family 记录到 _RUNTIME_FAMILY_MODEL，
-        供 _resolve_model 把固定公开名映射到账号真实模型。
+        把账号真实可用的内部模型按 family 记录到本实例 self._family_model，
+        供 _resolve_model 把固定公开名映射到该账号真实模型（P0-5：实例隔离，避免全局污染）。
         _available_models 始终是固定的公开名（API 稳定契约），不随账号变化。
         """
         try:
@@ -806,7 +812,7 @@ class GeminiWebClient:
                         for name, info in GEMINI_MODELS.items():
                             if info["capacity"] in caps:
                                 family_model.setdefault(info["family"], name)
-                        _RUNTIME_FAMILY_MODEL.update(family_model)
+                        self._family_model.update(family_model)
                         # 对外永远是固定公开名
                         self._available_models = list(PUBLIC_MODELS)
                         logger.info(f"Account models resolved: {family_model} -> public {PUBLIC_MODELS}")
@@ -857,9 +863,17 @@ class GeminiWebClient:
     async def generate(self, prompt: str, model: str, conversation_id: str = "",
                        attachments: list | None = None) -> dict:
         if not self._healthy:
-            raise RuntimeError("Client not ready")
+            # 单账号自愈：抛错前单飞重载一次 Cookie，缓解会话约 2h 到期后的硬失败（Issue#1-C）
+            async with self._heal_lock:
+                if not self._healthy:
+                    try:
+                        await self.reload_cookies()
+                    except Exception as e:
+                        logger.warning(f"Self-heal reload_cookies failed: {e}")
+            if not self._healthy:
+                raise RuntimeError("Client not ready")
 
-        resolved = _resolve_model(model)
+        resolved = _resolve_model(model, self._family_model)
         if resolved not in GEMINI_MODELS:
             raise ValueError(
                 f"Model '{model}' unavailable. "
@@ -909,9 +923,17 @@ class GeminiWebClient:
         - 帧是累积式，逐帧 diff 出增量。生图/附件场景在最后帧统一处理。
         """
         if not self._healthy:
-            raise RuntimeError("Client not ready")
+            # 单账号自愈：抛错前单飞重载一次 Cookie（Issue#1-C）
+            async with self._heal_lock:
+                if not self._healthy:
+                    try:
+                        await self.reload_cookies()
+                    except Exception as e:
+                        logger.warning(f"Self-heal reload_cookies failed: {e}")
+            if not self._healthy:
+                raise RuntimeError("Client not ready")
 
-        resolved = _resolve_model(model)
+        resolved = _resolve_model(model, self._family_model)
         if resolved not in GEMINI_MODELS:
             raise ValueError(
                 f"Model '{model}' unavailable. Options: {', '.join(PUBLIC_MODELS)}"
@@ -1066,7 +1088,7 @@ class GeminiWebClient:
         await self._ensure_session_current()
         self._clear_session_cookies()
 
-        resolved = _resolve_model(model)
+        resolved = _resolve_model(model, self._family_model)
         cookies = self._get_cookies()
 
         # 上传附件（与对话同账号同会话），拿到文件标识符

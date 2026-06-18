@@ -10,6 +10,8 @@ Gemini Web 文件/图片上传模块。
 import asyncio
 import logging
 
+from app.utils.net_guard import is_safe_url
+
 logger = logging.getLogger(__name__)
 
 UPLOAD_URL = "https://content-push.googleapis.com/upload"
@@ -30,6 +32,10 @@ async def _resolve_bytes(http, att: dict) -> tuple[bytes, str, str] | None:
 
     url = att.get("url")
     if not url:
+        return None
+    # SSRF 防护（VULN-005）：拒绝指向内网/环回/链路本地/云元数据的远程附件 URL，公网 http(s) 正常放行
+    if not is_safe_url(url):
+        logger.warning(f"[upload] blocked unsafe remote url: {url[:80]}")
         return None
     try:
         resp = await http.get(url, timeout=30)

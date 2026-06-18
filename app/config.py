@@ -8,13 +8,23 @@ from pydantic import field_validator
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.6.15"
+APP_VERSION = "1.6.16"
 
 
 def _generate_api_key() -> str:
     chars = string.ascii_letters + string.digits
     suffix = "".join(secrets.choice(chars) for _ in range(32))
     return f"sk-{suffix}"
+
+
+def mask_secret(value: str) -> str:
+    """对密钥/凭据做日志/响应安全掩码，仅保留首尾少量字符。空值返回空串。"""
+    if not value:
+        return ""
+    v = str(value)
+    if len(v) <= 8:
+        return "****"
+    return f"{v[:4]}****{v[-4:]}"
 
 
 class Settings(BaseSettings):
@@ -54,6 +64,12 @@ class Settings(BaseSettings):
     chat_cleanup_keep_hours: float = 24.0
     chat_cleanup_interval_hours: float = 6.0
     chat_cleanup_skip_pinned: bool = True
+    # 管理面板/admin 路由的独立访问密钥。默认空 → 回退到 api_key（保持单 key 全功能的原行为，零回归）。
+    # 设置非空后，/admin/* 改用该 key 校验，业务 API 仍用 api_key，实现权限分离。
+    admin_api_key: str = ""
+    # CORS 可配置（默认保持原行为：允许所有来源 + 允许凭据）。多个来源用英文逗号分隔；"*" 表示全部。
+    cors_allow_origins: str = "*"
+    cors_allow_credentials: bool = True
 
     @field_validator("gemini_psid")
     @classmethod
@@ -111,7 +127,7 @@ def _persist_api_key():
     else:
         content = content.rstrip("\n") + f"\nAPI_KEY={settings.api_key}\n"
         env_path.write_text(content)
-    logger.info(f"API Key generated: {settings.api_key}")
+    logger.info(f"API Key generated and saved to .env: {mask_secret(settings.api_key)}")
 
 
 _persist_api_key()

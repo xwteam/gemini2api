@@ -19,6 +19,21 @@ def _is_5xx(exc: Exception) -> bool:
     return isinstance(exc, HTTPStatusError) and 500 <= exc.status_code < 600
 
 
+def _is_retryable(exc: Exception) -> bool:
+    """可换账号 failover 重试的错误集合（Issue#1-A）：
+    - 5xx（含 Google 503 限流）：冷却该账号后换号
+    - RuntimeError 且含 "not ready"：客户端会话未就绪，换健康账号
+    - HTTPStatusError 401/403：凭据失效，换号并标记 EXPIRED
+    """
+    if _is_5xx(exc):
+        return True
+    if isinstance(exc, RuntimeError) and "not ready" in str(exc).lower():
+        return True
+    if isinstance(exc, HTTPStatusError) and exc.status_code in (401, 403):
+        return True
+    return False
+
+
 class AccountStatus(str, Enum):
     ACTIVE = "active"
     EXPIRED = "expired"
@@ -132,6 +147,7 @@ class AccountPool:
         candidates = [
             a for a in self._accounts
             if a.status == AccountStatus.ACTIVE
+            and a.client is not None and a.client.is_healthy
             and a.active_requests < self._max_concurrent
             and a.id not in exclude
         ]
@@ -360,42 +376,52 @@ class AccountPool:
 
     async def generate(self, prompt: str, model: str, conversation_id: str = "",
                        attachments: list | None = None) -> dict:
-        # failover：某账号被 5xx（如 Google 503 限流）打回时，换下一个 active 账号重试，
-        # 直到成功或无更多账号可试。被限流账号进入冷却，不立即标 expired。
+        # failover：某账号被可重试错误（5xx/未就绪/401·403）打回时，换下一个 active 账号重试，
+        # 直到成功或无更多账号可试。5xx 限流账号进入冷却，401/403 标 expired。
         tried: set = set()
         last_err = None
         while True:
             try:
                 account = await self.acquire(exclude=tried if tried else None)
             except RuntimeError:
-                # 没有（更多）账号可用：抛出最后一次 5xx 错误（若有），否则抛 acquire 的错
+                # 没有（更多）账号可用：抛出最后一次可重试错误（若有），否则抛 acquire 的错
                 if last_err is not None:
                     raise last_err
                 raise
             t0 = time.time()
+            released = False
             try:
                 result = await account.client.generate(prompt, model, conversation_id, attachments)
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
                 await self.release(account, success=True)
+                released = True
                 return result
             except Exception as e:
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
-                if _is_5xx(e):
-                    # 5xx 限流：冷却该账号，换下一个重试
+                if _is_retryable(e):
+                    # 可重试：5xx 冷却该账号、401/403 标 expired，换下一个账号重试
                     last_err = e
                     tried.add(account.id)
-                    await self.release(account, success=False, cooldown=True)
+                    await self.release(account, success=False, cooldown=_is_5xx(e))
+                    released = True
+                    if isinstance(e, HTTPStatusError) and e.status_code in (401, 403):
+                        account.status = AccountStatus.EXPIRED
                     logger.warning(f"Account {account.id} got {e}; failing over (tried={len(tried)})")
                     continue
                 await self.release(account, success=False)
+                released = True
                 raise
+            finally:
+                # 兜底：CancelledError/GeneratorExit 等未走上面分支的路径也归还槽位（P0-4 防泄漏死锁）
+                if not released:
+                    await self.release(account, success=False)
 
     async def generate_stream(self, prompt: str, model: str, conversation_id: str = "",
                               attachments: list | None = None):
         """真流式：持有账号槽位直到整个流结束，再 release。
         逐块产出 {"type":"delta","text":增量} ，最后产出 {"type":"final", ...}（含会话ID/图片）。
 
-        failover：仅在「尚未向客户端 yield 任何内容前」遇到 5xx（如 503 限流）才换账号重试
+        failover：仅在「尚未向客户端 yield 任何内容前」遇到可重试错误（5xx/未就绪/401·403）才换账号重试
         （已经吐出部分内容后再换账号会导致重复，故此时只能终止）。
         """
         tried: set = set()
@@ -410,26 +436,35 @@ class AccountPool:
             t0 = time.time()
             emitted_any = False
             failover = False
+            released = False
             try:
                 async for evt in account.client.generate_stream(prompt, model, conversation_id, attachments):
                     emitted_any = True
                     yield evt
+                live_metrics.record_request(model, (time.time() - t0) * 1000)
+                await self.release(account, success=True)
+                released = True
+                return
             except Exception as e:
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
-                # 只有「还没吐任何内容」+「是5xx」+「还有别的账号」才 failover
-                if _is_5xx(e) and not emitted_any:
+                # 只有「还没吐任何内容」+「可重试」+「还有别的账号」才 failover
+                if _is_retryable(e) and not emitted_any:
                     last_err = e
                     tried.add(account.id)
-                    await self.release(account, success=False, cooldown=True)
+                    await self.release(account, success=False, cooldown=_is_5xx(e))
+                    released = True
+                    if isinstance(e, HTTPStatusError) and e.status_code in (401, 403):
+                        account.status = AccountStatus.EXPIRED
                     logger.warning(f"Account {account.id} got {e} before first chunk; stream failing over (tried={len(tried)})")
                     failover = True
                 else:
                     await self.release(account, success=False)
+                    released = True
                     raise
-            else:
-                live_metrics.record_request(model, (time.time() - t0) * 1000)
-                await self.release(account, success=True)
-                return
+            finally:
+                # 兜底：客户端断连(GeneratorExit)/取消(CancelledError) 等路径也归还槽位（P0-4 防泄漏死锁）
+                if not released:
+                    await self.release(account, success=False)
             if failover:
                 continue
 

@@ -1,0 +1,55 @@
+# Keep the Docker build context small and secret-free.
+# The image only needs app/, static/ and requirements.txt (see Dockerfile);
+# everything below is excluded from the build context.
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# CI / dev tooling
+.github
+tests
+pyproject.toml
+requirements-dev.txt
+.ruff_cache
+.pytest_cache
+.coverage
+coverage.xml
+htmlcov
+
+# Docs
+docs
+*.md
+LICENSE
+
+# Secrets / local env / runtime data — must never be baked into the image
+.env
+.env.*
+accounts.json
+*.pem
+*.key
+*_id_ed25519
+*_rsa
+.cookies
+data
+api
+
+# Python caches / virtualenvs
+__pycache__
+*.py[cod]
+*$py.class
+.venv
+venv
+env
+
+# Cookie refresher (built as a separate image)
+refresher
+
+# Compose & misc
+docker-compose.yml
+monitor_session.sh
+
+# OS
+.DS_Store
+Thumbs.db

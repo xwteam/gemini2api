@@ -2,6 +2,8 @@
  * 工具函数模块
  */
 
+import { getCurrentLanguage, t } from './i18n.js';
+
 /**
  * 遮蔽敏感字符串
  * @param {string} str - 原始字符串
@@ -21,7 +23,7 @@ function maskString(str, showChars = 10) {
  */
 function formatNumber(num) {
     if (num === null || num === undefined) return '0';
-    return num.toLocaleString('zh-CN');
+    return num.toLocaleString(getCurrentLanguage());
 }
 
 /**
@@ -31,14 +33,15 @@ function formatNumber(num) {
  */
 function getStatusBadge(status) {
     const statusMap = {
-        'active': { text: '活跃', class: 'success' },
-        'inactive': { text: '不活跃', class: 'secondary' },
-        'error': { text: '错误', class: 'danger' },
-        'disabled': { text: '已禁用', class: 'secondary' }
+        'active': { key: 'status.active', class: 'success' },
+        'inactive': { key: 'status.inactive', class: 'secondary' },
+        'error': { key: 'status.error', class: 'danger' },
+        'disabled': { key: 'status.disabled', class: 'secondary' }
     };
 
-    const statusInfo = statusMap[status] || { text: status, class: 'secondary' };
-    return `<span class="badge badge-${statusInfo.class}">${statusInfo.text}</span>`;
+    const info = statusMap[status] || { key: null, class: 'secondary' };
+    const text = info.key ? t(info.key) : String(status ?? '');
+    return `<span class="badge badge-${info.class}">${escapeHtml(text)}</span>`;
 }
 
 /**
@@ -50,7 +53,7 @@ function formatDate(isoString) {
     if (!isoString) return '-';
     try {
         const date = new Date(isoString);
-        return date.toLocaleString('zh-CN', {
+        return date.toLocaleString(getCurrentLanguage(), {
             year: 'numeric',
             month: '2-digit',
             day: '2-digit',
@@ -95,20 +98,21 @@ async function copyToClipboard(text) {
  * @param {string} type - 消息类型: 'success', 'error', 'warning', 'info'
  */
 function showToast(message, type = 'info') {
-    // 创建toast容器（如果不存在）
-    let toastContainer = document.getElementById('toast-container');
+    // 复用页面已有容器（index.html 提供 #toastContainer），否则按需创建；标记 aria-live 实时区供读屏播报
+    let toastContainer = document.getElementById('toastContainer') || document.getElementById('toast-container');
     if (!toastContainer) {
         toastContainer = document.createElement('div');
         toastContainer.id = 'toast-container';
         toastContainer.className = 'toast-container';
         document.body.appendChild(toastContainer);
     }
+    toastContainer.setAttribute('aria-live', 'polite');
+    toastContainer.setAttribute('aria-atomic', 'false');
 
-    // 创建toast元素
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
+    toast.setAttribute('role', 'status');
 
-    // 图标映射
     const iconMap = {
         success: 'fa-check-circle',
         error: 'fa-exclamation-circle',
@@ -119,9 +123,16 @@ function showToast(message, type = 'info') {
     const icon = iconMap[type] || iconMap.info;
 
     toast.innerHTML = `
-        <i class="fas ${icon}"></i>
-        <span>${message}</span>
+        <i class="fas ${icon}" aria-hidden="true"></i>
+        <span>${escapeHtml(String(message ?? ''))}</span>
+        <button class="toast-close" aria-label="${t('common.close')}" style="margin-left:auto;background:none;border:none;color:inherit;cursor:pointer;font-size:1rem;line-height:1;opacity:0.6;padding:0 0 0 0.5rem">&times;</button>
     `;
+
+    const dismiss = () => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    };
+    toast.querySelector('.toast-close')?.addEventListener('click', dismiss);
 
     toastContainer.appendChild(toast);
 
@@ -130,13 +141,10 @@ function showToast(message, type = 'info') {
         toast.classList.add('show');
     }, 10);
 
-    // 3秒后移除
-    setTimeout(() => {
-        toast.classList.remove('show');
-        setTimeout(() => {
-            toast.remove();
-        }, 300);
-    }, 3000);
+    // 自动消失（悬停暂停，给读者更多阅读时间）
+    let timer = setTimeout(dismiss, 4000);
+    toast.addEventListener('mouseenter', () => clearTimeout(timer));
+    toast.addEventListener('mouseleave', () => { timer = setTimeout(dismiss, 2000); });
 }
 
 /**
@@ -200,43 +208,71 @@ function throttle(func, limit) {
 }
 
 function showConfirm({ title = '确认操作', message = '', confirmText = '确认', cancelText = '取消', type = 'warning' }) {
+    // 注：title/message/confirmText/cancelText 在下方模板内统一经 escapeHtml 转义一次（防 XSS）
     return new Promise((resolve) => {
         const iconMap = { warning: 'fa-exclamation-triangle', danger: 'fa-trash-alt', info: 'fa-info-circle' };
         const colorMap = { warning: 'var(--warning-color, #f59e0b)', danger: 'var(--danger-color)', info: 'var(--primary-color)' };
         const icon = iconMap[type] || iconMap.warning;
         const color = colorMap[type] || colorMap.warning;
+        const prevFocus = document.activeElement;
+        const uid = 'cf-' + Date.now();
 
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay active';
         overlay.style.bottom = '0';
+        // a11y：对话框语义 + 标题/正文关联；XSS：title/message/按钮文案一律转义
         overlay.innerHTML = `
-            <div style="background:var(--bg-primary);border-radius:var(--radius-xl,16px);width:90%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,0.3);animation:modalIn 0.2s ease">
+            <div role="dialog" aria-modal="true" aria-labelledby="${uid}-t" aria-describedby="${uid}-m" style="background:var(--bg-primary);border-radius:var(--radius-xl,16px);width:90%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,0.3);animation:modalIn 0.2s ease">
                 <div style="padding:2rem;text-align:center">
                     <div style="width:56px;height:56px;border-radius:50%;background:${color}15;display:inline-flex;align-items:center;justify-content:center;margin-bottom:1rem">
-                        <i class="fas ${icon}" style="font-size:1.5rem;color:${color}"></i>
+                        <i class="fas ${icon}" style="font-size:1.5rem;color:${color}" aria-hidden="true"></i>
                     </div>
-                    <h3 style="margin:0 0 0.5rem;font-size:1.125rem;color:var(--text-primary)">${title}</h3>
-                    <p style="margin:0;color:var(--text-secondary);font-size:0.875rem;line-height:1.5">${message}</p>
+                    <h3 id="${uid}-t" style="margin:0 0 0.5rem;font-size:1.125rem;color:var(--text-primary)">${escapeHtml(title)}</h3>
+                    <p id="${uid}-m" style="margin:0;color:var(--text-secondary);font-size:0.875rem;line-height:1.5;white-space:pre-line">${escapeHtml(message)}</p>
                 </div>
                 <div style="display:flex;gap:0.75rem;padding:0 2rem 2rem;justify-content:center">
-                    <button class="confirm-cancel-btn" style="flex:1;padding:0.625rem 1.25rem;border-radius:var(--radius-lg,10px);border:1px solid var(--border-color);background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;font-size:0.875rem;font-weight:500;transition:all 0.2s">${cancelText}</button>
-                    <button class="confirm-ok-btn" style="flex:1;padding:0.625rem 1.25rem;border-radius:var(--radius-lg,10px);border:none;background:${color};color:#fff;cursor:pointer;font-size:0.875rem;font-weight:600;transition:all 0.2s">${confirmText}</button>
+                    <button class="confirm-cancel-btn" style="flex:1;padding:0.625rem 1.25rem;border-radius:var(--radius-lg,10px);border:1px solid var(--border-color);background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;font-size:0.875rem;font-weight:500;transition:all 0.2s">${escapeHtml(cancelText)}</button>
+                    <button class="confirm-ok-btn" style="flex:1;padding:0.625rem 1.25rem;border-radius:var(--radius-lg,10px);border:none;background:${color};color:#fff;cursor:pointer;font-size:0.875rem;font-weight:600;transition:all 0.2s">${escapeHtml(confirmText)}</button>
                 </div>
             </div>
         `;
 
+        const cancelBtn = overlay.querySelector('.confirm-cancel-btn');
+        const okBtn = overlay.querySelector('.confirm-ok-btn');
+
+        const onKey = (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                close(false);
+            } else if (e.key === 'Tab') {
+                // 双按钮焦点陷阱：Tab 在取消/确认间循环，不逸出对话框
+                e.preventDefault();
+                const order = [cancelBtn, okBtn];
+                const idx = order.indexOf(document.activeElement);
+                const next = e.shiftKey
+                    ? (idx <= 0 ? order.length - 1 : idx - 1)
+                    : (idx >= order.length - 1 ? 0 : idx + 1);
+                order[next].focus();
+            }
+        };
+
         const close = (result) => {
+            document.removeEventListener('keydown', onKey, true);
             overlay.style.opacity = '0';
             setTimeout(() => overlay.remove(), 200);
+            if (prevFocus && typeof prevFocus.focus === 'function') {
+                try { prevFocus.focus(); } catch (_) {}
+            }
             resolve(result);
         };
 
-        overlay.querySelector('.confirm-cancel-btn').onclick = () => close(false);
-        overlay.querySelector('.confirm-ok-btn').onclick = () => close(true);
+        cancelBtn.onclick = () => close(false);
+        okBtn.onclick = () => close(true);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+        document.addEventListener('keydown', onKey, true);
 
         document.body.appendChild(overlay);
-        overlay.querySelector('.confirm-ok-btn').focus();
+        okBtn.focus();
     });
 }
 

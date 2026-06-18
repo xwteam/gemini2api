@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.core.api_key_store import ApiKeyPool, PROVIDER_CATALOG
+from app.utils.net_guard import assert_safe_url, UnsafeURLError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/api-keys", tags=["API Keys"])
@@ -96,9 +97,11 @@ async def import_keys(req: ImportKeysRequest, request: Request):
 
 
 @router.get("/export")
-async def export_keys(request: Request):
+async def export_keys(request: Request, reveal: bool = False):
     pool: ApiKeyPool = request.app.state.api_key_pool
-    keys = pool.list_keys(masked=False)
+    # VULN-002：默认脱敏导出；需明文密钥须显式 ?reveal=true（已在 admin 鉴权保护下）。
+    # 注意：前端"导出"如需可再导入的明文，请改调 /export?reveal=true。
+    keys = pool.list_keys(masked=not reveal)
     return {"keys": keys}
 
 
@@ -164,6 +167,14 @@ async def fetch_models(req: FetchModelsRequest):
         headers = {}
     else:
         url = f"{base_url}/models"
+
+    # SSRF 防护（VULN-004）：base_url 来自请求体，校验目标不指向内网/环回/链路本地/云元数据。
+    # 拦截时返回通用错误，不回显解析到的内网地址。
+    try:
+        assert_safe_url(url)
+    except UnsafeURLError:
+        logger.warning("Blocked SSRF attempt in fetch_models base_url")
+        raise HTTPException(status_code=400, detail="base_url is not allowed")
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

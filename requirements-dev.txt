@@ -1,0 +1,5 @@
+# Development / CI tooling — NOT required at runtime.
+# Install for local testing:  pip install -r requirements.txt -r requirements-dev.txt
+pytest==8.3.4
+ruff==0.8.6
+pip-audit==2.7.3

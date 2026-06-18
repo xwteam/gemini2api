@@ -6,6 +6,31 @@
 
 ## [Unreleased]
 
+## [1.6.16] - 2026-06-19
+
+### Fixed
+- 🔧 **深度研究同步接口必崩**：`/gemini/v1beta/deepresearch` 因参数名笔误（`max_s`→`max_sources`）每次返回 500，已修复。
+- 🔧 **第三方流式转发失效**：OpenAI/Anthropic 兼容转发因 HTTP client 在返回响应前被提前关闭，导致流式迭代时连接已断；改为由流生成器内部持有连接生命周期，流式转发恢复正常（非流式路径不变）。
+- 🔧 **Anthropic 非流式转发崩溃**：`created` 字段解析消息 id 触发 `ValueError` 致 500，改用响应生成时间戳。
+- 🔧 **账号槽位泄漏导致死锁**：客户端断连/流中断时槽位未归还，长期累积后全池报"无可用账号"；用 `try/finally` 兜底确保任何路径都释放槽位。
+- 🔧 **多账号模型解析串扰**：模块级全局模型映射被多账号互相覆盖，改为按账号实例隔离。
+- 🔧 **"Client not ready" 间歇报错**：账号 Cookie 失效时不再硬失败——选号时跳过不健康账号、将"未就绪/401/403"纳入 failover 自动换号、单账号在抛错前单飞自愈重载 Cookie。
+- 🔧 **限流配置从未生效**：已创建 Limiter 但未挂载中间件/未对端点限流；补挂 `SlowAPIMiddleware` 并对对话端点限流（默认 `RATE_LIMIT_ENABLED=false` 旁路，零回归）。
+
+### Security
+- 🔒 **管理权限分离**：新增可选 `ADMIN_API_KEY`，`/admin/*` 走独立鉴权（留空则回退 `API_KEY`，单 key 仍可管全部，零回归）。
+- 🔒 **API Key 不再明文写入启动日志**（改掩码 `sk-****`）。
+- 🔒 **SSRF 防护**：API Key 探测的 `base_url` 与多模态附件远程 URL 在请求前校验，拦截内网/环回/链路本地/云元数据地址，且不回显内网响应。
+- 🔒 **凭据脱敏**：第三方密钥导出默认脱敏（需 `?reveal=true` 取明文）、管理接口的 Google PSID 凭据响应改掩码（字段保留）。
+- 🔒 **凭据/Cookie 文件原子写**（临时文件 + 原子替换），加载时坏记录容错跳过，不再因单条损坏清空整库。
+- 🔒 **API Key 恒定时间比较**（`secrets.compare_digest`，防时序侧信道）。
+- 🔒 **CORS 可配置**：新增 `CORS_ALLOW_ORIGINS` / `CORS_ALLOW_CREDENTIALS`（默认与原行为完全一致，可按需收紧）。
+- 🔒 **前端确认弹窗 XSS 加固**：`showConfirm` 文案统一转义后再注入。
+
+### Added
+- 🧪 **自动化测试与 CI 门禁**：引入 pytest 单元/冒烟测试与 GitHub Actions CI（ruff + pytest），并补齐 `.gitignore`/`.dockerignore` 防止凭据误入构建上下文/仓库。
+- ♿ **管理面板无障碍与多语言增强**：全局 `:focus-visible` 焦点环、修正暗色按钮/三级文本对比度、弹窗 `role=dialog`+焦点陷阱+Esc、表单 `label` 关联、登录页/状态徽章/日期数字多语言。
+
 ## [1.6.15] - 2026-06-06
 
 ### Added

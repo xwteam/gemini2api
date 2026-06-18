@@ -10,13 +10,23 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.config import APP_VERSION
+from app.config import APP_VERSION, mask_secret
 from app.core.account_pool import account_pool
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 _start_time = time.time()
+
+
+def _masked_status() -> dict:
+    """VULN-003：在响应层对 psid（Google 登录态 Cookie）脱敏，不改 account_pool 内部数据。
+    get_status() 每次返回新 dict，可安全就地掩码。保留字段，仅掩码值。"""
+    status = account_pool.get_status()
+    for acc in status.get("accounts", []):
+        if acc.get("psid"):
+            acc["psid"] = mask_secret(acc["psid"])
+    return status
 
 
 class ReloadCookiesRequest(BaseModel):
@@ -72,7 +82,7 @@ async def reload_cookies(req: ReloadCookiesRequest = None):
 
 @router.get("/status")
 async def admin_status():
-    return account_pool.get_status()
+    return _masked_status()
 
 
 @router.get("/system-info")
@@ -117,7 +127,7 @@ async def health_history():
 
 @router.get("/accounts")
 async def list_accounts():
-    return account_pool.get_status()
+    return _masked_status()
 
 
 @router.post("/accounts")
@@ -199,7 +209,14 @@ async def verify_token():
 
 
 @router.post("/restart")
-async def restart_server():
+async def restart_server(confirm: bool = False):
+    """重启服务（已受 admin 鉴权保护）。需 confirm=true 防误触，
+    避免无意/单击直接触发进程级 SIGTERM 造成可用性中断（VULN-009）。"""
+    if not confirm:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "重启需二次确认，请带查询参数 ?confirm=true", "type": "confirmation_required"}},
+        )
     import threading
     import signal
 
@@ -247,9 +264,6 @@ async def perform_update():
         "message": "Please run the following command on your server to update:",
         "command": "cd /home/ubuntu/gemini2api && git pull origin main && docker compose up -d --build"
     }
-
-    threading.Thread(target=_update, daemon=True).start()
-    return {"status": "ok", "message": "Update started, service will restart shortly..."}
 
 
 class CleanupWebChatsRequest(BaseModel):

@@ -19,6 +19,7 @@ from app.models.gemini import (
 )
 from app.utils.tools import build_tool_prompt, parse_tool_response, estimate_tokens, is_image_generation_intent
 from app.utils.prompt import build_prompt_from_messages
+from app.core.limiter import limiter, dynamic_rate_limit, rate_limit_exempt
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ async def list_models():
 
 
 @router.post("/models/{model}:generateContent")
+@limiter.limit(dynamic_rate_limit, exempt_when=rate_limit_exempt)
 async def generate_content(model: str, req: GeminiRequest, request: Request):
     """Generate content using Gemini API (non-streaming)."""
     if model.startswith("models/"):
@@ -173,7 +175,8 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
 
 
 @router.post("/models/{model}:streamGenerateContent")
-async def stream_generate_content(model: str, req: GeminiRequest):
+@limiter.limit(dynamic_rate_limit, exempt_when=rate_limit_exempt)
+async def stream_generate_content(model: str, req: GeminiRequest, request: Request):
     """Generate content using Gemini API (streaming with chunked JSON)."""
     if model.startswith("models/"):
         model = model[7:]
