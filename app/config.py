@@ -8,7 +8,7 @@ from pydantic import field_validator
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.6.16"
+APP_VERSION = "1.6.17"
 
 
 def _generate_api_key() -> str:
@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # CORS 可配置（默认保持原行为：允许所有来源 + 允许凭据）。多个来源用英文逗号分隔；"*" 表示全部。
     cors_allow_origins: str = "*"
     cors_allow_credentials: bool = True
+    # 生图代下载尺寸后缀。默认 =s2048（画质足够且显著减小体积/耗时）；设 =s0 为全分辨率原图。
+    image_download_size_suffix: str = "=s2048"
+    # 单次图片下载 HTTP 超时（秒），独立于主 session 的 60s 默认值。
+    image_download_timeout: float = 25.0
 
     @field_validator("gemini_psid")
     @classmethod

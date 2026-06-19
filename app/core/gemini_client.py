@@ -20,6 +20,9 @@ from app.core.usage_metrics import live_metrics
 
 logger = logging.getLogger(__name__)
 
+_IMAGE_DOWNLOAD_TIMEOUT = 25  # 单次 GET 超时（秒），避免 =s0 全分辨率拖垮整条链路
+_IMAGE_SIZE_DEFAULT = "=s2048"  # 2048px 边长足够预览，字节/耗时远小于 =s0
+
 
 class HTTPStatusError(Exception):
     def __init__(self, status_code: int, text: str = ""):
@@ -1053,26 +1056,11 @@ class GeminiWebClient:
         """流式收尾：下载/存生成图、过滤占位 URL，组装与 _send_request 一致的 final 结果。"""
         result_images: list = []
         if images:
-            import base64 as _b64
-            from app.core import image_store
             cookies = self._get_cookies()
             for img in images:
-                data = await self._download_generated_image(img["url"], cookies)
-                if not data:
-                    logger.warning(f"[imagegen] 流式下载失败: {img['url'][:60]}")
-                    continue
-                mime = img.get("mime", "image/png")
-                entry = {
-                    "b64": _b64.b64encode(data).decode(),
-                    "mime": mime,
-                    "width": img.get("width"),
-                    "height": img.get("height"),
-                }
-                try:
-                    entry["id"] = image_store.save_image(data, mime)
-                except Exception as e:
-                    logger.warning(f"[imagegen] 存盘失败: {e}")
-                result_images.append(entry)
+                entry = await self._build_image_entry(img, cookies)
+                if entry:
+                    result_images.append(entry)
             # 生图时模型文本里的占位 URL 无意义，过滤掉（与 _parse_output 一致）
             text = _IMAGE_GEN_PLACEHOLDER_RE.sub("", text).strip()
         return {
@@ -1121,49 +1109,71 @@ class GeminiWebClient:
         # AI 生成图片：lh3 URL 客户端直接访问会 403，服务端带 cookie 代下载，
         # 同时存盘（供对话接口返回可渲染 URL）+ 转 base64（供 images/generations 接口）
         if result.get("images"):
-            import base64 as _b64
-            from app.core import image_store
+            cookies = self._get_cookies()
             downloaded = []
             for img in result["images"]:
-                data = await self._download_generated_image(img["url"], cookies)
-                if not data:
-                    logger.warning(f"[imagegen] 下载失败: {img['url'][:60]}")
-                    continue
-                mime = img.get("mime", "image/png")
-                entry = {
-                    "b64": _b64.b64encode(data).decode(),
-                    "mime": mime,
-                    "width": img.get("width"),
-                    "height": img.get("height"),
-                }
-                try:
-                    entry["id"] = image_store.save_image(data, mime)
-                except Exception as e:
-                    logger.warning(f"[imagegen] 存盘失败: {e}")
-                downloaded.append(entry)
+                entry = await self._build_image_entry(img, cookies)
+                if entry:
+                    downloaded.append(entry)
             result["images"] = downloaded
 
         return result
 
-    async def _download_generated_image(self, url: str, cookies: dict) -> bytes | None:
-        """下载 AI 生成的图片字节（全分辨率原图）。
-        - lh3 URL 不加尺寸后缀时只给压缩缩略图（如 512px）；加 `=s0` 拿原始全分辨率图（实测）。
+    async def _build_image_entry(self, img: dict, cookies: dict) -> dict | None:
+        """下载生成图、存盘并返回 entry；失败时回退占位提示，不静默丢图。"""
+        import base64 as _b64
+        from app.core import image_store
+
+        url = img["url"]
+        mime = img.get("mime", "image/png")
+        data = await self._download_generated_image(url, cookies)
+        if not data:
+            data = await self._download_generated_image(url, cookies, size_suffix="=s512")
+        if data:
+            entry = {
+                "b64": _b64.b64encode(data).decode(),
+                "mime": mime,
+                "width": img.get("width"),
+                "height": img.get("height"),
+            }
+            try:
+                entry["id"] = image_store.save_image(data, mime)
+            except Exception as e:
+                logger.warning(f"[imagegen] 存盘失败: {e}")
+            return entry
+        logger.warning(f"[imagegen] 下载失败，回退占位提示: {url[:60]}")
+        return {"mime": mime, "fallback": True, "b64": "", "url": url}
+
+    async def _download_generated_image(
+        self, url: str, cookies: dict, size_suffix: str | None = None
+    ) -> bytes | None:
+        """下载 AI 生成的图片字节（默认 2048px 边长，超时收敛）。
+        - lh3 URL 不加尺寸后缀时只给压缩缩略图（如 512px）；加 `=s2048` 平衡画质与耗时。
         - lh3 URL 会多级 302（lh3→fife→lh3），curl_cffi 默认跟随会在跨域时丢 cookie 致 403。
           正确方式：先 allow_redirects=False 拿首个 302 的 location，
           再对该 location 带 cookie allow_redirects=True 跟随到最终 PNG。
         """
-        # 加 =s0 取原始全分辨率（不重复加；URL 已带 = 尺寸参数则保留）
-        full_url = url if ("=s" in url.rsplit("/", 1)[-1] or "=w" in url.rsplit("/", 1)[-1]) else url + "=s0"
+        if size_suffix is None:
+            size_suffix = getattr(settings, "image_download_size_suffix", None) or _IMAGE_SIZE_DEFAULT
+        timeout = getattr(settings, "image_download_timeout", None) or _IMAGE_DOWNLOAD_TIMEOUT
+        tail = url.rsplit("/", 1)[-1]
+        full_url = url if ("=s" in tail or "=w" in tail) else url + size_suffix
         headers = {"Referer": "https://gemini.google.com/"}
         try:
-            r1 = await self._http.get(full_url, cookies=cookies, headers=headers, allow_redirects=False)
+            r1 = await self._http.get(
+                full_url, cookies=cookies, headers=headers,
+                allow_redirects=False, timeout=timeout,
+            )
             loc = r1.headers.get("location", "")
             if r1.status_code == 200 and r1.headers.get("content-type", "").startswith("image/"):
                 return r1.content  # 少数情况直接返回图
             if not loc:
                 logger.warning(f"[imagegen] 无重定向且非图片: status={r1.status_code}")
                 return None
-            r2 = await self._http.get(loc, cookies=cookies, headers=headers, allow_redirects=True)
+            r2 = await self._http.get(
+                loc, cookies=cookies, headers=headers,
+                allow_redirects=True, timeout=timeout,
+            )
             if r2.status_code == 200 and r2.headers.get("content-type", "").startswith("image/"):
                 return r2.content
             logger.warning(f"[imagegen] 最终下载非图片: status={r2.status_code} type={r2.headers.get('content-type')}")

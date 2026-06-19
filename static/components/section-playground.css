@@ -248,3 +248,50 @@
     margin-top: 0.5rem;
     border-radius: var(--radius-md, 6px);
 }
+
+/* 生图等待态 */
+.chat-message.pg-generating .chat-bubble {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    min-width: 180px;
+}
+
+.pg-wait-text {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.pg-wait-hint {
+    font-size: 0.8rem;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+}
+
+.pg-wait-pulse {
+    display: block;
+    width: 100%;
+    height: 4px;
+    margin-top: 0.25rem;
+    border-radius: 2px;
+    background: linear-gradient(
+        90deg,
+        var(--primary-color) 0%,
+        var(--primary-color) 40%,
+        transparent 40%,
+        transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: pgPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pgPulse {
+    0% { background-position: 100% 0; opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { background-position: -100% 0; opacity: 0.6; }
+}
+
+#pg-send[disabled] {
+    opacity: 0.65;
+    cursor: not-allowed;
+}

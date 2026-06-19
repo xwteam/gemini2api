@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+## [1.6.17] - 2026-06-19
+
+### Fixed
+- 🔧 **生图 playground 返回 `network error`**：生图意图走 buffered 伪流式时，`await generate()`（含图片代下载）整段阻塞期间零 SSE 字节，经 Cloudflare/nginx 前置代理触发首字节/读超时（520）→ 浏览器报 network error，而 Gemini 网页端图实际已生成。修复：立即发首帧 SSE + 阻塞期间周期 `: ping` 心跳保活；图片代下载默认 `=s2048`（替代 `=s0` 全分辨率）、单次超时收敛至 25s、失败降级 `=s512` 重试并回退占位提示（不静默丢图）。
+
+### Added
+- 🎨 **Playground 生图等待态 UX**：生图 1–2 分钟期间显示等待气泡与脉冲动画；识别 SSE 心跳刷新「仍在处理中」；network/520/502 友好 i18n 提示（5 语种）。
+
 ## [1.6.16] - 2026-06-19
 
 ### Fixed

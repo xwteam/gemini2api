@@ -1,6 +1,7 @@
 import json
 import time
 import uuid
+import asyncio
 import logging
 from typing import AsyncGenerator
 
@@ -41,9 +42,23 @@ def _images_md_from_base(images: list, base: str) -> str:
     for im in images:
         if im.get("id") and base:
             lines.append(f"![generated image]({base}/images/{im['id']})")
-        else:
+        elif im.get("b64"):
             lines.append(f"![generated image](data:{im['mime']};base64,{im['b64']})")
+        elif im.get("fallback"):
+            lines.append("*(Generated image could not be downloaded in time; please retry.)*")
     return "\n".join(lines)
+
+
+_SSE_KEEPALIVE_INTERVAL = 15.0  # 刷新前置代理 idle/read 计时器（Cloudflare 免费版 ~100s 硬上限）
+
+
+async def _sse_keepalive_during(task: asyncio.Task, interval: float = _SSE_KEEPALIVE_INTERVAL):
+    """在后台 task 完成前周期 yield SSE comment ping，防止网关首字节/读超时。"""
+    while not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=interval)
+        except asyncio.TimeoutError:
+            yield ": ping\n\n"
 
 
 def _images_to_markdown(images: list, request) -> str:
@@ -314,13 +329,32 @@ def _err_chunk(completion_id: str, model_name: str, msg: str) -> str:
 
 async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, model_name: str = "", completion_id: str = "", attachments=None, base_url: str = "") -> AsyncGenerator[str, None]:
     """非流式收集 + 切片伪流式：用于有工具调用/附件、需要完整文本的场景。"""
+    # 立即发出首帧 SSE，避免生图/工具路径在 generate() 阻塞期间零字节导致前置代理超时。
+    first = StreamChunk(
+        id=completion_id, model=model_name,
+        choices=[StreamChoice(delta=StreamDelta(role="assistant"))],
+    )
+    yield format_sse(first.model_dump())
+
+    async def _run_generate():
+        return await gemini_client.generate(prompt, model, gemini_conv_id, attachments)
+
+    gen_task = asyncio.create_task(_run_generate())
+    async for ping in _sse_keepalive_during(gen_task):
+        yield ping
+
     try:
-        result = await gemini_client.generate(prompt, model, gemini_conv_id, attachments)
+        result = gen_task.result()
     except Exception as e:
         if gemini_conv_id and messages_raw:
             full_prompt = build_prompt_from_messages(messages_raw)
+            retry_task = asyncio.create_task(
+                gemini_client.generate(full_prompt, model, "", attachments)
+            )
+            async for ping in _sse_keepalive_during(retry_task):
+                yield ping
             try:
-                result = await gemini_client.generate(full_prompt, model, "", attachments)
+                result = retry_task.result()
             except Exception as e2:
                 yield _err_chunk(completion_id, model_name, str(e2))
                 return
@@ -367,12 +401,6 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
             yield "data: [DONE]\n\n"
             return
         text = parsed.get("content", text)
-
-    first = StreamChunk(
-        id=completion_id, model=model_name,
-        choices=[StreamChoice(delta=StreamDelta(role="assistant"))],
-    )
-    yield format_sse(first.model_dump())
 
     async for word in split_into_chunks(text):
         chunk = StreamChunk(

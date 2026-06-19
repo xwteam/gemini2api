@@ -482,18 +482,106 @@ let _pgConversationId = '';
 let _pgMessages = [];
 let _pgImages = [];  // 待发送的图片 [{dataUrl, name}]
 
+// 与后端 app/utils/tools.py 对齐，用于生图等待态 UI
+const _PG_IMAGE_INTENT_PATTERNS = [
+    '画一', '画个', '画张', '画幅', '画副', '帮我画', '给我画', '画图', '画一张', '画一幅',
+    '画个图', '画张图', '画幅图', '画一只', '画只', '画头', '画条',
+    '生成图片', '生成一张图', '生成图像', '生成一幅', '生成一张照片', '生成张图', '生成个图',
+    '生成海报', '生成插画', '生成一张海报',
+    '做一张图', '做个图', '做张图', '做一张海报', '做个海报', '做张海报', '做一张照片',
+    '设计一张海报', '设计海报', '设计一张图', '设计张海报', '设计个海报', '设计一幅',
+    '画一张海报', '画张海报', '画个海报', '画海报',
+    '绘制', '绘一', '画出', '出一张图', '出张图', 'p一张', 'p个图', '做幅',
+    '一张海报', '张海报', '幅海报', '来张图', '来一张图', '来个图',
+    'draw a', 'draw an', 'draw me', 'generate an image', 'generate a picture',
+    'generate an picture', 'generate a poster', 'create an image', 'create a picture',
+    'create a photo', 'create a poster', 'design a poster', 'make an image',
+    'make a picture', 'make a poster', 'an image of', 'a picture of', 'a photo of',
+    'a poster of', 'image of a', 'picture of a', 'poster of',
+];
+const _PG_IMG_NOUNS = ['图', '图片', '图像', '海报', '插画', '照片', '壁纸', 'logo', '头像', '封面',
+    'image', 'picture', 'poster', 'photo', 'drawing', 'illustration', 'wallpaper', 'avatar'];
+const _PG_IMG_VERBS = ['画', '生成', '绘', '做', '设计', '出', '整', '来', '搞', '弄', '制作', '帮我', '给我',
+    '想要', '要', '想', '需要', '求', '来一', '来个', '来张',
+    'draw', 'generate', 'create', 'make', 'design', 'render', 'want', 'need'];
+
+function _pgIsImageGenerationIntent(text) {
+    if (!text) return false;
+    const low = text.toLowerCase();
+    return _PG_IMAGE_INTENT_PATTERNS.some((p) => low.includes(p));
+}
+
+function _pgMaybeImageGenerationIntent(text) {
+    if (!text) return false;
+    if (_pgIsImageGenerationIntent(text)) return true;
+    const low = text.toLowerCase();
+    return _PG_IMG_NOUNS.some((n) => low.includes(n)) && _PG_IMG_VERBS.some((v) => low.includes(v));
+}
+
+function _pgShowGeneratingWait(aiMsg, aiBubble, chatContainer) {
+    aiMsg.classList.add('pg-generating');
+    aiBubble.setAttribute('role', 'status');
+    aiBubble.setAttribute('aria-live', 'polite');
+    aiBubble.setAttribute('aria-busy', 'true');
+    aiBubble.innerHTML = `
+        <span class="pg-wait-text">${escapeHtml(t('playground.generatingImage'))}</span>
+        <span class="pg-wait-hint">${escapeHtml(t('playground.generatingHint'))}</span>
+        <span class="pg-wait-pulse" aria-hidden="true"></span>
+    `;
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+function _pgClearGeneratingState(aiMsg, aiBubble) {
+    aiMsg.classList.remove('pg-generating');
+    aiBubble.removeAttribute('aria-busy');
+    aiBubble.removeAttribute('aria-live');
+    aiBubble.removeAttribute('role');
+}
+
+function _pgShowStillWorking(aiBubble) {
+    const textEl = aiBubble.querySelector('.pg-wait-text');
+    if (textEl) textEl.textContent = t('playground.stillWorking');
+}
+
+function _pgFormatPlaygroundError(error, status) {
+    const raw = (error?.message || '').toLowerCase();
+    const statusHint = status ? String(status) : '';
+    if (raw.includes('network') || raw.includes('failed to fetch') ||
+        raw.includes('520') || raw.includes('502') || raw.includes('504') ||
+        statusHint === '520' || statusHint === '502' || statusHint === '504') {
+        return t('playground.networkError');
+    }
+    if (error?.message) {
+        return `${t('playground.requestFailed')}: ${error.message}`;
+    }
+    return `${t('playground.requestFailed')} (${status || 'unknown'})`;
+}
+
+function _pgSetSendBusy(busy) {
+    const pgSend = document.getElementById('pg-send');
+    if (!pgSend) return;
+    pgSend.disabled = busy;
+    if (busy) pgSend.setAttribute('aria-busy', 'true');
+    else pgSend.removeAttribute('aria-busy');
+}
+
 async function sendPlaygroundRequest() {
+    const pgSend = document.getElementById('pg-send');
+    if (pgSend?.disabled) return;
+
     const message = document.getElementById('pg-message')?.value.trim();
     const model = document.getElementById('pg-model')?.value;
     const chatContainer = document.getElementById('pg-chat');
 
     if (!message && _pgImages.length === 0) {
-        showToast('请输入消息内容', 'warning');
+        showToast(t('playground.emptyMessage'), 'warning');
         return;
     }
 
     const placeholder = chatContainer?.querySelector('.chat-placeholder');
     if (placeholder) placeholder.remove();
+
+    const isImageGen = _pgMaybeImageGenerationIntent(message);
 
     // 组装多模态 content：有图片时用数组格式，纯文本保持字符串
     let userContent;
@@ -527,9 +615,14 @@ async function sendPlaygroundRequest() {
     const aiBubble = aiMsg.querySelector('.chat-bubble');
     chatContainer.scrollTop = chatContainer.scrollHeight;
 
+    if (isImageGen) {
+        _pgShowGeneratingWait(aiMsg, aiBubble, chatContainer);
+    }
+
     document.getElementById('pg-message').value = '';
     _pgImages = [];
     _renderPgImagePreview();
+    _pgSetSendBusy(true);
 
     const token = localStorage.getItem('gemini2api_token');
     const reqBody = {
@@ -552,9 +645,11 @@ async function sendPlaygroundRequest() {
         });
 
         if (!resp.ok) {
+            _pgMessages.pop();
             const err = await resp.json().catch(() => null);
-            const msg = err?.error?.message || `请求失败 (状态: ${resp.status})`;
-            aiBubble.innerHTML = `<span class="text-danger">${msg}</span>`;
+            const msg = err?.error?.message || _pgFormatPlaygroundError(null, resp.status);
+            _pgClearGeneratingState(aiMsg, aiBubble);
+            aiBubble.innerHTML = `<span class="text-danger">${escapeHtml(msg)}</span>`;
             return;
         }
 
@@ -562,6 +657,7 @@ async function sendPlaygroundRequest() {
         const decoder = new TextDecoder();
         let buffer = '';
         let content = '';
+        let gotContent = false;
 
         while (true) {
             const { done, value } = await reader.read();
@@ -571,16 +667,28 @@ async function sendPlaygroundRequest() {
             const lines = buffer.split('\n');
             buffer = lines.pop();
 
-            for (const line of lines) {
+            for (const rawLine of lines) {
+                const line = rawLine.replace(/\r$/, '');
+                if (line.startsWith(':')) {
+                    if (isImageGen && !gotContent) _pgShowStillWorking(aiBubble);
+                    continue;
+                }
                 if (!line.startsWith('data: ')) continue;
                 const data = line.slice(6).trim();
                 if (data === '[DONE]') break;
                 try {
                     const chunk = JSON.parse(data);
-                    const delta = chunk.choices?.[0]?.delta?.content || '';
-                    if (delta) {
-                        content += delta;
-                        aiBubble.textContent = content;  // 流式过程显示文本
+                    const delta = chunk.choices?.[0]?.delta;
+                    if (delta?.role && !delta?.content && isImageGen && !gotContent) {
+                        _pgShowStillWorking(aiBubble);
+                        continue;
+                    }
+                    const piece = delta?.content || '';
+                    if (piece) {
+                        gotContent = true;
+                        _pgClearGeneratingState(aiMsg, aiBubble);
+                        content += piece;
+                        aiBubble.textContent = content;
                         chatContainer.scrollTop = chatContainer.scrollHeight;
                     }
                 } catch {}
@@ -588,15 +696,20 @@ async function sendPlaygroundRequest() {
         }
 
         if (!content) {
-            aiBubble.textContent = '无响应内容';
+            _pgClearGeneratingState(aiMsg, aiBubble);
+            aiBubble.textContent = t('playground.noContent');
         } else {
-            // 流式结束：把图片（markdown/URL/dataURI）渲染成 <img>，其余文本转义显示
+            _pgClearGeneratingState(aiMsg, aiBubble);
             aiBubble.innerHTML = _pgRenderContent(content);
             chatContainer.scrollTop = chatContainer.scrollHeight;
             _pgMessages.push({ role: 'assistant', content: content });
         }
     } catch (error) {
-        aiBubble.innerHTML = `<span class="text-danger">错误: ${error.message}</span>`;
+        _pgMessages.pop();
+        _pgClearGeneratingState(aiMsg, aiBubble);
+        aiBubble.innerHTML = `<span class="text-danger">${escapeHtml(_pgFormatPlaygroundError(error))}</span>`;
+    } finally {
+        _pgSetSendBusy(false);
     }
 }
 
@@ -637,7 +750,7 @@ function _pgRenderContent(text) {
 function clearPlayground() {
     const chatContainer = document.getElementById('pg-chat');
     if (chatContainer) {
-        chatContainer.innerHTML = '<div class="chat-placeholder"><i class="fas fa-comment-dots"></i><p>发送消息开始对话</p></div>';
+        chatContainer.innerHTML = `<div class="chat-placeholder"><i class="fas fa-comment-dots"></i><p>${escapeHtml(t('playground.startChat'))}</p></div>`;
     }
     const message = document.getElementById('pg-message');
     if (message) message.value = '';

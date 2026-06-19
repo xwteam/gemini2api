@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-v1.6.16-success?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.6.17-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -59,6 +59,7 @@
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2026-06-19 13:30:00 | v1.6.17 - 🔧 修复 playground 生图 network error：SSE 首帧 + 15s 心跳保活，解决 buffered 生图零字节导致 Cloudflare/nginx 超时；图片下载默认 =s2048/25s 超时/=s512 降级/失败占位。🎨 Playground 生图等待态 UX + 5 语 i18n 友好错误提示。零回归（52 测试通过）|
 | 2026-06-19 03:01:44 | v1.6.16 - 🔧 稳定性与安全强化：修复深度研究接口必崩、第三方流式转发失效、账号槽位泄漏死锁、多账号模型解析串扰、间歇 "Client not ready"、限流配置未生效；🔒 安全加固：管理权限分离（可选 `ADMIN_API_KEY`）、API Key 日志脱敏、双 SSRF 防护、密钥导出/PSID 脱敏、凭据文件原子写、CORS 可配、恒定时间比较；🧪 新增自动化测试 + CI 门禁、面板无障碍/多语言增强。全程零回归（58 测试通过）|
 | 2026-06-06 19:29:01 | v1.6.15 - 🧹 自动清理 Gemini 网页端会话：API 每次对话都会在网页端堆积会话记录，现在后台定时（默认每 6h）自动删除超过保留期（默认 24h）的旧会话，置顶会话保留；循环清理彻底清空堆积，重度账号也能清干净。设置面板可调（开关/保留时长/清理间隔/跳过置顶），5 语种 |
 | 2026-06-02 20:16:19 | v1.6.14 - 🖼️ 生图意图识别补充意愿动词：「我想要一张…的图」「要一张图」「我需要一张海报」等用想要/要/需要表达的生图请求现在能正确识别、图片排在前面（之前会图在文字后或出现 http 残片）；仍要求图像名词+动词同现，不误判日常用语 |
