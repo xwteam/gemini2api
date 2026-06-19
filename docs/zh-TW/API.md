@@ -680,6 +680,74 @@ curl -X DELETE http://localhost:5918/admin/api-keys/key-123 \
   -H "Authorization: Bearer sk-your-api-key"
 ```
 
+### PATCH /admin/api-keys/{id}/label
+
+修改 Key 標籤。
+
+**請求：**
+```bash
+curl -X PATCH http://localhost:5918/admin/api-keys/key-1/label \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"label": "我的 OpenAI Key"}'
+```
+
+### GET /api-keys/export
+
+匯出所有 Key。預設脫敏；加 `?reveal=true` 取明文。
+
+**請求：**
+```bash
+curl "http://localhost:5918/admin/api-keys/export?reveal=true" \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### POST /admin/api-keys/models
+
+探測某 Provider / base_url 下可用的模型列表（用於新增 Key 時填充模型下拉）。
+
+**請求：**
+```bash
+curl -X POST http://localhost:5918/admin/api-keys/models \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "provider": "openai",
+    "api_key": "sk-xxx",
+    "base_url": "https://api.openai.com/v1"
+  }'
+```
+
+### POST /admin/restart
+
+重啟服務（面板右上角一鍵重啟，重啟後自動輪詢恢復）。
+
+**請求：**
+```bash
+curl -X POST http://localhost:5918/admin/restart \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### GET /admin/check-update
+
+檢查是否有新版本。
+
+**請求：**
+```bash
+curl http://localhost:5918/admin/check-update \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### POST /admin/update
+
+觸發更新到最新版本。
+
+**請求：**
+```bash
+curl -X POST http://localhost:5918/admin/update \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
 ### GET /logs
 
 取得結構化日誌。

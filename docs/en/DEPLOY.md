@@ -263,7 +263,7 @@ kill -9 <PID>
      gemini2api:
        mem_limit: 4g
    ```
-2. Reduce `MAX_CONCURRENT_PER_ACCOUNT` in `.env` (default: 3)
+2. Reduce `MAX_CONCURRENT_PER_ACCOUNT` in `.env` (default: 8)
 3. Enable rate limiting in `.env`:
    ```env
    RATE_LIMIT_ENABLED=true
@@ -305,13 +305,34 @@ kill -9 <PID>
 | `MAX_RETRIES` | 3 | Failed request retry attempts |
 | `PORT` | 5918 | Service port |
 | `LOG_LEVEL` | info | Logging level (debug/info/warning/error) |
+| `ACCOUNTS_FILE` | accounts.json | Multi-account config file path (falls back to single-account env mode if absent) |
 | `ROTATION_STRATEGY` | round-robin | Load balancing: round-robin or failover |
-| `MAX_CONCURRENT_PER_ACCOUNT` | 3 | Max concurrent requests per account |
+| `MAX_CONCURRENT_PER_ACCOUNT` | 8 | Max concurrent requests per account |
+| `ACQUIRE_TIMEOUT` | 60.0 | Max seconds to queue for a free slot at full concurrency before erroring |
+| `SAME_ACCOUNT_5XX_RETRIES` | 1 | Quick same-account retries on 5xx (no long backoff); failover if still failing |
+| `FAILOVER_COOLDOWN` | 30.0 | Cooldown (seconds) for an account rate-limited by 5xx, during which it is not preferred |
 | `HEALTH_CHECK_ENABLED` | true | Enable periodic account health checks |
 | `HEALTH_CHECK_INTERVAL` | 5 | Health check interval (minutes) |
 | `RATE_LIMIT_ENABLED` | false | Enable request rate limiting |
 | `RATE_LIMIT_WINDOW` | 60 | Rate limit window (seconds) |
 | `RATE_LIMIT_MAX` | 10 | Max requests per window |
+| `FINGERPRINT_CONFIG_PATH` | data/fingerprint.json | Fingerprint config file path |
+| `VERSION_SYNC_ENABLED` | true | Enable Chrome version auto-sync |
+| `VERSION_SYNC_INTERVAL` | 24 | Version sync interval (hours) |
+| `JITTER_ENABLED` | true | Enable request time jitter (simulate human behavior) |
+| `USAGE_STATS_ENABLED` | true | Enable usage statistics (time-series snapshots + persistence) |
+| `USAGE_STATS_INTERVAL` | 300 | Snapshot collection interval (seconds) |
+| `USAGE_STATS_RETENTION_DAYS` | 30 | Historical data retention (days) |
+| `MODEL_WHITELIST` | — | Model whitelist (comma-separated; empty = no filtering; when set, filters each `/models` list) |
+| `CHAT_CLEANUP_ENABLED` | true | Enable auto-cleanup of Gemini web sessions |
+| `CHAT_CLEANUP_KEEP_HOURS` | 24.0 | Web session retention (hours); older ones are cleaned up |
+| `CHAT_CLEANUP_INTERVAL_HOURS` | 6.0 | Auto-cleanup task run interval (hours) |
+| `CHAT_CLEANUP_SKIP_PINNED` | true | Skip pinned sessions during cleanup |
+| `ADMIN_API_KEY` | — | Separate auth key for the admin panel / `/admin` (empty falls back to `API_KEY`) |
+| `CORS_ALLOW_ORIGINS` | * | CORS allowed origins (comma-separated; `*` means all) |
+| `CORS_ALLOW_CREDENTIALS` | true | Whether CORS allows credentials |
+| `IMAGE_DOWNLOAD_SIZE_SUFFIX` | =s2048 | Generated-image download size suffix (`=s0` for full-resolution original) |
+| `IMAGE_DOWNLOAD_TIMEOUT` | 25.0 | Per-image download HTTP timeout (seconds) |
 
 ## Docker Compose Reference
 

@@ -76,7 +76,7 @@ LOG_LEVEL=info
 RATE_LIMIT_ENABLED=false
 HEALTH_CHECK_ENABLED=true
 ROTATION_STRATEGY=round-robin
-MAX_CONCURRENT_PER_ACCOUNT=3
+MAX_CONCURRENT_PER_ACCOUNT=8
 ```
 
 **重要な設定項目：**
@@ -86,11 +86,32 @@ MAX_CONCURRENT_PER_ACCOUNT=3
 | `GEMINI_PSID` | `__Secure-1PSID` Cookie | 必須 |
 | `GEMINI_PSIDTS` | `__Secure-1PSIDTS` Cookie | 必須 |
 | `API_KEY` | API アクセスキー（空白で自動生成） | 自動生成 |
+| `ADMIN_API_KEY` | 管理パネル/`/admin` 専用認証キー（空白で `API_KEY` にフォールバック） | — |
 | `PORT` | サービスポート | 5918 |
 | `REFRESH_INTERVAL` | Cookie 更新間隔（分） | 5 |
 | `MAX_RETRIES` | 失敗時の再試行回数 | 3 |
+| `ACCOUNTS_FILE` | マルチアカウント設定ファイルのパス（存在しなければ単一アカウントモード） | accounts.json |
 | `ROTATION_STRATEGY` | 負荷分散戦略（round-robin/failover） | round-robin |
-| `MAX_CONCURRENT_PER_ACCOUNT` | アカウント当たりの最大並行数 | 3 |
+| `MAX_CONCURRENT_PER_ACCOUNT` | アカウント当たりの最大並行数 | 8 |
+| `ACQUIRE_TIMEOUT` | 並行満載時に空きスロットを待つ上限（秒） | 60.0 |
+| `SAME_ACCOUNT_5XX_RETRIES` | 5xx 時の同一アカウント高速リトライ回数（なお失敗すれば failover） | 1 |
+| `FAILOVER_COOLDOWN` | 5xx で制限されたアカウントのクールダウン時間（秒） | 30.0 |
+| `FINGERPRINT_CONFIG_PATH` | フィンガープリント設定ファイルのパス | data/fingerprint.json |
+| `VERSION_SYNC_ENABLED` | Chrome バージョン自動同期を有効化 | true |
+| `VERSION_SYNC_INTERVAL` | バージョン同期間隔（時間） | 24 |
+| `JITTER_ENABLED` | リクエスト時間ジッターを有効化 | true |
+| `USAGE_STATS_ENABLED` | 使用統計を有効化（時系列スナップショット + 永続化） | true |
+| `USAGE_STATS_INTERVAL` | スナップショット採集間隔（秒） | 300 |
+| `USAGE_STATS_RETENTION_DAYS` | 履歴データの保持日数 | 30 |
+| `MODEL_WHITELIST` | モデルホワイトリスト（カンマ区切り、空でフィルタなし；非空時は各 `/models` 一覧をフィルタ） | — |
+| `CHAT_CLEANUP_ENABLED` | Gemini ウェブ側セッションの自動クリーンアップを有効化 | true |
+| `CHAT_CLEANUP_KEEP_HOURS` | ウェブセッションの保持時間（時間） | 24.0 |
+| `CHAT_CLEANUP_INTERVAL_HOURS` | 自動クリーンアップタスクの実行間隔（時間） | 6.0 |
+| `CHAT_CLEANUP_SKIP_PINNED` | クリーンアップ時にピン留めセッションをスキップ | true |
+| `CORS_ALLOW_ORIGINS` | CORS 許可オリジン（カンマ区切り、`*` ですべて許可） | * |
+| `CORS_ALLOW_CREDENTIALS` | CORS で資格情報の送信を許可するか | true |
+| `IMAGE_DOWNLOAD_SIZE_SUFFIX` | 生図代理ダウンロードのサイズサフィックス（`=s0` でフル解像度） | =s2048 |
+| `IMAGE_DOWNLOAD_TIMEOUT` | 画像ダウンロード 1 回あたりの HTTP タイムアウト（秒） | 25.0 |
 
 > **注意**: 値に引用符は不要です。余分なスペースや改行がないことを確認してください。
 

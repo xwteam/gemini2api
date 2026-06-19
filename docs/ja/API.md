@@ -810,6 +810,67 @@ curl -X POST http://localhost:5918/admin/settings \
 }
 ```
 
+### POST /admin/restart
+
+サービスを再起動します（パネル右上のワンクリック再起動。再起動後は自動ポーリングで復帰します）。
+
+**リクエスト:**
+
+```bash
+curl -X POST http://localhost:5918/admin/restart \
+  -H "Authorization: Bearer sk-あなたのキー"
+```
+
+**レスポンス:**
+
+```json
+{
+  "status": "ok",
+  "message": "Service restarting"
+}
+```
+
+### GET /admin/check-update
+
+新しいバージョンの有無を確認します。
+
+**リクエスト:**
+
+```bash
+curl http://localhost:5918/admin/check-update \
+  -H "Authorization: Bearer sk-あなたのキー"
+```
+
+**レスポンス:**
+
+```json
+{
+  "current_version": "1.6.19",
+  "latest_version": "1.6.19",
+  "has_update": false
+}
+```
+
+### POST /admin/update
+
+最新バージョンへの更新をトリガーします。
+
+**リクエスト:**
+
+```bash
+curl -X POST http://localhost:5918/admin/update \
+  -H "Authorization: Bearer sk-あなたのキー"
+```
+
+**レスポンス:**
+
+```json
+{
+  "status": "ok",
+  "message": "Update started"
+}
+```
+
 ### GET /admin/logs
 
 ログを取得します。

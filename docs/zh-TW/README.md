@@ -11,6 +11,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/version-v1.6.19-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -58,6 +59,7 @@
 
 | 日期 | 更新內容 |
 |------|----------|
+| 2026-06-19 22:00:00 | v1.6.19 - 🔒 安全與品質強化批次：修復 6 處管理面板 XSS、2 處 SSRF（附件重新導向繞過/轉發 base_url 未校驗）、設定寫壞 .env 的永久 DoS、conversation_id 路徑穿越；🔧 串流生圖佔位 URL 洩漏/轉發 SSE 缺分隔符與 [DONE]、usage-stats 關閉時 500、accounts.json 原子寫、帳號 ID 衝突等多項；⚙️ 讓 MODEL_WHITELIST/JITTER_ENABLED/VERSION_SYNC_INTERVAL 等設定真正生效；📄 文件/設定全面對齊 + 新增漂移測試；🐳 鏡像非 root + CI 關卡可失敗。全程零回歸（63 測試 + ruff + 對抗複核通過）|
 | 2026-06-19 14:15:00 | v1.6.18 - 🔧 修復 gemini-pro 生圖 network error：生圖 POST 超時 60s→180s；SSE keepalive 10s + 切片 ping。零回歸（62 測試通過）|
 | 2026-06-19 13:30:00 | v1.6.17 - 🔧 修復 playground 生圖 network error：SSE 首幀 + 15s 心跳保活；圖片下載 =s2048/25s/=s512 降級/失敗占位。🎨 生圖等待態 UX + 5 語 i18n。零回歸（52 測試通過）|
 | 2026-06-19 03:01:44 | v1.6.16 - 🔧 穩定性與安全強化：修復深度研究介面必崩、第三方串流轉發失效、帳號槽位洩漏死鎖、多帳號模型解析串擾、間歇 "Client not ready"、限流設定未生效；🔒 安全加固：管理權限分離（可選 `ADMIN_API_KEY`）、API Key 日誌脫敏、雙 SSRF 防護、金鑰匯出/PSID 脫敏、憑證檔案原子寫、CORS 可配、恆定時間比較；🧪 新增自動化測試 + CI 關卡、面板無障礙/多語言增強。全程零回歸（58 測試通過）|
@@ -75,9 +77,9 @@
 | 2026-05-31 17:00:00 | v1.6.4 - 三家介面暴露標準裸路徑（/v1/chat/completions、/v1/messages、/v1beta/...），主流 SDK 開箱即用；修復部署機制（docker-compose 由 build 改 image，docker compose pull 真正生效） |
 | 2026-05-31 14:10:00 | v1.6.3 - 圖片/檔案上傳支援（OpenAI/Claude/Gemini 多模態）；模型改用網頁版真實資料 + 對外固定穩定名（gemini-pro/flash/flash-thinking）；重啟不再遺失 Cookie |
 | 2026-05-19 20:00:00 | v1.6.2 - 工作階段 5 分鐘無操作自動過期登出 |
-| 2025-05-18 16:30:00 | v1.6.1 - 深色主題全面修復、檢查更新彈窗美化、GitHub Actions 自動建置映像、failover 故障轉移策略 |
-| 2025-05-17 23:20:00 | 模型列表統一為使用者友善名稱，新增思考模式（gemini-2.5-flash-thinking）和 Pro 模式，Playground 對話上下文修復 |
-| 2025-05-17 22:30:00 | 容器時區修正為 Asia/Shanghai，日誌顯示北京時間 |
+| 2026-05-18 16:30:00 | v1.6.1 - 深色主題全面修復、檢查更新彈窗美化、GitHub Actions 自動建置映像、failover 故障轉移策略 |
+| 2026-05-17 23:20:00 | 模型列表統一為使用者友善名稱，新增思考模式（gemini-2.5-flash-thinking）和 Pro 模式，Playground 對話上下文修復 |
+| 2026-05-17 22:30:00 | 容器時區修正為 Asia/Shanghai，日誌顯示北京時間 |
 
 ---
 
@@ -412,14 +414,48 @@ response = client.chat.completions.create(
 
 ### 管理介面（`/admin`）
 
+> 完整管理端點（含請求/回應範例）見 [API.md](API.md)，下表為完整列表。
+
 | 方法 | 端點 | 功能 |
 |------|------|------|
 | GET | `/status` | 服務狀態（帳號池概覽 + 輪詢策略） |
+| GET | `/system-info` | 系統資訊（版本/Python/OS/記憶體/CPU/PID/執行模式） |
 | GET | `/accounts` | 所有帳號列表及狀態 |
 | POST | `/accounts` | 動態新增新帳號 |
 | DELETE | `/accounts/{id}` | 移除指定帳號 |
 | GET | `/accounts/{id}/check` | 檢測單個帳號狀態 |
+| GET | `/check-account` | 檢測所有帳號狀態 |
 | POST | `/reload-cookies` | 熱更新 Cookie（無需重啟容器） |
+| PUT | `/accounts/{id}/cookies` | 更新指定帳號的 Cookie |
+| GET | `/health-history` | 最近健康檢查記錄 |
+| GET | `/usage-stats/summary` | 用量統計概覽 |
+| GET | `/usage-stats/history` | 歷史趨勢數據 |
+| GET | `/settings` | 取得當前可編輯配置（分組回傳） |
+| POST | `/settings` | 批量更新配置（寫入 .env + 熱更新記憶體） |
+| GET | `/api-keys` | API Key 列表（密鑰脫敏） |
+| GET | `/api-keys/catalog` | Provider 目錄（內建模型列表） |
+| POST | `/api-keys` | 新增 API Key |
+| DELETE | `/api-keys/{id}` | 刪除 API Key |
+| PATCH | `/api-keys/{id}/status` | 切換 Key 狀態（啟用/停用） |
+| PATCH | `/api-keys/{id}/label` | 修改 Key 標籤 |
+| POST | `/api-keys/import` | 批量匯入 Key |
+| GET | `/api-keys/export` | 匯出所有 Key（預設脫敏，`?reveal=true` 取明文） |
+| POST | `/api-keys/batch-delete` | 批量刪除 |
+| POST | `/api-keys/models` | 探測某 Provider/base_url 下可用模型列表 |
+| GET | `/verify` | 驗證 API Key 有效性（登入用） |
+| POST | `/restart` | 重啟服務（面板右上角一鍵重啟） |
+| GET | `/check-update` | 檢查是否有新版本 |
+| POST | `/update` | 觸發更新到最新版本 |
+| GET | `/logs` | 結構化日誌分頁查詢 |
+| GET | `/logs/state` | 日誌記錄狀態 |
+| POST | `/logs/state` | 更新日誌記錄狀態 |
+| POST | `/logs/clear` | 清空日誌 |
+| GET | `/logs/{id}` | 單條日誌詳情 |
+| GET | `/model-mapping` | 取得所有模型映射 |
+| POST | `/model-mapping` | 新增/更新模型映射 |
+| DELETE | `/model-mapping/{alias}` | 刪除模型映射 |
+| GET | `/web-chats` | 列出帳號在 Gemini 網頁端堆積的會話（唯讀） |
+| POST | `/cleanup-web-chats` | 手動觸發清理超期網頁會話（後台非同步執行） |
 
 ---
 
@@ -439,8 +475,29 @@ response = client.chat.completions.create(
 | `RATE_LIMIT_MAX` | ❌ | `10` | 視窗內最大請求數 |
 | `HEALTH_CHECK_ENABLED` | ❌ | `true` | 啟用定時帳號狀態檢測 |
 | `HEALTH_CHECK_INTERVAL` | ❌ | `5` | 檢測間隔（分鐘） |
+| `ACCOUNTS_FILE` | ❌ | `accounts.json` | 多帳號配置檔案路徑（不存在則使用環境變數單帳號模式） |
 | `ROTATION_STRATEGY` | ❌ | `round-robin` | 輪詢策略：`round-robin`（輪詢）/ `failover`（故障轉移） |
-| `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `3` | 每帳號最大並行請求數 |
+| `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `8` | 每帳號最大並行請求數 |
+| `ACQUIRE_TIMEOUT` | ❌ | `60.0` | 並行滿載時排隊等待可用槽位的上限（秒），等不到才報錯 |
+| `SAME_ACCOUNT_5XX_RETRIES` | ❌ | `1` | 遇 5xx 時同帳號快速重試次數（不長退避），仍失敗則 failover 換號 |
+| `FAILOVER_COOLDOWN` | ❌ | `30.0` | 被 5xx 限流的帳號進入冷卻的時長（秒），期間不優先選 |
+| `FINGERPRINT_CONFIG_PATH` | ❌ | `data/fingerprint.json` | 指紋配置檔案路徑 |
+| `VERSION_SYNC_ENABLED` | ❌ | `true` | 啟用 Chrome 版本自動同步 |
+| `VERSION_SYNC_INTERVAL` | ❌ | `24` | 版本同步間隔（小時） |
+| `JITTER_ENABLED` | ❌ | `true` | 啟用請求時間抖動（模擬人類行為） |
+| `USAGE_STATS_ENABLED` | ❌ | `true` | 啟用用量統計（時序快照 + 持久化） |
+| `USAGE_STATS_INTERVAL` | ❌ | `300` | 快照採集間隔（秒） |
+| `USAGE_STATS_RETENTION_DAYS` | ❌ | `30` | 歷史數據保留天數 |
+| `MODEL_WHITELIST` | ❌ | — | 模型白名單（逗號分隔，為空則不過濾；非空時過濾各 `/models` 列表） |
+| `CHAT_CLEANUP_ENABLED` | ❌ | `true` | 啟用 Gemini 網頁端會話自動清理 |
+| `CHAT_CLEANUP_KEEP_HOURS` | ❌ | `24.0` | 網頁會話保留時長（小時），超過則清理 |
+| `CHAT_CLEANUP_INTERVAL_HOURS` | ❌ | `6.0` | 自動清理任務運行間隔（小時） |
+| `CHAT_CLEANUP_SKIP_PINNED` | ❌ | `true` | 清理時跳過置頂會話 |
+| `ADMIN_API_KEY` | ❌ | — | 管理面板/`/admin` 獨立鑑權 key（留空則回退用 `API_KEY`） |
+| `CORS_ALLOW_ORIGINS` | ❌ | `*` | CORS 允許來源（逗號分隔，`*` 表示全部） |
+| `CORS_ALLOW_CREDENTIALS` | ❌ | `true` | CORS 是否允許攜帶憑據 |
+| `IMAGE_DOWNLOAD_SIZE_SUFFIX` | ❌ | `=s2048` | 生圖代下載尺寸後綴（`=s0` 為全解析度原圖） |
+| `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 單次圖片下載 HTTP 超時（秒） |
 
 ---
 

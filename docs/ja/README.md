@@ -58,6 +58,7 @@
 
 | 日付 | 更新内容 |
 |------|----------|
+| 2026-06-19 22:00:00 | v1.6.19 - 🔒 セキュリティと品質強化バッチ：管理パネルの XSS 6 件、SSRF 2 件（添付ダウンロードのリダイレクト迂回 / 転送 base_url 未検証）、設定が .env を壊す永続的 DoS、conversation_id のパストラバーサルを修正；🔧 真ストリーミング生図のプレースホルダ URL 漏洩 / 転送 SSE のセパレータ・[DONE] 欠落、usage-stats 無効時の 500、accounts.json アトミック書き込み、アカウント ID 衝突など多数；⚙️ MODEL_WHITELIST/JITTER_ENABLED/VERSION_SYNC_INTERVAL などの設定を実際に有効化；📄 ドキュメント/設定を全面整合 + ドリフトテスト追加；🐳 非 root イメージ + CI ゲートをブロッキング化。全工程で回帰ゼロ（63 テスト + ruff + 対抗的再確認 合格）|
 | 2026-06-19 14:15:00 | v1.6.18 - 🔧 gemini-pro 画像生成 network error 修正：画像 POST タイムアウト 60s→180s；SSE keepalive 10s + チャンク ping。回帰ゼロ（62 テスト合格）|
 | 2026-06-19 13:30:00 | v1.6.17 - 🔧 playground 画像生成 network error 修正：SSE 初回フレーム + 15s ping キープアライブ；画像 DL =s2048/25s/=s512 フォールバック。🎨 生成待機 UX + 5 言語 i18n。回帰ゼロ（52 テスト合格）|
 | 2026-06-19 03:01:44 | v1.6.16 - 🔧 安定性とセキュリティ強化：ディープリサーチ同期エンドポイントの必ず500、サードパーティのストリーミング転送失効、アカウントスロットリーク・デッドロック、複数アカウントのモデル解決混線、断続的な "Client not ready"、効いていなかったレート制限を修正；🔒 セキュリティ：管理/業務キー分離（任意 `ADMIN_API_KEY`）、APIキーのログマスク、二重SSRF防御、キーエクスポート/PSIDマスク、認証情報のアトミック書き込み、CORS設定可、定数時間比較；🧪 自動テスト + CIゲート、パネルのa11y/多言語強化を追加。回帰ゼロ（58テスト合格）|
@@ -75,9 +76,9 @@
 | 2026-05-31 17:00:00 | v1.6.4 - 3 つの API すべてが標準ベアパス（/v1/chat/completions、/v1/messages、/v1beta/...）を公開、主要 SDK がそのまま利用可能；デプロイ機構を修正（docker-compose を build から image に変更し、docker compose pull が正しく機能） |
 | 2026-05-31 14:10:00 | v1.6.3 - 画像/ファイルアップロード対応（OpenAI/Claude/Gemini マルチモーダル）；モデルを Web 版実データに変更 + 固定の安定名（gemini-pro/flash/flash-thinking）；再起動時に Cookie が失われない |
 | 2026-05-19 20:00:00 | v1.6.2 - 5 分間操作がないとセッションが自動的に期限切れになりログアウト |
-| 2025-05-18 16:30:00 | v1.6.1 - ダークテーマの全面修正、更新チェックダイアログの美化、GitHub Actions 自動イメージビルド、failover フェイルオーバー戦略 |
-| 2025-05-17 23:20:00 | モデルリストをユーザーフレンドリー名に統一、思考モード（gemini-2.5-flash-thinking）と Pro モードを追加、Playground 会話コンテキスト修正 |
-| 2025-05-17 22:30:00 | コンテナタイムゾーンを Asia/Shanghai に修正、ログは北京時間を表示 |
+| 2026-05-18 16:30:00 | v1.6.1 - ダークテーマの全面修正、更新チェックダイアログの美化、GitHub Actions 自動イメージビルド、failover フェイルオーバー戦略 |
+| 2026-05-17 23:20:00 | モデルリストをユーザーフレンドリー名に統一、思考モード（gemini-2.5-flash-thinking）と Pro モードを追加、Playground 会話コンテキスト修正 |
+| 2026-05-17 22:30:00 | コンテナタイムゾーンを Asia/Shanghai に修正、ログは北京時間を表示 |
 
 ---
 
@@ -412,14 +413,48 @@ response = client.chat.completions.create(
 
 ### 管理インターフェース（`/admin`）
 
+> 完全な管理エンドポイント（リクエスト/レスポンス例付き）は [API.md](API.md) を参照。下表は完全な一覧です。
+
 | メソッド | エンドポイント | 機能 |
 |---------|--------------|------|
 | GET | `/status` | サービスステータス（アカウントプール概要 + ローテーション戦略） |
+| GET | `/system-info` | システム情報（バージョン/Python/OS/メモリ/CPU/PID/実行モード） |
 | GET | `/accounts` | すべてのアカウントリストとステータス |
 | POST | `/accounts` | 新しいアカウントを動的追加 |
 | DELETE | `/accounts/{id}` | アカウントを削除 |
 | GET | `/accounts/{id}/check` | 単一アカウントステータスをチェック |
+| GET | `/check-account` | すべてのアカウントステータスをチェック |
 | POST | `/reload-cookies` | ホットアップデート Cookie（コンテナ再起動不要） |
+| PUT | `/accounts/{id}/cookies` | 指定アカウントの Cookie を更新 |
+| GET | `/health-history` | 直近のヘルスチェック記録 |
+| GET | `/usage-stats/summary` | 使用統計の概要 |
+| GET | `/usage-stats/history` | 履歴トレンドデータ |
+| GET | `/settings` | 編集可能な現在の設定を取得（グループ別） |
+| POST | `/settings` | 設定を一括更新（.env 書き込み + メモリのホットアップデート） |
+| GET | `/api-keys` | API Key 一覧（キーはマスク表示） |
+| GET | `/api-keys/catalog` | Provider カタログ（内蔵モデル一覧） |
+| POST | `/api-keys` | API Key を追加 |
+| DELETE | `/api-keys/{id}` | API Key を削除 |
+| PATCH | `/api-keys/{id}/status` | Key の状態を切り替え（有効/無効） |
+| PATCH | `/api-keys/{id}/label` | Key のラベルを変更 |
+| POST | `/api-keys/import` | Key を一括インポート |
+| GET | `/api-keys/export` | すべての Key をエクスポート（デフォルトはマスク、`?reveal=true` で平文取得） |
+| POST | `/api-keys/batch-delete` | 一括削除 |
+| POST | `/api-keys/models` | 指定 Provider/base_url で利用可能なモデル一覧を探索 |
+| GET | `/verify` | API Key の有効性を検証（ログイン用） |
+| POST | `/restart` | サービス再起動（パネル右上のワンクリック再起動） |
+| GET | `/check-update` | 新バージョンの有無を確認 |
+| POST | `/update` | 最新バージョンへの更新をトリガー |
+| GET | `/logs` | 構造化ログのページング照会 |
+| GET | `/logs/state` | ログ記録状態 |
+| POST | `/logs/state` | ログ記録状態を更新 |
+| POST | `/logs/clear` | ログをクリア |
+| GET | `/logs/{id}` | 単一ログの詳細 |
+| GET | `/model-mapping` | すべてのモデルマッピングを取得 |
+| POST | `/model-mapping` | モデルマッピングを追加/更新 |
+| DELETE | `/model-mapping/{alias}` | モデルマッピングを削除 |
+| GET | `/web-chats` | アカウントが Gemini ウェブ側に蓄積したセッションを一覧（読み取り専用） |
+| POST | `/cleanup-web-chats` | 期限超過のウェブセッションのクリーンアップを手動トリガー（バックグラウンドで非同期実行） |
 
 ---
 
@@ -439,8 +474,29 @@ response = client.chat.completions.create(
 | `RATE_LIMIT_MAX` | ❌ | `10` | ウィンドウ内の最大リクエスト数 |
 | `HEALTH_CHECK_ENABLED` | ❌ | `true` | スケジュール済みアカウントヘルスチェックを有効化 |
 | `HEALTH_CHECK_INTERVAL` | ❌ | `5` | チェック間隔（分） |
-| `ROTATION_STRATEGY` | ❌ | `round-robin` | ローテーション戦略：`round-robin` / `failover` |
-| `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `3` | アカウントあたりの最大並行リクエスト数 |
+| `ACCOUNTS_FILE` | ❌ | `accounts.json` | マルチアカウント設定ファイルのパス（存在しない場合は環境変数の単一アカウントモードを使用） |
+| `ROTATION_STRATEGY` | ❌ | `round-robin` | ローテーション戦略：`round-robin`（ラウンドロビン）/ `failover`（フェイルオーバー） |
+| `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `8` | アカウントあたりの最大並行リクエスト数 |
+| `ACQUIRE_TIMEOUT` | ❌ | `60.0` | 並行満載時に空きスロットを待つ上限（秒）。待ちきれない場合のみエラー |
+| `SAME_ACCOUNT_5XX_RETRIES` | ❌ | `1` | 5xx 時の同一アカウント高速リトライ回数（長い backoff なし）、なお失敗すれば failover で別アカウントへ |
+| `FAILOVER_COOLDOWN` | ❌ | `30.0` | 5xx で制限されたアカウントがクールダウンに入る時間（秒）、その間は優先選択しない |
+| `FINGERPRINT_CONFIG_PATH` | ❌ | `data/fingerprint.json` | フィンガープリント設定ファイルのパス |
+| `VERSION_SYNC_ENABLED` | ❌ | `true` | Chrome バージョン自動同期を有効化 |
+| `VERSION_SYNC_INTERVAL` | ❌ | `24` | バージョン同期間隔（時間） |
+| `JITTER_ENABLED` | ❌ | `true` | リクエスト時間ジッターを有効化（人間の挙動をシミュレート） |
+| `USAGE_STATS_ENABLED` | ❌ | `true` | 使用統計を有効化（時系列スナップショット + 永続化） |
+| `USAGE_STATS_INTERVAL` | ❌ | `300` | スナップショット採集間隔（秒） |
+| `USAGE_STATS_RETENTION_DAYS` | ❌ | `30` | 履歴データの保持日数 |
+| `MODEL_WHITELIST` | ❌ | — | モデルホワイトリスト（カンマ区切り、空の場合はフィルタしない；非空時は各 `/models` 一覧をフィルタ） |
+| `CHAT_CLEANUP_ENABLED` | ❌ | `true` | Gemini ウェブ側セッションの自動クリーンアップを有効化 |
+| `CHAT_CLEANUP_KEEP_HOURS` | ❌ | `24.0` | ウェブセッションの保持時間（時間）、超過分をクリーンアップ |
+| `CHAT_CLEANUP_INTERVAL_HOURS` | ❌ | `6.0` | 自動クリーンアップタスクの実行間隔（時間） |
+| `CHAT_CLEANUP_SKIP_PINNED` | ❌ | `true` | クリーンアップ時にピン留めセッションをスキップ |
+| `ADMIN_API_KEY` | ❌ | — | 管理パネル/`/admin` 専用認証キー（空の場合は `API_KEY` にフォールバック） |
+| `CORS_ALLOW_ORIGINS` | ❌ | `*` | CORS 許可オリジン（カンマ区切り、`*` ですべて許可） |
+| `CORS_ALLOW_CREDENTIALS` | ❌ | `true` | CORS で資格情報の送信を許可するか |
+| `IMAGE_DOWNLOAD_SIZE_SUFFIX` | ❌ | `=s2048` | 生図代理ダウンロードのサイズサフィックス（`=s0` でフル解像度の原画像） |
+| `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 画像ダウンロード 1 回あたりの HTTP タイムアウト（秒） |
 
 ---
 

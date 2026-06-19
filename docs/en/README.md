@@ -58,6 +58,7 @@
 
 | Date | Update |
 |------|--------|
+| 2026-06-19 22:00:00 | v1.6.19 - 🔒 Security & quality hardening batch: fixed 6 admin-panel XSS, 2 SSRF (attachment-download redirect bypass / unvalidated forward base_url), a permanent DoS from corrupting `.env` via settings, and conversation_id path traversal; 🔧 streaming image-gen placeholder URL leak / forward SSE missing delimiter & `[DONE]`, usage-stats 500 when disabled, accounts.json atomic write, account ID collision, and more; ⚙️ MODEL_WHITELIST / JITTER_ENABLED / VERSION_SYNC_INTERVAL configs now actually honored; 📄 docs/config fully aligned + new drift test; 🐳 non-root image + blocking CI gate. Zero regression (63 tests + ruff + adversarial review pass) |
 | 2026-06-19 14:15:00 | v1.6.18 - 🔧 Fixed gemini-pro image-gen network error: image POST timeout 60s→180s; SSE keepalive 10s + chunk ping. Zero regression (62 tests pass) |
 | 2026-06-19 13:30:00 | v1.6.17 - 🔧 Fixed playground image-gen network error: immediate SSE first frame + 15s ping keepalive; image download =s2048/25s/=s512 fallback. 🎨 Generating wait-state UX + 5-locale i18n. Zero regression (52 tests pass) |
 | 2026-06-19 03:01:44 | v1.6.16 - 🔧 Stability & security hardening: fixed deep-research endpoint always-500, broken third-party streaming forward, account slot-leak deadlock, multi-account model-resolution cross-talk, intermittent "Client not ready", and rate limiting that never took effect; 🔒 Security: admin/business key separation (optional `ADMIN_API_KEY`), API key log masking, dual SSRF guards, key-export/PSID masking, atomic credential writes, configurable CORS, constant-time compare; 🧪 added automated tests + CI gate and panel a11y/i18n improvements. Zero regression (58 tests pass) |
@@ -75,9 +76,9 @@
 | 2026-05-31 17:00:00 | v1.6.4 - All three APIs expose standard bare paths (/v1/chat/completions, /v1/messages, /v1beta/...) — major SDKs work out of the box; fixed deployment mechanism (docker-compose switched from build to image, so docker compose pull actually takes effect) |
 | 2026-05-31 14:10:00 | v1.6.3 - Image/file upload support (OpenAI/Claude/Gemini multimodal); models now use real web data + stable fixed names (gemini-pro/flash/flash-thinking); cookies no longer lost on restart |
 | 2026-05-19 20:00:00 | v1.6.2 - Session auto-expires and logs out after 5 minutes of inactivity |
-| 2025-05-18 16:30:00 | v1.6.1 - Dark theme comprehensive fixes, update check dialog beautification, GitHub Actions auto-build images, failover strategy |
-| 2025-05-17 23:20:00 | Unified model list to user-friendly names, added thinking mode (gemini-2.5-flash-thinking) and Pro mode, fixed Playground conversation context |
-| 2025-05-17 22:30:00 | Fixed container timezone to Asia/Shanghai, logs show Beijing time |
+| 2026-05-18 16:30:00 | v1.6.1 - Dark theme comprehensive fixes, update check dialog beautification, GitHub Actions auto-build images, failover strategy |
+| 2026-05-17 23:20:00 | Unified model list to user-friendly names, added thinking mode (gemini-2.5-flash-thinking) and Pro mode, fixed Playground conversation context |
+| 2026-05-17 22:30:00 | Fixed container timezone to Asia/Shanghai, logs show Beijing time |
 
 ---
 
@@ -412,14 +413,48 @@ response = client.chat.completions.create(
 
 ### Admin Interface (`/admin`)
 
+> Full admin endpoints (with request/response examples) are in [API.md](API.md); the table below is the complete list.
+
 | Method | Endpoint | Function |
 |--------|----------|----------|
 | GET | `/status` | Service status (account pool overview + rotation strategy) |
+| GET | `/system-info` | System info (version/Python/OS/memory/CPU/PID/run mode) |
 | GET | `/accounts` | All accounts list and status |
 | POST | `/accounts` | Dynamically add new account |
 | DELETE | `/accounts/{id}` | Remove account |
 | GET | `/accounts/{id}/check` | Check single account status |
+| GET | `/check-account` | Check all accounts status |
 | POST | `/reload-cookies` | Hot-update cookies (no container restart) |
+| PUT | `/accounts/{id}/cookies` | Update cookies for a specific account |
+| GET | `/health-history` | Recent health check records |
+| GET | `/usage-stats/summary` | Usage statistics summary |
+| GET | `/usage-stats/history` | Historical trend data |
+| GET | `/settings` | Get current editable config (grouped) |
+| POST | `/settings` | Batch-update config (writes .env + hot-reloads memory) |
+| GET | `/api-keys` | API Key list (keys masked) |
+| GET | `/api-keys/catalog` | Provider catalog (built-in model lists) |
+| POST | `/api-keys` | Add API Key |
+| DELETE | `/api-keys/{id}` | Delete API Key |
+| PATCH | `/api-keys/{id}/status` | Toggle Key status (enable/disable) |
+| PATCH | `/api-keys/{id}/label` | Edit Key label |
+| POST | `/api-keys/import` | Bulk-import Keys |
+| GET | `/api-keys/export` | Export all Keys (masked by default, `?reveal=true` for plaintext) |
+| POST | `/api-keys/batch-delete` | Bulk-delete |
+| POST | `/api-keys/models` | Probe available models for a given Provider/base_url |
+| GET | `/verify` | Verify API Key validity (used for login) |
+| POST | `/restart` | Restart service (one-click restart from top-right of panel) |
+| GET | `/check-update` | Check whether a new version is available |
+| POST | `/update` | Trigger update to the latest version |
+| GET | `/logs` | Structured log pagination query |
+| GET | `/logs/state` | Log recording state |
+| POST | `/logs/state` | Update log recording state |
+| POST | `/logs/clear` | Clear logs |
+| GET | `/logs/{id}` | Single log detail |
+| GET | `/model-mapping` | Get all model mappings |
+| POST | `/model-mapping` | Add/update model mapping |
+| DELETE | `/model-mapping/{alias}` | Delete model mapping |
+| GET | `/web-chats` | List sessions accumulated on the Gemini web side per account (read-only) |
+| POST | `/cleanup-web-chats` | Manually trigger cleanup of expired web sessions (runs asynchronously in background) |
 
 ---
 
@@ -439,8 +474,29 @@ response = client.chat.completions.create(
 | `RATE_LIMIT_MAX` | ❌ | `10` | Max requests per window |
 | `HEALTH_CHECK_ENABLED` | ❌ | `true` | Enable scheduled account health checks |
 | `HEALTH_CHECK_INTERVAL` | ❌ | `5` | Check interval (minutes) |
+| `ACCOUNTS_FILE` | ❌ | `accounts.json` | Multi-account config file path (falls back to single-account mode from env vars if absent) |
 | `ROTATION_STRATEGY` | ❌ | `round-robin` | Rotation strategy: `round-robin` / `failover` |
-| `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `3` | Max concurrent requests per account |
+| `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `8` | Max concurrent requests per account |
+| `ACQUIRE_TIMEOUT` | ❌ | `60.0` | Max time (seconds) to queue for a free slot when at full concurrency before erroring |
+| `SAME_ACCOUNT_5XX_RETRIES` | ❌ | `1` | Quick same-account retries on 5xx (no long backoff); failover to another account if still failing |
+| `FAILOVER_COOLDOWN` | ❌ | `30.0` | Cooldown (seconds) for an account rate-limited by 5xx, during which it is not preferred |
+| `FINGERPRINT_CONFIG_PATH` | ❌ | `data/fingerprint.json` | Fingerprint config file path |
+| `VERSION_SYNC_ENABLED` | ❌ | `true` | Enable Chrome version auto-sync |
+| `VERSION_SYNC_INTERVAL` | ❌ | `24` | Version sync interval (hours) |
+| `JITTER_ENABLED` | ❌ | `true` | Enable request time jitter (simulate human behavior) |
+| `USAGE_STATS_ENABLED` | ❌ | `true` | Enable usage statistics (time-series snapshots + persistence) |
+| `USAGE_STATS_INTERVAL` | ❌ | `300` | Snapshot collection interval (seconds) |
+| `USAGE_STATS_RETENTION_DAYS` | ❌ | `30` | Historical data retention (days) |
+| `MODEL_WHITELIST` | ❌ | — | Model whitelist (comma-separated; empty = no filtering; when set, filters each `/models` list) |
+| `CHAT_CLEANUP_ENABLED` | ❌ | `true` | Enable auto-cleanup of Gemini web sessions |
+| `CHAT_CLEANUP_KEEP_HOURS` | ❌ | `24.0` | Web session retention (hours); older ones are cleaned up |
+| `CHAT_CLEANUP_INTERVAL_HOURS` | ❌ | `6.0` | Auto-cleanup task run interval (hours) |
+| `CHAT_CLEANUP_SKIP_PINNED` | ❌ | `true` | Skip pinned sessions during cleanup |
+| `ADMIN_API_KEY` | ❌ | — | Separate auth key for the admin panel / `/admin` (empty falls back to `API_KEY`) |
+| `CORS_ALLOW_ORIGINS` | ❌ | `*` | CORS allowed origins (comma-separated; `*` means all) |
+| `CORS_ALLOW_CREDENTIALS` | ❌ | `true` | Whether CORS allows credentials |
+| `IMAGE_DOWNLOAD_SIZE_SUFFIX` | ❌ | `=s2048` | Generated-image download size suffix (`=s0` for full-resolution original) |
+| `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | Per-image download HTTP timeout (seconds) |
 
 ---
 

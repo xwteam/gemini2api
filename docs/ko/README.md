@@ -58,6 +58,7 @@
 
 | 날짜 | 업데이트 내용 |
 |------|----------|
+| 2026-06-19 22:00:00 | v1.6.19 - 🔒 보안·품질 강화 배치: 관리 패널 XSS 6건, SSRF 2건(첨부 다운로드 리다이렉트로 169.254/내부망 우회·전달 base_url 미검증), 설정이 .env를 망가뜨려 발생하던 영구 DoS, conversation_id 경로 순회 수정; 🔧 진짜 스트리밍 이미지 생성의 플레이스홀더 URL 누출/전달 SSE 구분자·[DONE] 누락, usage-stats 비활성 시 500, accounts.json 원자적 쓰기, 계정 ID 충돌 등 다수 수정; ⚙️ MODEL_WHITELIST/JITTER_ENABLED/VERSION_SYNC_INTERVAL 등 설정이 실제로 적용되도록 함; 📄 문서/설정 전면 정합 + 드리프트 테스트 추가; 🐳 비-root 이미지 + CI 게이트 차단형. 전 과정 무회귀(63 테스트 + ruff + 대항 복심 통과) |
 | 2026-06-19 14:15:00 | v1.6.18 - 🔧 gemini-pro 이미지 생성 network error 수정: 이미지 POST 타임아웃 60s→180s; SSE keepalive 10s + 청크 ping. 무회귀(62 테스트 통과) |
 | 2026-06-19 13:30:00 | v1.6.17 - 🔧 playground 이미지 생성 network error 수정: SSE 첫 프레임 + 15s ping 키프얼라이브; 이미지 DL =s2048/25s/=s512 폴백. 🎨 생성 대기 UX + 5개 언어 i18n. 무회귀(52 테스트 통과) |
 | 2026-06-19 03:01:44 | v1.6.16 - 🔧 안정성·보안 강화: 딥리서치 동기 엔드포인트 항상 500, 서드파티 스트리밍 전달 실패, 계정 슬롯 누수 교착, 다중 계정 모델 해석 혼선, 간헐적 "Client not ready", 작동하지 않던 레이트리밋 수정; 🔒 보안: 관리/업무 키 분리(선택 `ADMIN_API_KEY`), API 키 로그 마스킹, 이중 SSRF 방어, 키 내보내기/PSID 마스킹, 자격증명 파일 원자적 쓰기, CORS 구성 가능, 상수 시간 비교; 🧪 자동화 테스트 + CI 게이트 및 패널 접근성/다국어 개선 추가. 무회귀(58 테스트 통과)|
@@ -75,9 +76,9 @@
 | 2026-05-31 17:00:00 | v1.6.4 - 세 가지 API 모두 표준 베어 경로(/v1/chat/completions, /v1/messages, /v1beta/...) 노출, 주요 SDK 즉시 사용 가능; 배포 메커니즘 수정(docker-compose를 build에서 image로 변경하여 docker compose pull이 실제로 작동) |
 | 2026-05-31 14:10:00 | v1.6.3 - 이미지/파일 업로드 지원(OpenAI/Claude/Gemini 멀티모달); 모델을 웹 버전 실제 데이터로 변경 + 고정 안정 이름(gemini-pro/flash/flash-thinking); 재시작 시 Cookie 손실 없음 |
 | 2026-05-19 20:00:00 | v1.6.2 - 5분간 작업이 없으면 세션 자동 만료 및 로그아웃 |
-| 2025-05-18 16:30:00 | v1.6.1 - 다크 테마 전면 수정, 업데이트 확인 대화상자 미화, GitHub Actions 자동 이미지 빌드, failover 장애 조치 전략 |
-| 2025-05-17 23:20:00 | 모델 목록을 사용자 친화적 이름으로 통일, 사고 모드(gemini-2.5-flash-thinking) 및 Pro 모드 추가, Playground 대화 컨텍스트 수정 |
-| 2025-05-17 22:30:00 | 컨테이너 시간대를 Asia/Shanghai로 수정, 로그에 베이징 시간 표시 |
+| 2026-05-18 16:30:00 | v1.6.1 - 다크 테마 전면 수정, 업데이트 확인 대화상자 미화, GitHub Actions 자동 이미지 빌드, failover 장애 조치 전략 |
+| 2026-05-17 23:20:00 | 모델 목록을 사용자 친화적 이름으로 통일, 사고 모드(gemini-2.5-flash-thinking) 및 Pro 모드 추가, Playground 대화 컨텍스트 수정 |
+| 2026-05-17 22:30:00 | 컨테이너 시간대를 Asia/Shanghai로 수정, 로그에 베이징 시간 표시 |
 
 ---
 
@@ -349,10 +350,34 @@ print(msg.content[0].text)
 | `MAX_RETRIES` | ❌ | `3` | 실패 재시도 횟수(지수 백오프) |
 | `PORT` | ❌ | `5918` | 서비스 포트 |
 | `LOG_LEVEL` | ❌ | `info` | 로그 레벨(debug/info/warning/error) |
+| `RATE_LIMIT_ENABLED` | ❌ | `false` | 속도 제한 활성화 |
+| `RATE_LIMIT_WINDOW` | ❌ | `60` | 속도 제한 시간 창(초) |
+| `RATE_LIMIT_MAX` | ❌ | `10` | 시간 창 내 최대 요청 수 |
+| `HEALTH_CHECK_ENABLED` | ❌ | `true` | 정기 계정 상태 검사 활성화 |
+| `HEALTH_CHECK_INTERVAL` | ❌ | `5` | 검사 간격(분) |
+| `ACCOUNTS_FILE` | ❌ | `accounts.json` | 다중 계정 설정 파일 경로(존재하지 않으면 환경 변수 단일 계정 모드 사용) |
 | `ROTATION_STRATEGY` | ❌ | `round-robin` | 로테이션 전략: `round-robin`(순환) / `failover`(장애 조치) |
-| `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `3` | 계정당 최대 동시 요청 수 |
-
-전체 구성 목록은 메인 README를 참조하십시오.
+| `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `8` | 계정당 최대 동시 요청 수 |
+| `ACQUIRE_TIMEOUT` | ❌ | `60.0` | 동시성 만재 시 사용 가능한 슬롯을 대기열에서 기다리는 상한(초), 기다려도 없으면 오류 |
+| `SAME_ACCOUNT_5XX_RETRIES` | ❌ | `1` | 5xx 발생 시 동일 계정 빠른 재시도 횟수(긴 백오프 없음), 그래도 실패하면 failover로 계정 전환 |
+| `FAILOVER_COOLDOWN` | ❌ | `30.0` | 5xx로 제한된 계정이 쿨다운에 진입하는 시간(초), 그동안 우선 선택하지 않음 |
+| `FINGERPRINT_CONFIG_PATH` | ❌ | `data/fingerprint.json` | 지문 설정 파일 경로 |
+| `VERSION_SYNC_ENABLED` | ❌ | `true` | Chrome 버전 자동 동기화 활성화 |
+| `VERSION_SYNC_INTERVAL` | ❌ | `24` | 버전 동기화 간격(시간) |
+| `JITTER_ENABLED` | ❌ | `true` | 요청 시간 지터 활성화(인간 행동 모의) |
+| `USAGE_STATS_ENABLED` | ❌ | `true` | 사용 통계 활성화(시계열 스냅샷 + 지속화) |
+| `USAGE_STATS_INTERVAL` | ❌ | `300` | 스냅샷 수집 간격(초) |
+| `USAGE_STATS_RETENTION_DAYS` | ❌ | `30` | 히스토리 데이터 보존 일수 |
+| `MODEL_WHITELIST` | ❌ | — | 모델 화이트리스트(쉼표 구분, 비워두면 필터링 안 함; 비어 있지 않으면 각 `/models` 목록을 필터링) |
+| `CHAT_CLEANUP_ENABLED` | ❌ | `true` | Gemini 웹 측 세션 자동 정리 활성화 |
+| `CHAT_CLEANUP_KEEP_HOURS` | ❌ | `24.0` | 웹 세션 보존 기간(시간), 초과 시 정리 |
+| `CHAT_CLEANUP_INTERVAL_HOURS` | ❌ | `6.0` | 자동 정리 작업 실행 간격(시간) |
+| `CHAT_CLEANUP_SKIP_PINNED` | ❌ | `true` | 정리 시 고정 세션 건너뛰기 |
+| `ADMIN_API_KEY` | ❌ | — | 관리 패널/`/admin` 전용 인증 키(비워두면 `API_KEY`로 폴백) |
+| `CORS_ALLOW_ORIGINS` | ❌ | `*` | CORS 허용 출처(쉼표 구분, `*`는 전체) |
+| `CORS_ALLOW_CREDENTIALS` | ❌ | `true` | CORS 자격 증명 전송 허용 여부 |
+| `IMAGE_DOWNLOAD_SIZE_SUFFIX` | ❌ | `=s2048` | 이미지 생성 대리 다운로드 크기 접미사(`=s0`은 전체 해상도 원본) |
+| `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 단일 이미지 다운로드 HTTP 타임아웃(초) |
 
 ---
 

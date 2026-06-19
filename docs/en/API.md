@@ -879,6 +879,131 @@ curl -X DELETE http://localhost:5918/admin/api-keys/key-xxx \
 }
 ```
 
+### PATCH /admin/api-keys/{id}/status
+
+Toggle a Key's status (enable/disable).
+
+**Request:**
+```bash
+curl -X PATCH http://localhost:5918/admin/api-keys/key-xxx/status \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"status": "active"}'
+```
+
+### PATCH /admin/api-keys/{id}/label
+
+Edit a Key's label.
+
+**Request:**
+```bash
+curl -X PATCH http://localhost:5918/admin/api-keys/key-xxx/label \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"label": "My OpenAI Key"}'
+```
+
+### POST /admin/api-keys/import
+
+Bulk-import API Keys.
+
+**Request:**
+```bash
+curl -X POST http://localhost:5918/admin/api-keys/import \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "keys": [
+      {"provider": "openai", "key": "sk-...", "model": "gpt-4o"}
+    ]
+  }'
+```
+
+### GET /admin/api-keys/export
+
+Export all Keys. Masked by default; append `?reveal=true` to return plaintext keys.
+
+**Request:**
+```bash
+curl "http://localhost:5918/admin/api-keys/export?reveal=true" \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### POST /admin/api-keys/batch-delete
+
+Bulk-delete API Keys.
+
+**Request:**
+```bash
+curl -X POST http://localhost:5918/admin/api-keys/batch-delete \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"ids": ["key-1", "key-2"]}'
+```
+
+### POST /admin/api-keys/models
+
+Probe the available model list for a given Provider / base_url (used to populate the model dropdown when adding a Key).
+
+**Request:**
+```bash
+curl -X POST http://localhost:5918/admin/api-keys/models \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "provider": "openai",
+    "api_key": "sk-xxx",
+    "base_url": "https://api.openai.com/v1"
+  }'
+```
+
+### GET /admin/verify
+
+Verify API Key validity (used for login).
+
+**Request:**
+```bash
+curl http://localhost:5918/admin/verify \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+**Response:**
+```json
+{
+  "valid": true
+}
+```
+
+### POST /admin/restart
+
+Restart the service (one-click restart from the top-right of the panel; the panel auto-polls until recovery).
+
+**Request:**
+```bash
+curl -X POST http://localhost:5918/admin/restart \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### GET /admin/check-update
+
+Check whether a new version is available.
+
+**Request:**
+```bash
+curl http://localhost:5918/admin/check-update \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### POST /admin/update
+
+Trigger an update to the latest version.
+
+**Request:**
+```bash
+curl -X POST http://localhost:5918/admin/update \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
 ### GET /admin/model-mapping
 
 Get all model mappings.

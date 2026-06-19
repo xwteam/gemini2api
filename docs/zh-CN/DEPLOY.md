@@ -112,11 +112,52 @@ RATE_LIMIT_MAX=10
 HEALTH_CHECK_ENABLED=true
 HEALTH_CHECK_INTERVAL=5
 
+# 可选：多账号配置文件路径（不存在则使用环境变量单账号模式）
+ACCOUNTS_FILE=accounts.json
+
 # 可选：轮询策略（round-robin/failover，默认 round-robin）
 ROTATION_STRATEGY=round-robin
 
-# 可选：每账号最大并发数（默认 3）
-MAX_CONCURRENT_PER_ACCOUNT=3
+# 可选：每账号最大并发数（默认 8）
+MAX_CONCURRENT_PER_ACCOUNT=8
+
+# 可选：并发满载时排队等待可用槽位的上限（秒），等不到才报错
+ACQUIRE_TIMEOUT=60.0
+
+# 可选：遇 5xx 时同账号快速重试次数，仍失败则换号 failover；被限流账号的冷却时长（秒）
+SAME_ACCOUNT_5XX_RETRIES=1
+FAILOVER_COOLDOWN=30.0
+
+# 可选：指纹 / 版本同步 / 抖动
+FINGERPRINT_CONFIG_PATH=data/fingerprint.json
+VERSION_SYNC_ENABLED=true
+VERSION_SYNC_INTERVAL=24
+JITTER_ENABLED=true
+
+# 可选：用量统计
+USAGE_STATS_ENABLED=true
+USAGE_STATS_INTERVAL=300
+USAGE_STATS_RETENTION_DAYS=30
+
+# 可选：模型白名单（逗号分隔，留空则不过滤；非空时过滤各 /models 列表）
+MODEL_WHITELIST=
+
+# 可选：Gemini 网页端会话自动清理
+CHAT_CLEANUP_ENABLED=true
+CHAT_CLEANUP_KEEP_HOURS=24.0
+CHAT_CLEANUP_INTERVAL_HOURS=6.0
+CHAT_CLEANUP_SKIP_PINNED=true
+
+# 可选：管理面板/admin 独立鉴权 key（留空则回退用 API_KEY）
+ADMIN_API_KEY=
+
+# 可选：CORS（允许来源逗号分隔，* 表示全部；是否允许携带凭据）
+CORS_ALLOW_ORIGINS=*
+CORS_ALLOW_CREDENTIALS=true
+
+# 可选：生图代下载尺寸后缀（=s0 为全分辨率原图）与单次下载超时（秒）
+IMAGE_DOWNLOAD_SIZE_SUFFIX==s2048
+IMAGE_DOWNLOAD_TIMEOUT=25.0
 ```
 
 ### 配置注意事项
@@ -412,9 +453,9 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 编辑 `.env` 文件：
 
 ```env
-# 每账号最大并发请求数（默认 3）
+# 每账号最大并发请求数（默认 8）
 # 增加此值可提高吞吐量，但可能增加被限流的风险
-MAX_CONCURRENT_PER_ACCOUNT=5
+MAX_CONCURRENT_PER_ACCOUNT=10
 ```
 
 ### 调整轮询策略

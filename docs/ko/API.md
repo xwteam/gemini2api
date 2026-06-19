@@ -800,6 +800,36 @@ curl -X DELETE http://localhost:5918/admin/api-keys/key-1 \
   -H "Authorization: Bearer sk-당신의키"
 ```
 
+### PATCH /admin/api-keys/{id}/label
+
+Key 레이블 수정
+
+**요청**:
+
+```bash
+curl -X PATCH http://localhost:5918/admin/api-keys/key-1/label \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-당신의키" \
+  -d '{"label": "내 OpenAI Key"}'
+```
+
+### POST /admin/api-keys/models
+
+특정 Provider / base_url에서 사용 가능한 모델 목록 탐지 (Key 추가 시 모델 드롭다운 채우기에 사용)
+
+**요청**:
+
+```bash
+curl -X POST http://localhost:5918/admin/api-keys/models \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-당신의키" \
+  -d '{
+    "provider": "openai",
+    "api_key": "sk-xxx",
+    "base_url": "https://api.openai.com/v1"
+  }'
+```
+
 ### GET /admin/logs
 
 구조화된 로그 페이지 조회 (방향/검색/제한/오프셋 지원)
@@ -896,6 +926,39 @@ curl -X POST http://localhost:5918/admin/cleanup-web-chats \
   "status": "started",
   "message": "Web chat cleanup started in background"
 }
+```
+
+### POST /admin/restart
+
+서비스 재시작 (패널 우측 상단 원클릭 재시작, 재시작 후 자동 폴링으로 복구)
+
+**요청**:
+
+```bash
+curl -X POST http://localhost:5918/admin/restart \
+  -H "Authorization: Bearer sk-당신의키"
+```
+
+### GET /admin/check-update
+
+새 버전이 있는지 확인
+
+**요청**:
+
+```bash
+curl http://localhost:5918/admin/check-update \
+  -H "Authorization: Bearer sk-당신의키"
+```
+
+### POST /admin/update
+
+최신 버전으로 업데이트 트리거
+
+**요청**:
+
+```bash
+curl -X POST http://localhost:5918/admin/update \
+  -H "Authorization: Bearer sk-당신의키"
 ```
 
 ### GET /health

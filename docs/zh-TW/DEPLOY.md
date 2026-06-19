@@ -263,7 +263,7 @@ kill -9 <PID>
      gemini2api:
        mem_limit: 4g
    ```
-2. 減少 `.env` 中的 `MAX_CONCURRENT_PER_ACCOUNT`（預設：3）
+2. 減少 `.env` 中的 `MAX_CONCURRENT_PER_ACCOUNT`（預設：8）
 3. 在 `.env` 中啟用速率限制：
    ```env
    RATE_LIMIT_ENABLED=true
@@ -305,13 +305,34 @@ kill -9 <PID>
 | `MAX_RETRIES` | 3 | 失敗請求重試次數 |
 | `PORT` | 5918 | 服務連接埠 |
 | `LOG_LEVEL` | info | 日誌級別（debug/info/warning/error） |
+| `ACCOUNTS_FILE` | accounts.json | 多帳號配置檔案路徑（不存在則使用環境變數單帳號模式） |
 | `ROTATION_STRATEGY` | round-robin | 負載均衡：round-robin 或 failover |
-| `MAX_CONCURRENT_PER_ACCOUNT` | 3 | 每帳號最大並發請求數 |
+| `MAX_CONCURRENT_PER_ACCOUNT` | 8 | 每帳號最大並發請求數 |
+| `ACQUIRE_TIMEOUT` | 60.0 | 並發滿載時排隊等待可用槽位的上限（秒），等不到才報錯 |
+| `SAME_ACCOUNT_5XX_RETRIES` | 1 | 遇 5xx 時同帳號快速重試次數（不長退避），仍失敗則 failover 換號 |
+| `FAILOVER_COOLDOWN` | 30.0 | 被 5xx 限流的帳號進入冷卻的時長（秒），期間不優先選 |
 | `HEALTH_CHECK_ENABLED` | true | 啟用定期帳號健康檢查 |
 | `HEALTH_CHECK_INTERVAL` | 5 | 健康檢查間隔（分鐘） |
 | `RATE_LIMIT_ENABLED` | false | 啟用請求速率限制 |
 | `RATE_LIMIT_WINDOW` | 60 | 速率限制視窗（秒） |
 | `RATE_LIMIT_MAX` | 10 | 每視窗最大請求數 |
+| `FINGERPRINT_CONFIG_PATH` | data/fingerprint.json | 指紋配置檔案路徑 |
+| `VERSION_SYNC_ENABLED` | true | 啟用 Chrome 版本自動同步 |
+| `VERSION_SYNC_INTERVAL` | 24 | 版本同步間隔（小時） |
+| `JITTER_ENABLED` | true | 啟用請求時間抖動（模擬人類行為） |
+| `USAGE_STATS_ENABLED` | true | 啟用用量統計（時序快照 + 持久化） |
+| `USAGE_STATS_INTERVAL` | 300 | 快照採集間隔（秒） |
+| `USAGE_STATS_RETENTION_DAYS` | 30 | 歷史數據保留天數 |
+| `MODEL_WHITELIST` | — | 模型白名單（逗號分隔，為空則不過濾；非空時過濾各 `/models` 列表） |
+| `CHAT_CLEANUP_ENABLED` | true | 啟用 Gemini 網頁端會話自動清理 |
+| `CHAT_CLEANUP_KEEP_HOURS` | 24.0 | 網頁會話保留時長（小時），超過則清理 |
+| `CHAT_CLEANUP_INTERVAL_HOURS` | 6.0 | 自動清理任務運行間隔（小時） |
+| `CHAT_CLEANUP_SKIP_PINNED` | true | 清理時跳過置頂會話 |
+| `ADMIN_API_KEY` | — | 管理面板/`/admin` 獨立鑑權 key（留空則回退用 `API_KEY`） |
+| `CORS_ALLOW_ORIGINS` | * | CORS 允許來源（逗號分隔，`*` 表示全部） |
+| `CORS_ALLOW_CREDENTIALS` | true | CORS 是否允許攜帶憑據 |
+| `IMAGE_DOWNLOAD_SIZE_SUFFIX` | =s2048 | 生圖代下載尺寸後綴（`=s0` 為全解析度原圖） |
+| `IMAGE_DOWNLOAD_TIMEOUT` | 25.0 | 單次圖片下載 HTTP 超時（秒） |
 
 ## Docker Compose 參考
 
