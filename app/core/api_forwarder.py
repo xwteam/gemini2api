@@ -80,6 +80,9 @@ def _build_openai_request(entry: ApiKeyEntry, messages: list[dict], req) -> tupl
         payload["tools"] = [t.model_dump() for t in req.tools]
     if req.tool_choice is not None:
         payload["tool_choice"] = req.tool_choice
+    effort = getattr(entry, "reasoning_effort", None)
+    if effort:
+        payload["reasoning_effort"] = effort
     return url, headers, payload
 
 
