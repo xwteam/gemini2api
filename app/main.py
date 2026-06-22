@@ -26,8 +26,10 @@ from app.routers import usage_stats as usage_stats_router
 from app.routers import settings as settings_router
 from app.routers import api_keys as api_keys_router
 from app.routers import model_mapping as model_mapping_router
+from app.routers import gems as gems_router
 from app.core.api_key_store import ApiKeyPool
 from app.core.model_mapping import ModelMapping
+from app.core.gem_mapping import GemMapping
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
 
@@ -50,6 +52,7 @@ async def lifespan(app: FastAPI):
     app.state.log_store = LogStore()
     app.state.api_key_pool = ApiKeyPool()
     app.state.model_mapping = ModelMapping()
+    app.state.gem_mapping = GemMapping()
 
     async def log_flush_loop():
         while True:
@@ -296,6 +299,7 @@ app.include_router(usage_stats_router.router, dependencies=_admin_deps)
 app.include_router(settings_router.router, dependencies=_admin_deps)
 app.include_router(api_keys_router.router, dependencies=_admin_deps)
 app.include_router(model_mapping_router.router, dependencies=_admin_deps)
+app.include_router(gems_router.router, dependencies=_admin_deps)
 
 
 @app.get("/health")

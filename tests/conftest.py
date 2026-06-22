@@ -57,3 +57,20 @@ def client(app_main):
 
     app_main.app.state.log_store = _DummyLogStore()
     return TestClient(app_main.app)
+
+
+@pytest.fixture
+def gem_client(app_main, tmp_path):
+    """TestClient（不跑 lifespan），但把路由依赖的 app.state 对象用临时文件装好。"""
+    from fastapi.testclient import TestClient
+    from app.core.model_mapping import ModelMapping
+    from app.core.gem_mapping import GemMapping
+
+    class _DummyLogStore:
+        def add(self, *a, **k): return None
+        def flush(self, *a, **k): return None
+
+    app_main.app.state.log_store = _DummyLogStore()
+    app_main.app.state.model_mapping = ModelMapping(path=str(tmp_path / "mm.json"))
+    app_main.app.state.gem_mapping = GemMapping(path=str(tmp_path / "gm.json"))
+    return TestClient(app_main.app)
