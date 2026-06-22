@@ -10,6 +10,7 @@ import { initUsageStats, loadUsageStats } from './usage-chart.js';
 import { initLogs } from './logs.js';
 import { initSettings, loadSettings } from './settings.js';
 import { initApiKeys, loadApiKeys } from './api-keys.js';
+import { initGems, loadAccountsThenGems } from './gems.js';
 import { initI18n, t } from './i18n.js';
 import { initLanguageSwitcher } from './language-switcher.js';
 
@@ -87,6 +88,9 @@ async function loadSectionData(sectionId) {
                 break;
             case 'api-keys':
                 await loadApiKeys();
+                break;
+            case 'gems':
+                await loadAccountsThenGems();
                 break;
         }
     } catch (error) {
@@ -1123,6 +1127,7 @@ async function initApp() {
     initUsageStats();
     initSettings();
     initApiKeys();
+    initGems();
     initLightbox();
 
     console.log('Gemini2API 管理控制台已加载');

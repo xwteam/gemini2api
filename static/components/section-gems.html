@@ -1,0 +1,37 @@
+<link rel="stylesheet" href="components/section-gems.css?v=1">
+<script type="module" src="app/gems.js"></script>
+
+<section id="gems" class="section" aria-labelledby="gems-title">
+    <div class="section-header">
+        <h2 id="gems-title" data-i18n="gems.title">Gem 管理</h2>
+        <div class="section-header-actions">
+            <select id="gem-account-select" title="account"></select>
+            <button class="btn btn-sm btn-primary" id="gem-add-btn">
+                <i class="fas fa-plus"></i> <span data-i18n="gems.add">新建 Gem</span>
+            </button>
+        </div>
+    </div>
+
+    <div id="gem-add-panel" class="gem-add-panel" style="display:none">
+        <div class="form-group">
+            <label data-i18n="gems.name">名称</label>
+            <input type="text" id="gem-name">
+        </div>
+        <div class="form-group">
+            <label data-i18n="gems.desc">描述</label>
+            <input type="text" id="gem-desc">
+        </div>
+        <div class="form-group">
+            <label data-i18n="gems.prompt">系统提示词</label>
+            <textarea id="gem-prompt" rows="6"></textarea>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-primary" id="gem-confirm" data-i18n="gems.save">保存</button>
+            <button class="btn btn-outline" id="gem-cancel" data-i18n="gems.cancel">取消</button>
+        </div>
+    </div>
+
+    <div id="gem-list-container" class="gem-list-container">
+        <div class="chart-loading"><i class="fas fa-spinner fa-spin"></i> ...</div>
+    </div>
+</section>
