@@ -59,6 +59,7 @@
 
 | 日期 | 更新內容 |
 |------|----------|
+| 2026-06-22 14:21:48 | v1.6.23 - 🧠 第三方「每模型思考(reasoning_effort)」設定：API 管理裡可為每條第三方模型設定思考等級（預設不設/none/low/medium/high/自訂），轉發時自動注入——OpenAI 相容上游注入 reasoning_effort，Anthropic 上游換算成 thinking(budget_tokens) 並把回應思考映射回 reasoning_content；預設不設時零回歸，不支援思考的模型留預設即可；同時修復「僅回傳思考內容(正文暫空)被誤判為空回應」的問題 |
 | 2026-06-22 11:29:42 | v1.6.22 - 🔁 第三方直連「同名多家」自動故障切換：同一模型 ID 配置多家第三方時，固定優先第一家，遇報錯/限流/額度耗盡/逾時/空回應即自動切下一家同名第三方，全部失敗才回傳最後錯誤，客戶端只用一個模型名無感；串流在首位元組前無縫換家，壞家記憶體冷卻（`THIRDPARTY_FAILOVER_COOLDOWN` 預設 180 秒）、冷卻期優先跳過到期自動恢復，全部冷卻或僅一家仍照常嘗試絕不餓死；預設生效無開關、單家零回歸，不影響 Gemini→第三方兜底鏈 |
 | 2026-06-21 00:33:02 | v1.6.21 - 🔀 Gemini→第三方自動兜底鏈：任意 Gemini 模型（flash/pro/thinking）報錯或回傳空回應時，自動改用 API Key 池中的第三方模型原生重試，客戶端無感、仍只用一個模型名；候選自動取池中第三方、按名排除 image/video/audio/embedding 等非聊天模型、隨機輪詢、一個失敗（報錯/空）就換下一個，統一非流式探測（報錯/空都不誤當成功）、流式轉 SSE 含原生工具呼叫；`FALLBACK_ENABLED` 預設關、`FALLBACK_MODELS` 可選精確指定，零回歸 |
 | 2026-06-19 22:40:00 | v1.6.20 - 🐳 修復 v1.6.19 非 root 鏡像的升級回歸：既有部署因 ./data 屬主非容器使用者，`docker compose pull` 後非 root 程序寫入觸發 PermissionError → 啟動崩潰迴圈。改為入口腳本以 root 啟動→修復 data/api 卷屬主→gosu 降權到非 root（uid 1000）執行，既保持非 root 強化又讓 `docker compose pull && up -d` 無縫升級，無需手動 chown |
