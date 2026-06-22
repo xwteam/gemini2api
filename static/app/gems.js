@@ -60,6 +60,9 @@ function render(gems, mappings) {
     if (!gems.length) { box.innerHTML = `<div class="empty">${escapeHtml(t('gems.empty'))}</div>`; return; }
     box.innerHTML = gems.map(g => {
         const modelName = modelNameForGem(g.id, mappings);
+        const unexposeBtn = modelName
+            ? `<button class="btn btn-sm btn-warning gem-unexpose-btn" data-model="${escapeAttr(modelName)}">${escapeHtml(t('gems.unexpose'))}</button>`
+            : '';
         return `<div class="gem-card" data-id="${escapeAttr(g.id)}">
       <div class="gem-info">
         <b>${escapeHtml(g.name)}</b>
@@ -68,6 +71,7 @@ function render(gems, mappings) {
       <div class="gem-expose">
         <input class="gem-model-name" value="${escapeAttr(modelName)}" placeholder="${escapeAttr(t('gems.modelName'))}">
         <button class="btn btn-sm btn-outline gem-expose-btn">${escapeHtml(t('gems.expose'))}</button>
+        ${unexposeBtn}
       </div>
       <div class="gem-actions">
         <button class="btn btn-sm gem-edit"><i class="fas fa-pen"></i></button>
@@ -87,6 +91,10 @@ function bindRowEvents(gems) {
         card.querySelector('.gem-expose-btn')?.addEventListener('click', () => {
             const name = card.querySelector('.gem-model-name').value.trim();
             exposeGem(id, name);
+        });
+        card.querySelector('.gem-unexpose-btn')?.addEventListener('click', (e) => {
+            const modelName = e.currentTarget.dataset.model;
+            unexposeGem(modelName);
         });
     });
 }
@@ -135,6 +143,15 @@ async function exposeGem(gemId, modelName) {
             base_model: 'gemini-pro', account_id: currentAccount,
         });
         showToast(t('gems.exposed'), 'success');
+        await loadGems();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function unexposeGem(modelName) {
+    if (!modelName) return;
+    try {
+        await apiCall('DELETE', '/admin/gem-mapping/' + encodeURIComponent(modelName));
+        showToast(t('gems.unexposed'), 'success');
         await loadGems();
     } catch (e) { showToast(e.message, 'error'); }
 }
