@@ -768,6 +768,34 @@ class GeminiWebClient:
                 seen[cid] = {"cid": cid, "title": title, "pinned": pinned, "ts": ts}
         return sorted(seen.values(), key=lambda c: c["ts"], reverse=True)
 
+    async def list_gems(self) -> list[dict]:
+        """列出账号的自定义 Gem（CNgdBe / LIST_GEMS）。
+        payload [2,['en'],0] 专取用户自定义 gem（[3..]/[4..] 是预置 gem，本期不用）。
+        响应 body[2] 是 gem 列表；每项 gem[0]=id, gem[1][0]=name, gem[1][1]=desc,
+        gem[2][0]=prompt（可能缺省）。失败返回 []。
+        """
+        rpc_id = "CNgdBe"
+        payload = json.dumps([2, ["en"], 0])
+        raw = await self._batchexecute(rpc_id, payload)
+        body = self._parse_wrb_body(raw, rpc_id)
+        if not isinstance(body, list) or len(body) < 3:
+            return []
+        gem_list = body[2]
+        if not isinstance(gem_list, list):
+            return []
+        out: list[dict] = []
+        for gem in gem_list:
+            if not (isinstance(gem, list) and gem and isinstance(gem[0], str)):
+                continue
+            meta = gem[1] if len(gem) > 1 and isinstance(gem[1], list) else []
+            name = meta[0] if len(meta) > 0 and isinstance(meta[0], str) else ""
+            desc = meta[1] if len(meta) > 1 and isinstance(meta[1], str) else ""
+            prompt = ""
+            if len(gem) > 2 and isinstance(gem[2], list) and gem[2] and isinstance(gem[2][0], str):
+                prompt = gem[2][0]
+            out.append({"id": gem[0], "name": name, "description": desc, "prompt": prompt})
+        return out
+
     async def delete_web_chat(self, cid: str) -> bool:
         """删除一个网页端会话（两步 RPC：GzXR5e -> qWymEb，两步都必须执行）。
         cid 是 c_xxx 形式的会话 id。两步都返回 200 视为成功。
