@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
-from app.core.api_forwarder import forward_to_provider
+from app.core.api_forwarder import forward_to_provider, open_stream
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
 from app.core.gemini_client import GEMINI_MODELS, MODEL_ALIASES, _resolve_model
@@ -203,6 +203,44 @@ async def _maybe_fallback_stream(request, req: ChatRequest, messages_raw: list, 
         yield sse
 
 
+def _thirdparty_ok(resp) -> bool:
+    """非流式第三方 JSONResponse 成功判定：状态<400 且 body 非空（有 content 或 tool_calls）。"""
+    if not isinstance(resp, JSONResponse):
+        return True
+    if getattr(resp, "status_code", 200) >= 400:
+        return False
+    return not openai_data_is_empty(_json_body(resp))
+
+
+async def _dispatch_thirdparty(request, req: ChatRequest, resolved_model: str):
+    """直连第三方故障切换：固定优先第一家，失败即冷却换下一家，全败返回最后错误。
+    返回 None 表示该 model 非第三方/无候选 —— 落回 Gemini 路径，零回归。"""
+    pool = getattr(request.app.state, "api_key_pool", None)
+    if not pool:
+        return None
+    candidates = pool.get_entries_for_model(resolved_model)
+    if not candidates:
+        return None
+    messages_raw = [m.model_dump() for m in req.messages]
+    cooldown = settings.thirdparty_failover_cooldown
+    last_error = None
+    for entry in candidates:
+        if req.stream:
+            stream_resp, err = await open_stream(entry, messages_raw, req)
+            if stream_resp is not None:
+                pool.update_last_used(entry.id)
+                return stream_resp
+            last_error = err
+        else:
+            resp = await forward_to_provider(entry, messages_raw, req)
+            if _thirdparty_ok(resp):
+                pool.update_last_used(entry.id)
+                return resp
+            last_error = resp
+        pool.mark_unhealthy(entry.id, cooldown)
+    return last_error
+
+
 @router.get("/models")
 async def list_models(request: Request):
     models = list(gemini_client.models)
@@ -226,14 +264,9 @@ async def chat_completions(req: ChatRequest, request: Request):
     resolved_model = model_mapping.resolve(req.model)
 
     if resolved_model not in gemini_client.models and _resolve_model(resolved_model) not in GEMINI_MODELS:
-        pool = getattr(request.app.state, 'api_key_pool', None)
-        if pool:
-            entry = pool.get_key_for_model(resolved_model)
-            if entry:
-                messages_raw = [m.model_dump() for m in req.messages]
-                result = await forward_to_provider(entry, messages_raw, req)
-                pool.update_last_used(entry.id)
-                return result
+        tp = await _dispatch_thirdparty(request, req, resolved_model)
+        if tp is not None:
+            return tp
 
     messages_raw = [m.model_dump() for m in req.messages]
 
