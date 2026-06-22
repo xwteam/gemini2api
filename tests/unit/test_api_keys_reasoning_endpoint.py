@@ -21,10 +21,11 @@ def test_validate_effort_accepts():
     assert ak._validate_effort("high") == "high"
     assert ak._validate_effort("minimal") == "minimal"
     assert ak._validate_effort("2048") == "2048"
+    assert ak._validate_effort(" high ") == "high"
 
 
 def test_validate_effort_rejects():
-    for bad in ["x" * 33, "a b", "a\tb", "a\n"]:
+    for bad in ["x" * 33, "a b", "a\tb"]:
         with pytest.raises(HTTPException):
             ak._validate_effort(bad)
 
@@ -48,3 +49,10 @@ def test_patch_reasoning_effort(tmp_path):
     with pytest.raises(HTTPException):
         asyncio.run(ak.update_reasoning_effort(
             e.id, ak.UpdateReasoningEffortRequest(reasoning_effort="a b"), _req_with_pool(pool)))
+
+
+def test_patch_reasoning_effort_not_found(tmp_path):
+    pool = ApiKeyPool(file_path=str(tmp_path / "k.json"))
+    resp = asyncio.run(ak.update_reasoning_effort(
+        "ghost", ak.UpdateReasoningEffortRequest(reasoning_effort="low"), _req_with_pool(pool)))
+    assert getattr(resp, "status_code", None) == 404

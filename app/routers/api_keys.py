@@ -43,14 +43,9 @@ def _validate_effort(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     v = value.strip()
-    # If after stripping it's empty, return None
     if not v:
         return None
-    # If value had leading/trailing whitespace OR contains embedded whitespace, reject
-    if v != value or any(c.isspace() for c in v):
-        raise HTTPException(status_code=400, detail="invalid reasoning_effort value")
-    # Check for non-printable, non-ascii, or length
-    if not v.isascii() or not v.isprintable() or len(v) > 32:
+    if len(v) > 32 or not v.isascii() or not v.isprintable() or " " in v:
         raise HTTPException(status_code=400, detail="invalid reasoning_effort value")
     return v
 
@@ -104,7 +99,6 @@ async def import_keys(req: ImportKeysRequest, request: Request):
 
     for key_data in req.keys:
         try:
-            effort = _validate_effort(key_data.reasoning_effort)
             for model in key_data.models:
                 pool.add(
                     provider=key_data.provider,
@@ -112,7 +106,6 @@ async def import_keys(req: ImportKeysRequest, request: Request):
                     api_key=key_data.api_key,
                     base_url=key_data.base_url,
                     label=key_data.label,
-                    reasoning_effort=effort,
                 )
                 added += 1
         except Exception as e:
