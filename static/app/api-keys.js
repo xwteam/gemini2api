@@ -29,6 +29,7 @@ export function initApiKeys() {
     document.getElementById('ak-batch-delete')?.addEventListener('click', handleBatchDelete);
     document.getElementById('ak-export-btn')?.addEventListener('click', handleExport);
     document.getElementById('ak-import-btn')?.addEventListener('click', handleImportClick);
+    document.getElementById('ak-fallback-switch')?.addEventListener('change', handleFallbackToggle);
 
     document.getElementById('ak-custom-model')?.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') {
@@ -49,6 +50,28 @@ export async function loadApiKeys() {
         renderKeysList();
     } catch (error) {
         showToast('加载 API Keys 失败: ' + error.message, 'error');
+    }
+    await loadFallbackState();
+}
+
+async function loadFallbackState() {
+    try {
+        const data = await apiCall('GET', '/admin/api-keys/fallback');
+        const sw = document.getElementById('ak-fallback-switch');
+        if (sw) sw.checked = !!data.enabled;
+    } catch (error) {
+        console.error('加载兜底开关状态失败:', error);  // 不影响 key 列表，静默
+    }
+}
+
+async function handleFallbackToggle(e) {
+    const enabled = e.currentTarget.checked;
+    try {
+        await apiCall('PATCH', '/admin/api-keys/fallback', { enabled });
+        showToast(enabled ? t('apiKeys.fallback.on') : t('apiKeys.fallback.off'), 'success');
+    } catch (error) {
+        e.currentTarget.checked = !enabled;  // 回滚 UI
+        showToast(t('apiKeys.fallback.failed') + ': ' + error.message, 'error');
     }
 }
 

@@ -22,6 +22,17 @@
         </div>
     </div>
 
+    <div class="ak-fallback-bar">
+        <label class="ak-fallback-toggle">
+            <input type="checkbox" id="ak-fallback-switch">
+            <span class="ak-fallback-slider"></span>
+        </label>
+        <div class="ak-fallback-text">
+            <span class="ak-fallback-title" data-i18n="apiKeys.fallback.title">Gemini 兜底</span>
+            <span class="ak-fallback-hint" data-i18n="apiKeys.fallback.hint">仅控制 Gemini 失败时是否兜底到第三方；不影响第三方直连与模型列表</span>
+        </div>
+    </div>
+
     <!-- Add Key Panel (hidden by default) -->
     <div id="ak-add-panel" class="ak-add-panel" style="display:none">
         <h3><i class="fas fa-plus-circle"></i> <span data-i18n="apiKeys.addTitle">添加 API Key</span></h3>
