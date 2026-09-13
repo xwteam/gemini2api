@@ -549,6 +549,12 @@ curl -X POST http://localhost:5918/admin/accounts \
   -H "Authorization: Bearer sk-你的API密钥" \
   -d '{"psid":"g.a000新的值","psidts":"sidts-新的值","label":"我的第二个账号"}'
 
+# 或直接粘贴整段 Cookie 字符串，服务端自动解析 __Secure-1PSID / __Secure-1PSIDTS
+curl -X POST http://localhost:5918/admin/accounts \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{"cookie":"__Secure-1PSID=g.a000...; __Secure-1PSIDTS=sidts-...; 其他=随意","label":"我的第二个账号"}'
+
 # 移除账号
 curl -X DELETE http://localhost:5918/admin/accounts/account-1 \
   -H "Authorization: Bearer sk-你的API密钥"

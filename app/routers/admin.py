@@ -35,9 +35,47 @@ class ReloadCookiesRequest(BaseModel):
 
 
 class AddAccountRequest(BaseModel):
-    psid: str
+    psid: Optional[str] = None
     psidts: str = ""
     label: str = ""
+    # 直接粘贴整段 Cookie 字符串（如从浏览器 F12 复制的完整 Cookie 头），
+    # 服务端自动解析 __Secure-1PSID / __Secure-1PSIDTS，与 psid/psidts 字段二选一
+    cookie: Optional[str] = None
+
+
+def _extract_cookie_value(raw: str, name: str) -> Optional[str]:
+    """从整段 Cookie 字符串中提取指定名称的值（如 F12 复制的 `a=1; b=2` 格式）。
+    容忍空白、首尾引号；值含 % 时按 URL 编码解码（document.cookie 导出场景）。"""
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        key, _, value = part.partition("=")
+        if key.strip() != name:
+            continue
+        value = value.strip().strip('"').strip("'")
+        if not value:
+            return None
+        if "%" in value:
+            from urllib.parse import unquote
+
+            value = unquote(value)
+        return value or None
+    return None
+
+
+def _resolve_credentials(
+    psid: Optional[str], psidts: str, cookie: Optional[str]
+) -> tuple[Optional[str], str]:
+    """合并显式字段与整段 Cookie：Cookie 字符串中解析到的值优先。"""
+    if cookie:
+        parsed_psid = _extract_cookie_value(cookie, "__Secure-1PSID")
+        parsed_psidts = _extract_cookie_value(cookie, "__Secure-1PSIDTS")
+        if parsed_psid:
+            psid = parsed_psid
+        if parsed_psidts:
+            psidts = parsed_psidts
+    return psid, psidts
 
 
 @router.post("/reload-cookies")
@@ -143,10 +181,21 @@ async def list_accounts():
 
 @router.post("/accounts")
 async def add_account(req: AddAccountRequest):
+    psid, psidts = _resolve_credentials(req.psid, req.psidts, req.cookie)
+    if not psid:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "psid is required: provide psid or a cookie string containing __Secure-1PSID",
+                    "type": "invalid_request",
+                }
+            },
+        )
     try:
         account = await account_pool.add_account(
-            psid=req.psid,
-            psidts=req.psidts,
+            psid=psid,
+            psidts=psidts,
             label=req.label,
         )
         return {
@@ -188,16 +237,29 @@ async def check_single_account(account_id: str):
 
 
 class UpdateCookiesRequest(BaseModel):
-    psid: str
+    psid: Optional[str] = None
     psidts: str = ""
+    # 同 AddAccountRequest：可直接粘贴整段 Cookie 字符串自动解析
+    cookie: Optional[str] = None
 
 
 @router.put("/accounts/{account_id}/cookies")
 async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
+    psid, psidts = _resolve_credentials(req.psid, req.psidts, req.cookie)
+    if not psid and not psidts:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "nothing to update: provide psid/psidts or a cookie string containing __Secure-1PSIDTS",
+                    "type": "invalid_request",
+                }
+            },
+        )
     for account in account_pool.accounts:
         if account.id == account_id:
             if account.client:
-                result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
+                result = await account.client.reload_cookies(psid=psid, psidts=psidts)
                 if result.get("success"):
                     return {"status": "ok", "message": f"Account {account_id} cookies updated"}
                 return JSONResponse(

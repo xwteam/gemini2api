@@ -517,24 +517,27 @@ function closeAddAccountModal() {
     const modal = document.getElementById('addAccountModal');
     if (modal) {
         modal.classList.remove('active');
-        const inputs = modal.querySelectorAll('input');
+        const inputs = modal.querySelectorAll('input, textarea');
         inputs.forEach(input => { input.value = ''; });
     }
 }
 
 async function submitAddAccount() {
+    const cookie = document.getElementById('add-cookie')?.value.trim() || '';
     const psid = document.getElementById('add-psid')?.value.trim();
     const psidts = document.getElementById('add-psidts')?.value.trim() || '';
     const label = document.getElementById('add-label')?.value.trim() || '';
 
-    if (!psid) {
-        showToast('请填写 __Secure-1PSID', 'warning');
+    if (!cookie && !psid) {
+        showToast('请粘贴完整 Cookie 或填写 __Secure-1PSID', 'warning');
         return;
     }
 
     try {
         showToast(t('accounts.adding'), 'info');
-        await apiCall('POST', '/admin/accounts', { psid, psidts, label });
+        // 整段 Cookie 优先，服务端自动解析 __Secure-1PSID / __Secure-1PSIDTS
+        const payload = cookie ? { cookie, label } : { psid, psidts, label };
+        await apiCall('POST', '/admin/accounts', payload);
         showToast(t('accounts.added'), 'success');
         closeAddAccountModal();
         await loadAccounts();
@@ -562,18 +565,19 @@ function closeUpdateCookieModal() {
     const modal = document.getElementById('updateCookieModal');
     if (modal) {
         modal.classList.remove('active');
-        const inputs = modal.querySelectorAll('input');
+        const inputs = modal.querySelectorAll('input, textarea');
         inputs.forEach(input => { input.value = ''; });
     }
     updateCookieAccountId = null;
 }
 
 async function submitUpdateCookie() {
+    const cookie = document.getElementById('update-cookie')?.value.trim() || '';
     const psid = document.getElementById('update-psid')?.value.trim();
     const psidts = document.getElementById('update-psidts')?.value.trim() || '';
 
-    if (!psid) {
-        showToast('请填写 __Secure-1PSID', 'warning');
+    if (!cookie && !psid) {
+        showToast('请粘贴完整 Cookie 或填写 __Secure-1PSID', 'warning');
         return;
     }
 
@@ -584,7 +588,9 @@ async function submitUpdateCookie() {
 
     try {
         showToast('正在更新 Cookie...', 'info');
-        await apiCall('PUT', `/admin/accounts/${updateCookieAccountId}/cookies`, { psid, psidts });
+        // 整段 Cookie 优先，服务端自动解析
+        const payload = cookie ? { cookie } : { psid, psidts };
+        await apiCall('PUT', `/admin/accounts/${updateCookieAccountId}/cookies`, payload);
         showToast('Cookie 更新成功', 'success');
         closeUpdateCookieModal();
         await loadAccounts();

@@ -25,16 +25,20 @@
         </div>
         <div class="modal-body">
             <div class="form-group">
+                <label for="add-cookie" data-i18n="accounts.orPasteCookie">或直接粘贴完整 Cookie（自动解析）</label>
+                <textarea id="add-cookie" class="form-control" rows="3" data-i18n-placeholder="accounts.cookiePlaceholder" placeholder="__Secure-1PSID=...; __Secure-1PSIDTS=..."></textarea>
+            </div>
+            <div class="form-group">
                 <label for="add-label" data-i18n="accounts.labelName">标签名称</label>
                 <input type="text" id="add-label" class="form-control" data-i18n-placeholder="accounts.labelPlaceholder" placeholder="例如: 主账号">
             </div>
             <div class="form-group">
                 <label for="add-psid">__Secure-1PSID <span class="required">*</span></label>
-                <input type="text" id="add-psid" class="form-control" data-i18n-placeholder="accounts.psidPlaceholder" placeholder="输入 __Secure-1PSID" required>
+                <input type="text" id="add-psid" class="form-control" data-i18n-placeholder="accounts.psidPlaceholder" placeholder="输入 __Secure-1PSID（或粘贴上方完整 Cookie）">
             </div>
             <div class="form-group">
                 <label for="add-psidts">__Secure-1PSIDTS <span class="required">*</span></label>
-                <input type="text" id="add-psidts" class="form-control" data-i18n-placeholder="accounts.psidtsPlaceholder" placeholder="输入 __Secure-1PSIDTS" required>
+                <input type="text" id="add-psidts" class="form-control" data-i18n-placeholder="accounts.psidtsPlaceholder" placeholder="输入 __Secure-1PSIDTS（或粘贴上方完整 Cookie）">
             </div>
         </div>
         <div class="modal-footer">
@@ -55,12 +59,16 @@
         </div>
         <div class="modal-body">
             <div class="form-group">
+                <label for="update-cookie" data-i18n="accounts.orPasteCookie">或直接粘贴完整 Cookie（自动解析）</label>
+                <textarea id="update-cookie" class="form-control" rows="3" data-i18n-placeholder="accounts.cookiePlaceholder" placeholder="__Secure-1PSID=...; __Secure-1PSIDTS=..."></textarea>
+            </div>
+            <div class="form-group">
                 <label for="update-psid">__Secure-1PSID <span class="required">*</span></label>
-                <input type="text" id="update-psid" class="form-control" data-i18n-placeholder="accounts.newPsidPlaceholder" placeholder="输入新的 __Secure-1PSID" required>
+                <input type="text" id="update-psid" class="form-control" data-i18n-placeholder="accounts.newPsidPlaceholder" placeholder="输入新的 __Secure-1PSID（或粘贴上方完整 Cookie）">
             </div>
             <div class="form-group">
                 <label for="update-psidts">__Secure-1PSIDTS <span class="required">*</span></label>
-                <input type="text" id="update-psidts" class="form-control" data-i18n-placeholder="accounts.newPsidtsPlaceholder" placeholder="输入新的 __Secure-1PSIDTS" required>
+                <input type="text" id="update-psidts" class="form-control" data-i18n-placeholder="accounts.newPsidtsPlaceholder" placeholder="输入新的 __Secure-1PSIDTS（或粘贴上方完整 Cookie）">
             </div>
         </div>
         <div class="modal-footer">
