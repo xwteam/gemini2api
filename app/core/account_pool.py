@@ -600,6 +600,15 @@ class AccountPool:
                 return True
         return False
 
+    def rename_account(self, account_id: str, label: str) -> bool:
+        """重命名账号标签并立即持久化。"""
+        for a in self._accounts:
+            if a.id == account_id:
+                a.label = label.strip() or a.id
+                self._save_to_file()
+                return True
+        return False
+
     async def check_account(self, account_id: str) -> dict:
         for account in self._accounts:
             if account.id == account_id:

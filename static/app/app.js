@@ -448,6 +448,9 @@ async function loadAccounts() {
                     <button class="btn btn-sm btn-outline acc-check-btn" data-account-id="${idEsc}">
                         <i class="fas fa-heartbeat"></i> ${t('accounts.check')}
                     </button>
+                    <button class="btn btn-sm btn-outline acc-edit-btn" data-account-id="${idEsc}" data-account-label="${labelEsc}">
+                        <i class="fas fa-edit"></i> ${t('accounts.editLabel')}
+                    </button>
                     <button class="btn btn-sm btn-outline acc-cookie-btn" data-account-id="${idEsc}" data-account-label="${labelEsc}">
                         <i class="fas fa-cookie-bite"></i> ${t('accounts.updateCookie')}
                     </button>
@@ -462,6 +465,9 @@ async function loadAccounts() {
         // 通过 dataset 取回原始（已解码）值绑定事件，避免用户数据出现在 inline JS 字符串里
         container.querySelectorAll('.acc-check-btn').forEach(btn => {
             btn.addEventListener('click', () => checkAccount(btn.dataset.accountId));
+        });
+        container.querySelectorAll('.acc-edit-btn').forEach(btn => {
+            btn.addEventListener('click', () => openEditLabelModal(btn.dataset.accountId, btn.dataset.accountLabel || ''));
         });
         container.querySelectorAll('.acc-cookie-btn').forEach(btn => {
             btn.addEventListener('click', () => openUpdateCookieModal(btn.dataset.accountId, btn.dataset.accountLabel || ''));
@@ -541,6 +547,53 @@ async function submitAddAccount() {
         await loadDashboard();
     } catch (error) {
         showToast(`${t('accounts.addFailed')}: ${error.message}`, 'error');
+    }
+}
+
+// ============================================================================
+// Edit Label Modal
+// ============================================================================
+
+let editLabelAccountId = null;
+
+function openEditLabelModal(accountId, label) {
+    editLabelAccountId = accountId;
+    const modal = document.getElementById('editLabelModal');
+    const title = document.getElementById('editLabelTitle');
+    const input = document.getElementById('edit-label');
+    if (title) title.textContent = `${t('accounts.editLabel')} - ${label || accountId}`;
+    if (input) input.value = label || '';
+    if (modal) modal.classList.add('active');
+}
+
+function closeEditLabelModal() {
+    const modal = document.getElementById('editLabelModal');
+    if (modal) {
+        modal.classList.remove('active');
+        const input = document.getElementById('edit-label');
+        if (input) input.value = '';
+    }
+    editLabelAccountId = null;
+}
+
+async function submitEditLabel() {
+    const label = document.getElementById('edit-label')?.value.trim();
+    if (!label) {
+        showToast('请填写标签名称', 'warning');
+        return;
+    }
+    if (!editLabelAccountId) {
+        showToast('未选择账号', 'error');
+        return;
+    }
+    try {
+        await apiCall('PATCH', `/admin/accounts/${editLabelAccountId}`, { label });
+        showToast('标签已更新', 'success');
+        closeEditLabelModal();
+        await loadAccounts();
+        await loadDashboard();
+    } catch (error) {
+        showToast(`更新失败: ${error.message}`, 'error');
     }
 }
 
@@ -1196,6 +1249,21 @@ function initEventListeners() {
         const confirmUpdateBtn = document.getElementById('confirmUpdateCookie');
         if (confirmUpdateBtn) {
             confirmUpdateBtn.addEventListener('click', submitUpdateCookie);
+        }
+    }
+
+    // Edit label modal
+    const editLabelModal = document.getElementById('editLabelModal');
+    if (editLabelModal) {
+        editLabelModal.querySelectorAll('.modal-close, .modal-cancel').forEach(btn => {
+            btn.addEventListener('click', closeEditLabelModal);
+        });
+        editLabelModal.addEventListener('click', (e) => {
+            if (e.target === editLabelModal) closeEditLabelModal();
+        });
+        const confirmEditBtn = document.getElementById('confirmEditLabel');
+        if (confirmEditBtn) {
+            confirmEditBtn.addEventListener('click', submitEditLabel);
         }
     }
 

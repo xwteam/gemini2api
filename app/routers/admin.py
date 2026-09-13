@@ -192,6 +192,26 @@ class UpdateCookiesRequest(BaseModel):
     psidts: str = ""
 
 
+class UpdateAccountRequest(BaseModel):
+    label: Optional[str] = None
+
+
+@router.patch("/accounts/{account_id}")
+async def update_account(account_id: str, req: UpdateAccountRequest):
+    """编辑账号元信息（当前支持重命名标签），成功后立即持久化到 accounts.json。"""
+    if req.label is None or not req.label.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "label is required and must not be empty", "type": "invalid_request"}},
+        )
+    if account_pool.rename_account(account_id, req.label):
+        return {"status": "ok", "message": f"Account {account_id} updated", "label": req.label.strip()}
+    return JSONResponse(
+        status_code=404,
+        content={"error": {"message": f"Account {account_id} not found", "type": "not_found"}},
+    )
+
+
 @router.put("/accounts/{account_id}/cookies")
 async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
     for account in account_pool.accounts:

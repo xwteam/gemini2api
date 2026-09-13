@@ -44,6 +44,28 @@
     </div>
 </div>
 
+<!-- Edit Label Modal -->
+<div id="editLabelModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="editLabelTitle">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="editLabelTitle" data-i18n="accounts.editLabel">编辑标签</h3>
+            <button class="modal-close" aria-label="Close">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label for="edit-label" data-i18n="accounts.labelName">标签名称</label>
+                <input type="text" id="edit-label" class="form-control" data-i18n-placeholder="accounts.labelPlaceholder" placeholder="例如: 主账号">
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary modal-cancel" data-i18n="confirm.cancel">取消</button>
+            <button class="btn btn-primary" id="confirmEditLabel" data-i18n="accounts.confirmEditLabel">确认修改</button>
+        </div>
+    </div>
+</div>
+
 <!-- Update Cookie Modal -->
 <div id="updateCookieModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="updateCookieTitle">
     <div class="modal-content">

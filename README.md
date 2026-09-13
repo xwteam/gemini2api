@@ -493,6 +493,7 @@ curl -X POST http://localhost:5918/v1/images/generations \
 | GET | `/system-info` | 系统信息（版本/Python/OS/内存/CPU/PID/运行模式） |
 | GET | `/accounts` | 所有账号列表及状态 |
 | POST | `/accounts` | 动态添加新账号 |
+| PATCH | `/accounts/{id}` | 编辑账号（当前支持重命名标签，成功后持久化） |
 | DELETE | `/accounts/{id}` | 移除指定账号 |
 | GET | `/accounts/{id}/check` | 检测单个账号状态 |
 | GET | `/check-account` | 检测所有账号状态 |
