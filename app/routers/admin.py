@@ -199,6 +199,8 @@ async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
             if account.client:
                 result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
                 if result.get("success"):
+                    # 同步池内字段并持久化，否则容器重建后凭据回退为旧值
+                    account_pool.update_credentials(account_id, psid=req.psid, psidts=req.psidts)
                     return {"status": "ok", "message": f"Account {account_id} cookies updated"}
                 return JSONResponse(
                     status_code=503,

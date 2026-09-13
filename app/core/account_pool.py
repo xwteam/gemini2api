@@ -600,6 +600,20 @@ class AccountPool:
                 return True
         return False
 
+    def update_credentials(self, account_id: str, psid: str | None, psidts: str | None) -> bool:
+        """更新账号凭据并立即持久化（issue：PUT /accounts/{id}/cookies 只更新了
+        client 内存态，Account.psid/psidts 字段不同步、accounts.json 不落盘，
+        容器重建后凭据回退成旧值）。"""
+        for a in self._accounts:
+            if a.id == account_id:
+                if psid:
+                    a.psid = psid.strip().strip('"').strip("'").rstrip(";")
+                if psidts:
+                    a.psidts = psidts.strip().strip('"').strip("'").rstrip(";")
+                self._save_to_file()
+                return True
+        return False
+
     async def check_account(self, account_id: str) -> dict:
         for account in self._accounts:
             if account.id == account_id:
