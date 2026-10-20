@@ -5,6 +5,7 @@ import uuid
 import random
 import asyncio
 import logging
+from enum import Enum
 from pathlib import Path
 from threading import Lock
 from collections import deque
@@ -32,6 +33,28 @@ class HTTPStatusError(Exception):
     def __init__(self, status_code: int, text: str = ""):
         self.status_code = status_code
         super().__init__(f"HTTP {status_code}: {text[:200]}")
+
+
+class RotationResult(Enum):
+    """_rotate_cookies() 的三态结果。
+
+    Google 的 RotateCookies 在「现有 __Secure-1PSIDTS 还有效」时会回 HTTP 200 **但不下发
+    新 Cookie** —— 这不是失败（参考实现 refs/gemini-web-to-api
+    internal/modules/providers/gemini_service.go:461-467 的注释原文：
+    "Google returns 200 but omits a new cookie when the existing one is still valid —
+    not an error"）。把它算成失败有两个后果：面板上的轮换成功率是假的；reload_cookies()
+    里 `if rotated:` 为假就跳过第二次取 token，一个重试就能救回的账号被直接判死并进冷却。
+
+    STILL_VALID 与 RENEWED 都是真值，FAILED 为假值 —— 调用方既有的 `if rotated:` 写法
+    语义不变、无需改动。
+    """
+
+    FAILED = "failed"
+    RENEWED = "renewed"
+    STILL_VALID = "still_valid"
+
+    def __bool__(self) -> bool:
+        return self is not RotationResult.FAILED
 
 
 # account_pool.acquire() 抛出的三种"池打满/耗尽"RuntimeError 消息（均为动态拼接，故用子串匹配）。
@@ -452,13 +475,36 @@ class GeminiWebClient:
     async def initialize(self):
         fingerprint_config.load()
 
+        # 构造时传入的值（.env 的 GEMINI_PSID/PSIDTS，或 accounts.json 的条目）就是运维
+        # 当前的意图，先存一份快照：下面回放磁盘缓存时要靠它判断缓存是不是陈旧的。
+        cfg_psid, cfg_psidts = self._psid, self._psidts
+
         self._cookie_jar = PersistentCookieJar(self._psid)
         # cookie_jar 启动时已从磁盘加载持久化 Cookie。
-        # 若磁盘有有效的 PSID/PSIDTS（面板更新后持久化的最新值），优先用磁盘的，
-        # 避免被 .env 里的旧值覆盖导致重启丢 Cookie。
         persisted = self._cookie_jar.get_all()
         disk_psid = persisted.get("__Secure-1PSID")
         disk_psidts = persisted.get("__Secure-1PSIDTS")
+
+        # 配置值与磁盘缓存冲突时**以配置值为准**，并把陈旧缓存整份清掉
+        # （参考实现同口径：refs/gemini-web-to-api internal/modules/providers/gemini_service.go
+        #  Init() 里 "If config has a new PSIDTS that differs from cache, clear cache and use config"）。
+        # 过去这里无条件偏向磁盘，于是"照文档改 .env / accounts.json 再重启"——出事时最常用的
+        # 恢复手法——完全失效：data/cookies/<hash>.json 里的旧 PSIDTS 会覆盖刚换上的新值，
+        # 重启后账号依旧是过期的，而且日志上看不出任何异常。
+        # 面板的「更新 cookie」走 reload_cookies()，不经过这里，行为不变；但它只改运行态 +
+        # 磁盘缓存、不回写 .env / accounts.json，所以只在面板改过 cookie 的部署重启后会回到
+        # 配置里的值 —— 想让改动跨重启生效，请同时更新 .env / accounts.json。
+        if cfg_psid and (
+            (disk_psid and disk_psid != cfg_psid)
+            or (cfg_psidts and disk_psidts and disk_psidts != cfg_psidts)
+        ):
+            logger.warning(
+                "Configured cookies differ from the cached ones; dropping the stale cache "
+                "and using the configured PSID/PSIDTS"
+            )
+            self._cookie_jar.clear()
+            disk_psid = disk_psidts = None
+
         if disk_psid:
             self._psid = disk_psid
             if disk_psidts:
@@ -477,25 +523,23 @@ class GeminiWebClient:
 
         await self._obtain_session_token()
 
-        # 纯可观测性（issue #11）：无论走哪个分支，都明说 PSIDTS 轮换循环有没有启动、为什么。
-        # _ensure_refresh_task() 只在下面这个 else 分支和 reload_cookies() 里被调用，
-        # 也就是说「正常启动」的网关从来不跑 _auto_refresh_loop —— 而这件事过去在日志里
-        # 没有任何痕迹（没启动就什么都不打），排查 PSIDTS 过期类问题时只能靠读源码推断。
         if self._session_token:
             self._healthy = True
             await self._send_heartbeat()
             logger.info("Gemini client ready")
-            logger.info(
-                "Auto-refresh loop NOT started (startup token OK; PSIDTS rotation only runs "
-                "after a failed start or a manual cookie reload)"
-            )
         else:
-            # 这条分支不再另打一句「started」：_ensure_refresh_task() 自己就会打
-            # 「Auto-refresh loop started」，紧挨着上面那条 warning 已经把原因说清楚了。
-            # 两句都打的话 grep 'Auto-refresh loop started' 会出现重复条目，
-            # 反而让人误以为循环被启动了两次 —— 而这一批的全部价值就是让日志说清楚。
             logger.warning("Token not found, rotating cookies")
-            self._ensure_refresh_task()
+
+        # 轮换循环必须**无条件**启动（issue #11 的代码级根因）。Google 的
+        # __Secure-1PSIDTS 是小时级轮换的：启动时拿着一份好 cookie，不代表一小时后它还有效。
+        # 过去只有上面那条 else（"启动就拿不到 token"）才调 _ensure_refresh_task()，
+        # 也就是说正常启动的网关从来不跑 _auto_refresh_loop，几小时后整池账号一起失效、
+        # 只能人工换 cookie。参考实现在 Init 末尾无条件起这个循环
+        # （refs/gemini-web-to-api internal/modules/providers/gemini_service.go:167-170
+        #   `if c.autoRefresh { go c.startAutoRefresh() }`）。
+        # 日志由 _ensure_refresh_task() 自己打一句 "Auto-refresh loop started"，
+        # 两条分支各恰好一句，不重复。
+        self._ensure_refresh_task()
 
         if settings.health_check_enabled:
             self._health_check_task = asyncio.create_task(self._health_check_loop())
@@ -681,7 +725,7 @@ class GeminiWebClient:
             self._last_reload_error = msg
             self._session_token = ""
 
-    async def _rotate_cookies(self) -> bool:
+    async def _rotate_cookies(self) -> RotationResult:
         try:
             await apply_jitter("cookie_rotate")
             await self._ensure_session_current()
@@ -702,7 +746,7 @@ class GeminiWebClient:
             if resp.status_code != 200:
                 logger.warning(f"RotateCookies returned {resp.status_code}")
                 live_metrics.record_rotation(False)
-                return False
+                return RotationResult.FAILED
 
             self._cookie_jar.update_from_response(resp)
 
@@ -713,16 +757,17 @@ class GeminiWebClient:
                 self._cookie_jar.set("__Secure-1PSIDTS", new_ts)
                 logger.info("PSIDTS rotated successfully")
                 live_metrics.record_rotation(True)
-                return True
+                return RotationResult.RENEWED
 
-            resp_text = resp.text[:200] if resp.text else "(empty)"
-            logger.warning(f"RotateCookies 200 but no new PSIDTS. Response: {resp_text}")
-            live_metrics.record_rotation(False)
-            return False
+            # 200 但没下发新 PSIDTS = 现有 Cookie 还有效，不是失败（见 RotationResult 的注释）。
+            # 刻意既不记成功也不记失败：面板上的轮换成功率应当是"换新 vs 失败"的真实比例，
+            # 把"无需更换"算进任何一边都会把那个数字变成装饰品。
+            logger.info("RotateCookies 200 without a new PSIDTS; the existing one is still valid")
+            return RotationResult.STILL_VALID
         except Exception as e:
             logger.error(f"Rotation failed: {e}")
             live_metrics.record_rotation(False)
-            return False
+            return RotationResult.FAILED
 
     async def _send_heartbeat(self) -> bool:
         """调 otAQ7b(GetUserStatus) RPC：既保活又拉取账号真实可用模型。
@@ -1060,7 +1105,7 @@ class GeminiWebClient:
                 rotated = await self._rotate_cookies()
                 if not rotated:
                     consecutive_failures += 1
-                    logger.warning(f"Rotation returned no new PSIDTS ({consecutive_failures}x)")
+                    logger.warning(f"Cookie rotation failed ({consecutive_failures}x)")
                 else:
                     consecutive_failures = 0
 

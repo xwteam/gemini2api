@@ -234,6 +234,20 @@ class PersistentCookieJar:
             self._cookies.pop(name, None)
         self._persist()
 
+    def clear(self) -> None:
+        """丢掉该账号的整份 Cookie 缓存（含磁盘文件内容）。
+
+        用于"配置里的 cookie 和磁盘缓存不一致"时：此时缓存里的 PSIDTS 已经陈旧，而与它
+        同一批抓到的会话类 Cookie（NID/SIDCC/__Secure-1PSIDCC …）同样属于那个旧会话，
+        只删 PSIDTS 会留下半新半旧的组合。整份清掉再按配置值重建最干净。
+        """
+        with self._lock:
+            had = len(self._cookies)
+            self._cookies.clear()
+        self._persist()
+        if had:
+            logger.info(f"已清空 {had} 个持久化 Cookie（配置值与缓存不一致）")
+
     def _cleanup_expired(self):
         """清理过期 Cookie"""
         now = time.time()

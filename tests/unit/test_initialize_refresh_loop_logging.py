@@ -1,11 +1,13 @@
-"""启动时必须把「PSIDTS 轮换循环有没有启动」写进日志（issue #11，纯可观测性）。
+"""启动必须无条件启动 PSIDTS 轮换循环，并把这件事写进日志（issue #11 的代码级根因）。
 
-_ensure_refresh_task() 只在 initialize() 拿不到 token 的 else 分支、以及 reload_cookies()
-里被调用 —— 也就是说「正常启动」的网关从来不跑 _auto_refresh_loop。而这件事过去在日志里
-一点痕迹都没有（没启动就什么都不打），下一次排查 PSIDTS 过期只能靠读源码推断。
+Google 的 `__Secure-1PSIDTS` 是小时级轮换的。旧实现里 `_ensure_refresh_task()` 只在
+initialize() 拿不到 token 的 else 分支、以及 reload_cookies() 里被调用 —— 也就是说
+「正常启动」的网关从来不跑 `_auto_refresh_loop`：启动时拿着一份好 cookie，几小时后
+整池账号一起失效，只能人工换 cookie。参考实现在 Init 末尾无条件起这个循环
+（refs/gemini-web-to-api internal/modules/providers/gemini_service.go:167-170）。
 
-这里只断言日志，并顺带钉死"只加日志、不改控制流"：两个分支各自该不该调
-_ensure_refresh_task，以及 _healthy 的结果，都必须和加日志之前一模一样。
+这里钉死三件事：两条分支都启动轮换循环、各自恰好打一句日志（不重复）、
+以及 _healthy 的结果与原先一致（只改轮换的控制流，不改健康判定）。
 """
 
 import asyncio
@@ -75,6 +77,9 @@ class _DummyJar:
     def set(self, *a, **kw):
         return None
 
+    def clear(self):
+        return None
+
 
 def _messages(caplog) -> list[str]:
     return [r.getMessage() for r in caplog.records]
@@ -86,22 +91,21 @@ def _caplog_info(caplog):
     return caplog
 
 
-def test_healthy_startup_says_the_loop_is_not_running(monkeypatch, tmp_path, _caplog_info):
+def test_healthy_startup_starts_the_rotation_loop(monkeypatch, tmp_path, _caplog_info):
+    """正常启动（拿到 token）也必须启动轮换循环 —— 这正是 issue #11 的根因。"""
     client, ensured = _client(monkeypatch, tmp_path, token="SNlM0e-value")
     asyncio.run(client.initialize())
 
     msgs = _messages(_caplog_info)
     hits = [m for m in msgs if "Auto-refresh loop" in m]
     assert len(hits) == 1, f"启动必须恰好说一次轮换循环的状态，实际: {hits}"
-    assert "NOT started" in hits[0]
-    assert "startup token OK" in hits[0], "还得说清楚为什么没启动"
+    assert "started" in hits[0] and "NOT started" not in hits[0]
 
-    # 控制流未变：拿到 token 时本来就不该启动轮换循环
-    assert ensured == []
+    assert ensured == [True], "拿到 token 的分支同样要启动轮换循环"
     assert client.is_healthy is True
 
 
-def test_tokenless_startup_says_the_loop_started_and_why(monkeypatch, tmp_path, _caplog_info):
+def test_tokenless_startup_starts_the_loop_and_says_why(monkeypatch, tmp_path, _caplog_info):
     client, ensured = _client(monkeypatch, tmp_path, token="")
     asyncio.run(client.initialize())
 
@@ -110,23 +114,23 @@ def test_tokenless_startup_says_the_loop_started_and_why(monkeypatch, tmp_path, 
     assert len(hits) == 1, f"启动必须恰好说一次轮换循环的状态（不许重复），实际: {hits}"
     assert "NOT started" not in hits[0]
     assert "started" in hits[0]
-    # 原因由紧挨着的上一条 warning 说清楚，不再重复打一句 started
-    assert any("Token not found" in m for m in msgs), "还得说清楚为什么启动了"
+    # 原因由紧挨着的上一条 warning 说清楚
+    assert any("Token not found" in m for m in msgs), "还得说清楚 token 没拿到"
 
-    # 控制流未变：拿不到 token 才调 _ensure_refresh_task
     assert ensured == [True]
     assert client.is_healthy is False
 
 
-def test_the_two_branches_do_not_log_the_same_thing(monkeypatch, tmp_path, _caplog_info):
-    """两条日志必须互相可分辨，否则等于没加。"""
-    ok, _ = _client(monkeypatch, tmp_path, token="SNlM0e-value")
+def test_both_branches_start_exactly_one_loop(monkeypatch, tmp_path, _caplog_info):
+    """两条分支的轮换行为必须一致：都启动、都只打一句（避免 grep 出重复条目）。"""
+    ok, ok_ensured = _client(monkeypatch, tmp_path, token="SNlM0e-value")
     asyncio.run(ok.initialize())
-    healthy_line = [m for m in _messages(_caplog_info) if "Auto-refresh loop" in m][0]
+    healthy_hits = [m for m in _messages(_caplog_info) if "Auto-refresh loop" in m]
 
     _caplog_info.clear()
-    bad, _ = _client(monkeypatch, tmp_path, token="")
+    bad, bad_ensured = _client(monkeypatch, tmp_path, token="")
     asyncio.run(bad.initialize())
-    tokenless_line = [m for m in _messages(_caplog_info) if "Auto-refresh loop" in m][0]
+    tokenless_hits = [m for m in _messages(_caplog_info) if "Auto-refresh loop" in m]
 
-    assert healthy_line != tokenless_line
+    assert ok_ensured == bad_ensured == [True]
+    assert len(healthy_hits) == len(tokenless_hits) == 1
