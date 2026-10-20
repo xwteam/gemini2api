@@ -52,6 +52,11 @@ POOL_EXHAUSTED_RETRY_AFTER = 30
 # 会让所有客户端不停重试一个永远不会自行恢复的池，还把真实原因（会话过期）藏了起来。
 NO_HEALTHY_ACCOUNT_MSG = "No healthy account (session expired, cookie refresh required)"
 
+# 访问密钥绑定了账号，但绑定集合里一个可用账号都没有。fail-closed：绝不悄悄回退到
+# 别的账号（那等于绕过绑定）。映射成 503 而不是 529：池里别的账号可能很空闲，
+# 让客户端无限重试也等不到绑定账号好转，529 "稍后重试" 的语义是误导。
+BOUND_ACCOUNT_UNAVAILABLE_MSG = "Access key bound account(s) unavailable"
+
 
 def classify_error(exc: Exception) -> tuple[int, str, int | None]:
     """把 generate()/generate_stream() 抛出的异常统一映射成
@@ -76,6 +81,8 @@ def classify_error(exc: Exception) -> tuple[int, str, int | None]:
         msg = str(exc)
         # 先判"会话失效"再判"池打满"：前者槽位是空的，重试不会好转，529 是误导（issue #11）。
         if NO_HEALTHY_ACCOUNT_MSG in msg:
+            return 503, "api_error", None
+        if BOUND_ACCOUNT_UNAVAILABLE_MSG in msg:
             return 503, "api_error", None
         if any(hint in msg for hint in _POOL_EXHAUSTED_HINTS):
             return 529, "overloaded_error", POOL_EXHAUSTED_RETRY_AFTER

@@ -7,7 +7,10 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from app.core.gemini_client import GeminiWebClient, HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG
+from app.core.gemini_client import (
+    GeminiWebClient, HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG,
+)
+from app.core.access_context import current_bound_account_ids
 from app.core.fallback import is_empty_result
 from app.config import settings
 from app.core.usage_metrics import live_metrics
@@ -231,9 +234,10 @@ class AccountPool:
             account.status = AccountStatus.EXPIRED
             logger.warning(f"Account {account.id} ({account.label}) failed to initialize")
 
-    def _find_available(self, exclude: set | None = None) -> Account | None:
+    def _find_available(self, exclude: set | None = None, only: set | None = None) -> Account | None:
         """在已持有 self._cond 锁的前提下，挑一个未满载的 ACTIVE 账号；没有则返回 None。
         exclude: 本次 failover 中已试过失败的账号 id，跳过。
+        only: 访问密钥绑定的账号 id 白名单；None = 不限制（热路径只多一次 is None 短路）。
         冷却中的账号（被 5xx 限流）降级为兜底：优先选非冷却的，全冷却了才选冷却的。
         """
         exclude = exclude or set()
@@ -244,6 +248,7 @@ class AccountPool:
             and a.client is not None and a.client.is_healthy
             and a.active_requests < self._max_concurrent
             and a.id not in exclude
+            and (only is None or a.id in only)
         ]
         if not candidates:
             return None
@@ -253,19 +258,21 @@ class AccountPool:
             return self._pick_round_robin(pool)
         return self._pick_failover(pool)
 
-    def _unhealthy_active(self) -> list[Account]:
+    def _unhealthy_active(self, only: set | None = None) -> list[Account]:
         """status 仍是 ACTIVE、但 client 会话已失效的账号（需已持有 self._cond 锁）。
 
         这些账号对 _find_available() 不可见（它要求 client.is_healthy），却又不是 EXPIRED，
         是 issue #11 里池"永久卡死"的那批账号。
+        only: 访问密钥绑定的账号白名单；None = 不限制。
         """
         return [
             a for a in self._accounts
             if a.status == AccountStatus.ACTIVE
             and a.client is not None and not a.client.is_healthy
+            and (only is None or a.id in only)
         ]
 
-    def _pick_heal_candidate(self) -> Account | None:
+    def _pick_heal_candidate(self, only: set | None = None) -> Account | None:
         """挑一个可尝试自愈的账号，并就地打上 healing 单飞标志（需已持有 self._cond 锁）。
 
         单飞：同一账号同一时刻最多只有一个请求在跑 reload_cookies，其余并发请求直接拿到
@@ -279,7 +286,7 @@ class AccountPool:
         把自愈通道永久焊死。
         """
         now = asyncio.get_event_loop().time()
-        for a in self._unhealthy_active():
+        for a in self._unhealthy_active(only):
             if a.healing:
                 if now - a.healing_started_at <= HEALING_STALE_SECONDS:
                     continue
@@ -376,16 +383,30 @@ class AccountPool:
                 except Exception:
                     pass
 
-    async def acquire(self, exclude: set | None = None) -> Account:
+    async def acquire(self, exclude: set | None = None, only: set | None = None) -> Account:
         loop = asyncio.get_event_loop()
         deadline = loop.time() + self._acquire_timeout
+        # 访问密钥绑定账号：调用方没显式传 only 时，从请求上下文里取。没有访问密钥
+        # （env API_KEY 直连 / 一把都没签发）时恒为 None，整条链路零开销、零行为变化。
+        if only is None:
+            only = current_bound_account_ids()
+        if only is not None:
+            known = {a.id for a in self._accounts}
+            unknown = only - known
+            if unknown:
+                # 绑定的账号已被删除/改名：fail-closed，绝不静默回退到剩下的账号。
+                logger.warning("Access key bound to unknown account(s): %s", sorted(unknown))
+            if not (only & known):
+                raise RuntimeError(
+                    f"{BOUND_ACCOUNT_UNAVAILABLE_MSG}: {sorted(only)} not in pool"
+                )
         # 每次 acquire 最多触发一次自愈：失败了就按 F3 诚实报错，绝不在这里反复重试自旋。
         heal_attempted = False
         while True:
             heal_target: Account | None = None
             async with self._cond:
                 while True:
-                    account = self._find_available(exclude)
+                    account = self._find_available(exclude, only)
                     if account is not None:
                         account.active_requests += 1
                         account.last_used = datetime.now(timezone.utc)
@@ -407,21 +428,27 @@ class AccountPool:
                     has_available_account = any(
                         a.status == AccountStatus.ACTIVE
                         and a.client is not None and a.client.is_healthy
+                        and (only is None or a.id in only)
                         for a in self._accounts
                     )
                     if not has_available_account:
-                        unhealthy = self._unhealthy_active()
+                        unhealthy = self._unhealthy_active(only)
                         if not unhealthy:
                             # 真正的"一个 ACTIVE 账号都没有"（其余是 EXPIRED/DISABLED）：
                             # 这是修复前就存在的持锁网络恢复路径，不是本次改动引入的新东西，
                             # 维持原样——check_account 比 reload_cookies 轻量得多，且只有在
                             # 彻底没有 ACTIVE 账号时才会走到这里。
                             await self._try_recover_expired()
-                            account = self._find_available()
+                            account = self._find_available(only=only)
                             if account is not None:
                                 account.active_requests += 1
                                 account.last_used = datetime.now(timezone.utc)
                                 return account
+                            if only is not None:
+                                # 绑定账号全不可用：fail-closed，绝不回退到池里其他账号。
+                                raise RuntimeError(
+                                    f"{BOUND_ACCOUNT_UNAVAILABLE_MSG}: {sorted(only)}"
+                                )
                             raise RuntimeError("No available accounts")
                         # H2（reviewer FIX_FIRST）：这里绝不能再调 _try_recover_expired()。
                         # F1 把 has_available_account 的判定收紧成"ACTIVE 且健康"后，池里
@@ -431,7 +458,7 @@ class AccountPool:
                         # 逐请求重试的敲门风暴。ACTIVE-但-不健康 的账号已经有 F2 那条锁外、
                         # 单飞、带冷却的自愈路径，直接走它，不碰 EXPIRED 账号的恢复。
                         if not heal_attempted:
-                            heal_target = self._pick_heal_candidate()
+                            heal_target = self._pick_heal_candidate(only)
                             if heal_target is not None:
                                 break
                         # 自愈已试过/正被别的请求跑/还在冷却 → F3：给出准确文案，

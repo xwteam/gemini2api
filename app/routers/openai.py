@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
+from app.core.access_context import ensure_model_allowed, filter_models_for_access_key
 from app.core.api_forwarder import forward_to_provider, open_stream
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
@@ -244,6 +245,8 @@ async def list_models(request: Request):
                 models.append(gem_model_name)
     # MODEL_WHITELIST 过滤（为空则放行全部）
     models = _apply_model_whitelist(models)
+    # 再叠一层访问密钥的 allowed_models（未限定则原样返回）
+    models = filter_models_for_access_key(models)
     now = int(time.time())
     data = [ModelInfo(id=m, created=now) for m in models]
     return ModelList(data=data)
@@ -265,6 +268,9 @@ async def chat_completions(req: ChatRequest, request: Request):
             gem_id = gem_info.get("gem_id")
             gem_account_id = gem_info.get("account_id") or None
             resolved_model = gem_info.get("base_model") or "gemini-pro"
+
+    # 访问密钥限定模型时在此闸断（原名/解析后名任一命中即放行）；未限定则零开销返回。
+    ensure_model_allowed(req.model, resolved_model)
 
     if resolved_model not in gemini_client.models and _resolve_model(resolved_model) not in GEMINI_MODELS:
         tp = await _dispatch_thirdparty(request, req, resolved_model)
@@ -786,7 +792,9 @@ async def images_generations(req: ImageGenerationRequest):
     else:
         prompt = raw_prompt
 
-    model = _resolve_model(req.model or "gemini-pro")
+    requested_model = req.model or "gemini-pro"
+    ensure_model_allowed(requested_model)
+    model = _resolve_model(requested_model)
     try:
         result = await gemini_client.generate(prompt, req.model or "gemini-pro")
     except (RuntimeError, ValueError) as e:

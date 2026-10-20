@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
+from app.core.access_context import ensure_model_allowed
 from app.core.gemini_client import GEMINI_MODELS, _resolve_model
 from app.core.responses_protocol import (
     parse_responses_input, build_responses_object, new_response_id, ResponsesStreamEncoder,
@@ -116,6 +117,8 @@ async def create_response(request: Request):
             gem_id = gem_info.get("gem_id")
             gem_account_id = gem_info.get("account_id") or None
             resolved_model = gem_info.get("base_model") or "gemini-pro"
+
+    ensure_model_allowed(model, resolved_model)
 
     request_params = _request_params(body)
 

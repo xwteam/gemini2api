@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
+from app.core.access_context import ensure_model_allowed, filter_models_for_access_key
 from app.core.gemini_client import HTTPStatusError, classify_error
 from app.core.stream import split_into_chunks, iter_with_keepalive, sse_keepalive_during
 from app.models.gemini import (
@@ -180,6 +181,11 @@ async def list_models():
             m for m in models
             if (m.name[7:] if m.name.startswith("models/") else m.name) in allowed
         ]
+    # 再叠一层访问密钥的 allowed_models（未限定则原样返回）
+    models = [
+        m for m in models
+        if filter_models_for_access_key([m.name[7:] if m.name.startswith("models/") else m.name])
+    ]
     return JSONResponse(content=GeminiModelList(models=models).model_dump())
 
 
@@ -189,6 +195,7 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
     """Generate content using Gemini API (non-streaming)."""
     if model.startswith("models/"):
         model = model[7:]
+    requested_model = model
 
     # gem 模型解析：命中则取出 gem_id/account_id，并把对话模型换成 base_model
     gem_mapping = getattr(request.app.state, "gem_mapping", None)
@@ -200,6 +207,8 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
             gem_id = gem_info.get("gem_id")
             gem_account_id = gem_info.get("account_id") or None
             model = gem_info.get("base_model") or "gemini-pro"
+
+    ensure_model_allowed(requested_model, model)
 
     messages, attachments = _parse_contents(req.contents)
     system = _parse_system(req.system_instruction)
@@ -297,6 +306,7 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
     """Generate content using Gemini API (streaming with chunked JSON)."""
     if model.startswith("models/"):
         model = model[7:]
+    requested_model = model
 
     # gem 模型解析：命中则取出 gem_id/account_id，并把对话模型换成 base_model
     gem_mapping = getattr(request.app.state, "gem_mapping", None)
@@ -308,6 +318,8 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
             gem_id = gem_info.get("gem_id")
             gem_account_id = gem_info.get("account_id") or None
             model = gem_info.get("base_model") or "gemini-pro"
+
+    ensure_model_allowed(requested_model, model)
 
     messages, attachments = _parse_contents(req.contents)
     system = _parse_system(req.system_instruction)

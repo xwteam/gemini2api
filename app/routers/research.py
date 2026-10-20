@@ -6,6 +6,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.core.access_context import ensure_model_allowed
 from app.core.account_pool import account_pool as gemini_client
 from app.core.stream import format_sse
 from app.models.gemini import DeepResearchRequest, InteractionRequest
@@ -147,6 +148,7 @@ async def deep_research(request: DeepResearchRequest):
         if not gemini_client.models:
             raise HTTPException(status_code=503, detail="No models available")
         model = gemini_client.models[0]
+    ensure_model_allowed(model)
 
     try:
         result = await _perform_deep_research(
@@ -181,6 +183,7 @@ async def deep_research_stream(request: DeepResearchRequest):
         if not gemini_client.models:
             raise HTTPException(status_code=503, detail="No models available")
         model = gemini_client.models[0]
+    ensure_model_allowed(model)
 
     async def event_generator():
         task_id = str(uuid4())
@@ -310,6 +313,7 @@ async def deep_research_interact(request: InteractionRequest):
         raise HTTPException(status_code=503, detail="No models available")
 
     model = gemini_client.models[0]
+    ensure_model_allowed(model)
 
     # For interactive mode, treat input as a direct research query
     prompt = (

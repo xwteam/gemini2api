@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
+from app.core.access_context import ensure_model_allowed, filter_models_for_access_key
 from app.core.gemini_client import HTTPStatusError, classify_error
 from app.core.stream import split_into_chunks, iter_with_keepalive, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.claude import (
@@ -49,7 +50,7 @@ models_router = APIRouter(tags=["Claude"])
 
 @models_router.get("/models")
 async def list_models():
-    models = _apply_model_whitelist(list(gemini_client.models))
+    models = filter_models_for_access_key(_apply_model_whitelist(list(gemini_client.models)))
     data = [
         ClaudeModelInfo(
             id=m,
@@ -64,7 +65,7 @@ async def list_models():
 @models_router.get("/models/{model_id:path}")
 async def get_model(model_id: str):
     # 与 /models 列表保持一致：被白名单挡掉的模型也视为 not found
-    if model_id not in _apply_model_whitelist(list(gemini_client.models)):
+    if model_id not in filter_models_for_access_key(_apply_model_whitelist(list(gemini_client.models))):
         return JSONResponse(
             status_code=404,
             content={"type": "error", "error": {"type": "not_found", "message": f"Model {model_id} not found"}},
@@ -94,6 +95,8 @@ async def create_message(req: ClaudeRequest, request: Request):
             gem_id = gem_info.get("gem_id")
             gem_account_id = gem_info.get("account_id") or None
             resolved_model = gem_info.get("base_model") or "gemini-pro"
+
+    ensure_model_allowed(req.model, resolved_model)
 
     has_tools = bool(req.tools)
     # 生图意图优先：带 tools 但明确生图意图时跳过工具模拟，直接生图（否则生图被压制）。
@@ -197,6 +200,7 @@ async def create_message(req: ClaudeRequest, request: Request):
 
 @router.post("/messages/count_tokens")
 async def count_tokens(req: ClaudeRequest):
+    ensure_model_allowed(req.model)
     messages_raw = [m.model_dump() for m in req.messages]
     prompt = build_prompt_from_messages(messages_raw, system=req.system)
     count = estimate_tokens(prompt)
