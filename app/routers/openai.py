@@ -25,7 +25,7 @@ from app.models.openai import (
     ModelList, ModelInfo, UsageInfo,
     ImageGenerationRequest, ImageData, ImageResponse,
 )
-from app.utils.tools import build_tool_prompt, parse_tool_response_with_retry, estimate_tokens, is_image_generation_intent, maybe_image_generation_intent
+from app.utils.tools import build_tool_prompt, parse_tool_response_with_retry, estimate_tokens, is_image_generation_intent
 from app.utils.prompt import build_prompt_from_messages, extract_attachments, last_user_text
 from app.core.limiter import limiter, dynamic_rate_limit, rate_limit_exempt
 
@@ -481,10 +481,19 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     model_name = display_model or model
 
-    # 有工具调用或附件：需要完整文本才能解析 tool_calls / 处理上传，走非流式收集后再切片（零回归）。
-    # 生图意图（宽松判断兜底）：图片在生成的最后才拿到，真流式会"文字先流、图最后补"导致割裂；
-    #          走 buffered 收集完整结果，才能让图片排在文字前面。宽松判断宁可多走 buffered 不漏网。
-    if has_tools or attachments or maybe_image_generation_intent(prompt):
+    # 只有「工具调用」才强制走 buffered：tool_calls 必须拿到完整 JSON 才能解析，
+    # 这条门禁是对的，保留。
+    #
+    # 另外两条已经摘掉：
+    # - attachments：附件在 generate_stream 里照样会先上传完再开始对话（底层支持），
+    #   把它挡在 buffered 里只是让所有带图/带文件的请求都"等全文生成完才吐第一个字"。
+    #   参考实现 refs/gemini-web2api 也是附件上传完照常流式。
+    # - 生图意图：那是个关键词猜测（maybe_image_generation_intent），误判面很大，
+    #   把一堆普通对话也拖进 buffered。它现在只用来决定 POST 超时（见
+    #   gemini_client._generate_timeout），不再参与分流。真的返回了图片时，真流式路径
+    #   会在收到 final 帧后补发图片增量（见下方"生图兜底"分支），图片不会丢，
+    #   只是排在文字后面。
+    if has_tools:
         async for sse in _stream_response_buffered(
             prompt, model, has_tools, gemini_conv_id, conv, messages_raw,
             model_name, completion_id, attachments, base_url, request, req, gem_id, account_id
