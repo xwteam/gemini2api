@@ -29,6 +29,8 @@ from app.routers import settings as settings_router
 from app.routers import api_keys as api_keys_router
 from app.routers import model_mapping as model_mapping_router
 from app.routers import gems as gems_router
+from app.routers import access_keys as access_keys_router
+from app.core.access_key_store import access_key_store
 from app.core.api_key_store import ApiKeyPool
 from app.core.model_mapping import ModelMapping
 from app.core.gem_mapping import GemMapping
@@ -78,6 +80,18 @@ async def lifespan(app: FastAPI):
             await _flush_log_store(app.state.log_store)
 
     log_flush_task = asyncio.create_task(log_flush_loop())
+
+    async def access_key_flush_loop():
+        # 访问密钥的用量计数只在内存里 +1（鉴权热路径不碰磁盘），这里定时落盘。
+        # flush() 自己判脏标记；同步 IO 丢进线程池，不阻塞事件循环。
+        while True:
+            await asyncio.sleep(10)
+            try:
+                await asyncio.to_thread(access_key_store.flush)
+            except Exception as e:
+                logger.warning(f"[access_keys] 用量落盘失败，下轮重试: {e}")
+
+    access_key_flush_task = asyncio.create_task(access_key_flush_loop())
 
     async def image_cleanup_loop():
         from app.core import image_store
@@ -142,6 +156,11 @@ async def lifespan(app: FastAPI):
         await log_flush_task
     except asyncio.CancelledError:
         pass
+    access_key_flush_task.cancel()
+    try:
+        await access_key_flush_task
+    except asyncio.CancelledError:
+        pass
     image_cleanup_task.cancel()
     try:
         await image_cleanup_task
@@ -154,6 +173,11 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     app.state.log_store.flush()
+    try:
+        # 退出前最后落一次用量计数（同步直调；关停阶段任何异常都不该挡住后续清理）
+        access_key_store.flush()
+    except Exception as e:
+        logger.warning(f"[access_keys] 退出前落盘失败: {e}")
     if snapshot_task:
         snapshot_task.cancel()
         try:
@@ -425,6 +449,7 @@ app.include_router(settings_router.router, dependencies=_admin_deps)
 app.include_router(api_keys_router.router, dependencies=_admin_deps)
 app.include_router(model_mapping_router.router, dependencies=_admin_deps)
 app.include_router(gems_router.router, dependencies=_admin_deps)
+app.include_router(access_keys_router.router, dependencies=_admin_deps)
 
 
 @app.get("/health")
