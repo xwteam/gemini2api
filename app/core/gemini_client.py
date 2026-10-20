@@ -115,6 +115,144 @@ def classify_error(exc: Exception) -> tuple[int, str, int | None]:
     return 500, "api_error", None
 
 
+# ---------------------------------------------------------------------------
+# Google 在 HTTP 200 正文里返回的拒绝块（BardErrorInfo）
+# ---------------------------------------------------------------------------
+# Gemini 拒绝一个请求时 HTTP 状态码仍然是 200，错误藏在正文的一个嵌套块里，形如
+#   [["wrb.fr",null,null,null,null,[13,null,
+#     [["type.googleapis.com/assistant.boq.bard.application.BardErrorInfo",[1152]]]]],["di",2461]]
+# （实据：refs/gemini-web-to-api internal/modules/providers/gemini_service_test.go:125）
+# 这种帧的第 2 格是 null，于是我们的解析器既取不到文本也不报错，整条请求被当成"空响应"：
+# 账号不会被标不健康、cookie 自愈永远不触发、健康检查一直绿，而用户一直收到空回复。
+#
+# 只用 type URL 锚定标记，不用裸的 "BardErrorInfo" 子串：用户问"BardErrorInfo 是什么"
+# 时模型回答里就带这个词，裸子串匹配会把一次正常回答判成拒绝（两个参考实现都有这个
+# 假阳性，我们不抄）。另外 wrb.fr/er 帧的第 2 格是模型回答的 JSON 字符串，解析时整格跳过。
+_BARD_ERROR_TYPE_RE = re.compile(r"type\.googleapis\.com/[\w.]*BardErrorInfo")
+
+BARD_CATEGORY_RATE_LIMIT = "rate_limit"
+BARD_CATEGORY_SESSION_EXPIRED = "session_expired"
+BARD_CATEGORY_CONTEXT_TOO_LONG = "context_too_long"
+BARD_CATEGORY_CAPTCHA = "captcha"
+BARD_CATEGORY_UNKNOWN = "unknown"
+
+# category → HTTP 状态码。刻意复用 HTTPStatusError 的既有语义，这样 classify_error 和
+# account_pool 的 failover / 冷却 / 自愈 一行都不用改：
+#   rate_limit        → 503 与 account_pool 既有口径一致（"5xx（含 Google 503 限流）"）：
+#                       冷却该账号 + 换号重试
+#   session_expired   → 401 client 自己置 _healthy=False、pool 标 EXPIRED 并换号，
+#                       下一次请求走既有的 reload_cookies 自愈
+#   captcha           → 403 同上。人机验证只能人工处理，先把账号让出去
+#   context_too_long  → 400 请求侧问题，给客户端明确错误，绝不换号重试
+#   unknown           → 429 既不冷却账号也不跨账号 failover：一个系统性的未知拒绝若按 5xx
+#                       处理，会把整池账号一起拖进冷却（比今天的空回复更糟）。429 至少给
+#                       客户端一个"稍后再试"的明确信号，而不是静默的空回复。
+_BARD_CATEGORY_STATUS = {
+    BARD_CATEGORY_RATE_LIMIT: 503,
+    BARD_CATEGORY_SESSION_EXPIRED: 401,
+    BARD_CATEGORY_CAPTCHA: 403,
+    BARD_CATEGORY_CONTEXT_TOO_LONG: 400,
+    BARD_CATEGORY_UNKNOWN: 429,
+}
+
+# code→语义的对照表**默认为空**：BardErrorInfo 的 code 语义 Google 没有公开文档，两个
+# 参考实现也都只是把 code 原样透出（refs/gemini-web-to-api 的 extractBardError 把四种
+# 可能成因一起写进文案；refs/gemini-web2api 直接把 code 拼进消息），我们手上唯一有实据的
+# 样本是 [13, 1152]，成因不明。所以这里不内置任何猜测：运维在真机抓到样本后用
+# BARD_ERROR_CODES="1152=rate_limit,404=session_expired" 配进来，认不出的 code 一律按
+# BARD_CATEGORY_UNKNOWN 的保守口径处理。
+_BARD_CATEGORIES = frozenset(_BARD_CATEGORY_STATUS)
+
+
+def _bard_error_code_map() -> dict[int, str]:
+    """解析 BARD_ERROR_CODES（形如 "1152=rate_limit,42=captcha"）。
+
+    配置写错的条目直接忽略（一个拼错的分类名不该把请求变成 500），认得的才生效。
+    """
+    raw = (getattr(settings, "bard_error_codes", "") or "").strip()
+    if not raw:
+        return {}
+    out: dict[int, str] = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        code_s, _, cat = item.partition("=")
+        cat = cat.strip().lower()
+        if cat not in _BARD_CATEGORIES:
+            logger.warning(f"BARD_ERROR_CODES: 未知分类 {cat!r}，已忽略该条")
+            continue
+        try:
+            out[int(code_s.strip())] = cat
+        except ValueError:
+            logger.warning(f"BARD_ERROR_CODES: 无法解析 code {code_s!r}，已忽略该条")
+    return out
+
+
+def _bard_category(codes) -> str:
+    """按配置表把 code 列表映射成分类；一个都认不出就是 unknown。"""
+    mapping = _bard_error_code_map()
+    for code in codes:
+        cat = mapping.get(code)
+        if cat:
+            return cat
+    return BARD_CATEGORY_UNKNOWN
+
+
+class GeminiRejectionError(HTTPStatusError):
+    """Gemini 在 HTTP 200 正文里返回的拒绝块（BardErrorInfo）。
+
+    故意做成 HTTPStatusError 的子类：既有的 classify_error、account_pool 的
+    failover / 冷却 / 自愈全部按 status_code 工作，一行都不用改。
+    """
+
+    def __init__(self, codes, category: str = BARD_CATEGORY_UNKNOWN):
+        self.codes = tuple(codes)
+        self.category = category
+        super().__init__(
+            _BARD_CATEGORY_STATUS.get(category, _BARD_CATEGORY_STATUS[BARD_CATEGORY_UNKNOWN]),
+            f"Gemini rejected the request inside a 200 body "
+            f"(BardErrorInfo codes {list(self.codes)}, category={category}); "
+            f"usual causes: session expired, rate limit, context too long, or CAPTCHA",
+        )
+
+
+def _bard_walk(node, codes: list) -> bool:
+    """递归找拒绝标记，顺手把同一棵子树里的整数收进 codes（与参考实现
+    refs/gemini-web-to-api 的 extractBardError 同算法，只是标记换成 type URL 锚定）。"""
+    if isinstance(node, list):
+        found = False
+        for child in node:
+            if _bard_walk(child, codes):
+                found = True
+        return found
+    if isinstance(node, str):
+        return bool(_BARD_ERROR_TYPE_RE.search(node))
+    if isinstance(node, bool):
+        return False  # JSON 的 true/false 不是 code
+    if isinstance(node, int):
+        codes.append(node)
+    elif isinstance(node, float):
+        codes.append(int(node))
+    return False
+
+
+def _extract_bard_error(elem) -> "GeminiRejectionError | None":
+    """从一个顶层响应元素里识别拒绝块；识别到就返回已经造好的异常，否则 None。"""
+    if not isinstance(elem, list):
+        return None
+    framed = bool(elem) and elem[0] in ("wrb.fr", "er")
+    for idx, child in enumerate(elem):
+        # 第 2 格是模型回答的 JSON 字符串（可能本身就在谈 BardErrorInfo），整格跳过；
+        # 真正的错误块在第 5 格。
+        if framed and idx == 2:
+            continue
+        codes: list = []
+        if _bard_walk(child, codes):
+            return GeminiRejectionError(codes, _bard_category(codes))
+    return None
+
+
 GEMINI_APP_URL = "https://gemini.google.com/app"
 GEMINI_HOME_URL = "https://gemini.google.com/?hl=en"
 GEMINI_APP_EN_URL = "https://gemini.google.com/app?hl=en"
@@ -181,6 +319,22 @@ KNOWN_MODELS = list(GEMINI_MODELS.keys())
 def _build_id_alias_map() -> dict[str, str]:
     """内部 model_id -> 内部模型名（用于状态接口解析）。"""
     return {info["id"]: name for name, info in GEMINI_MODELS.items()}
+
+
+def _entry_field(entry: list, idx: int):
+    """取心跳模型条目的第 idx 格，越界/类型不对回 None（只用于日志，绝不能自己抛）。
+
+    字段口径取自参考实现 refs/gemini-web-to-api internal/modules/providers/gemini_models.go：
+    display_name 在第 11 格（它另有 19/1 两个兜底位），model_number 在第 17 格（兜底第 9 格）。
+    第 4 格按本轮任务给的口径一并打出来作线索 —— 参考实现的 capacity 取自账号级
+    status[16]/[17]、不是条目级，所以这里只叫 field4，不声称它就是档位。
+    """
+    try:
+        if isinstance(entry, list) and -len(entry) <= idx < len(entry):
+            return entry[idx]
+    except TypeError:
+        pass
+    return None
 
 
 def _model_number(model_name: str) -> int:
@@ -378,31 +532,6 @@ def _extract_text_from_wrb(elem: list) -> tuple[str | None, str, str]:
         return text, conv, thoughts
     except Exception:
         return None, "", ""
-
-
-MODEL_VALID_PATTERN = re.compile(
-    r"gemini-(\d+)\.(\d+)-([a-z]+)(?:-([a-z]+))?(?:-preview)?(?:-\d{2}-\d{2})?"
-)
-
-
-def _filter_valid_models(raw_hits: list[str]) -> list[str]:
-    """只保留格式正确的模型名，排除明显无效的"""
-    valid = []
-    seen = set()
-    for m in raw_hits:
-        if m in seen:
-            continue
-        if not MODEL_VALID_PATTERN.match(m):
-            continue
-        if len(m) < 12 or len(m) > 50:
-            continue
-        # 排除明显是版本号片段的（如 gemini-1.0-ultra-latest-something-else）
-        parts = m.split("-")
-        if len(parts) > 7:
-            continue
-        seen.add(m)
-        valid.append(m)
-    return sorted(valid)
 
 
 def _load_models_cache() -> list[str]:
@@ -611,8 +740,6 @@ class GeminiWebClient:
             else:
                 body = resp.text
                 token_match = re.search(r'"SNlM0e":"([^"]+)"', body)
-                model_hits = re.findall(r"gemini-\d+\.\d+[a-zA-Z0-9.\-]+", body)
-                models_found = _filter_valid_models(model_hits)
 
                 if token_match:
                     self._session_token = token_match.group(1)
@@ -620,10 +747,14 @@ class GeminiWebClient:
                     self._healthy = True
                     await self._send_heartbeat()  # 拉取账号真实可用模型
 
+                # models_count 只认 RPC 的结果：之前还会拿 HTML 正则抓一遍模型名兜底，
+                # 而那条正则要求"数字.数字"（gemini-\d+\.\d+...），匹配不到 gemini-3-pro
+                # 这类当代名字，恒为空 —— 兜不住任何东西，只会让人误以为有兜底。
+                # 真实可用模型由上面的 _send_heartbeat 调 otAQ7b 状态接口解析。
                 result = {
                     "valid": token_match is not None,
                     "has_token": token_match is not None,
-                    "models_count": len(self._available_models) or len(models_found),
+                    "models_count": len(self._available_models),
                     "checked_at": now,
                 }
         except Exception as e:
@@ -1070,18 +1201,32 @@ class GeminiWebClient:
                     models_list = body[15] if isinstance(body, list) and len(body) > 15 else None
                     if not isinstance(models_list, list):
                         continue
-                    discovered_ids = []
+                    discovered = []
                     for m in models_list:
                         if isinstance(m, list) and m and isinstance(m[0], str):
-                            discovered_ids.append(m[0])
+                            discovered.append(m)
                     # 内部 model_id -> 内部模型名 -> 按 family 记录账号真实可用模型
                     id_to_name = _build_id_alias_map()
                     family_model = {}
-                    for mid in discovered_ids:
+                    for entry in discovered:
+                        mid = entry[0]
                         name = id_to_name.get(mid)
                         if name and name in GEMINI_MODELS:
                             fam = GEMINI_MODELS[name]["family"]
                             family_model.setdefault(fam, name)
+                            continue
+                        # 认不出的条目过去是静默 continue：零可观测性。账号心跳明明已经
+                        # 返回了某个新模型的 id，只因为不在写死的 GEMINI_MODELS 表里就被
+                        # 丢掉，而日志里一个字都没有 —— 排查"某个新模型用不了"时只能靠读源码。
+                        # 参考实现对每个被丢掉的条目都有一条带原因的 warn
+                        # （refs/gemini-web-to-api internal/modules/providers/gemini_models.go
+                        #  的 skip(reason, entry)）。
+                        logger.warning(
+                            "Heartbeat model entry dropped (model id not in GEMINI_MODELS): "
+                            f"model_id={mid} display_name={_entry_field(entry, 11)!r} "
+                            f"model_number={_entry_field(entry, 17)!r} "
+                            f"field4={_entry_field(entry, 4)!r}"
+                        )
                     if family_model:
                         # 账号拉到了 pro/flash，按同 capacity 等级补全 thinking
                         caps = {GEMINI_MODELS[n]["capacity"] for n in family_model.values()}
@@ -1324,6 +1469,13 @@ class GeminiWebClient:
                         if consumed:
                             buf = buf[consumed:]
                         for elem in frames:
+                            # 流式同样要识别 200 正文里的拒绝块（与非流式同一条识别路径）。
+                            # 注意只覆盖 _scan_complete_wrb_frames 能切出的 wrb.fr 帧；
+                            # 真·流式下拒绝块总在首帧，正常答案的增量帧也都是 wrb.fr。
+                            rejection = _extract_bard_error(elem)
+                            if rejection is not None:
+                                logger.warning(f"Upstream rejected the stream: {rejection}")
+                                raise rejection
                             text, conv, thoughts = _extract_text_from_wrb(elem)
                             if conv:
                                 last_conv = conv
@@ -1553,7 +1705,15 @@ class GeminiWebClient:
                 continue
 
             for item in data:
-                if not isinstance(item, list) or len(item) < 3:
+                if not isinstance(item, list):
+                    continue
+                # Gemini 拒绝请求时 HTTP 仍是 200、错误藏在正文里（见 _extract_bard_error）。
+                # 必须在"取文本"之前识别出来：这种帧没有文本，否则整条请求会被当成空响应。
+                rejection = _extract_bard_error(item)
+                if rejection is not None:
+                    logger.warning(f"Upstream rejected the request: {rejection}")
+                    raise rejection
+                if len(item) < 3:
                     continue
                 raw_payload = item[2]
                 if not isinstance(raw_payload, str):

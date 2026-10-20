@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     # 属隐私 + 体积敏感，只有运维明确需要排障时才开。开启后也只记 body、绝不记任何
     # 请求头（Authorization 等凭据不进日志），且流式响应只记一个标记、绝不缓冲整个流。
     log_bodies_enabled: bool = False
+    # Gemini 在 HTTP 200 正文里返回的拒绝块（BardErrorInfo）的 code→语义对照表，
+    # 形如 "1152=rate_limit,404=session_expired"。可用分类：rate_limit / session_expired /
+    # context_too_long / captcha。**默认空**：这些 code 的语义 Google 没有公开文档，
+    # 我们也还没在真机抓到四类的完整样本，所以不内置任何猜测——认不出的 code 一律按
+    # unknown 处理（映射成 429：给客户端明确的"稍后再试"，且不冷却/不换号，
+    # 避免一个系统性的未知拒绝把整池账号拖进冷却）。抓到样本后往这里配即可生效。
+    bard_error_codes: str = ""
 
     @field_validator("gemini_psid")
     @classmethod
