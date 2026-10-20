@@ -131,12 +131,14 @@ async def verify_api_key(request: Request):
 
 
 async def verify_admin_key(request: Request):
-    """管理面板/admin 路由鉴权。配置了 admin_api_key 则校验它，否则回退 api_key（默认单 key 全功能，零回归）。"""
-    path = request.url.path
+    """管理面板/admin 路由鉴权。配置了 admin_api_key 则校验它，否则回退 api_key（默认单 key 全功能，零回归）。
 
-    if _is_public_path(path):
-        return
-
+    这里**绝不能**像 verify_api_key 那样对 _is_public_path() 放行：那个函数是按文件后缀
+    白名单判的（.js/.css/.png/...），而本依赖只挂在 /admin/* 路由上。最后一段路径由
+    调用方控制的管理端点（例如 DELETE /admin/model-mapping/{name}）只要把名字写成
+    `evil.js`，就能无凭据执行——管理面的那道门直接开着。静态资源不走这个依赖，
+    去掉这段放行不影响面板加载。
+    """
     admin_key = (settings.admin_api_key or "").strip()
     expected = admin_key if admin_key else settings.api_key
 

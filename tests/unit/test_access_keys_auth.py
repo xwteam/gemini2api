@@ -160,3 +160,36 @@ def test_public_paths_stay_open_and_are_never_counted(client, monkeypatch, tmp_p
     key = store.create("k", request_limit=1)
     assert client.get("/health").status_code == 200
     assert store.get(key.id).request_count == 0
+
+
+def test_admin_endpoints_are_not_unlocked_by_a_static_looking_path(gem_client, monkeypatch, tmp_path):
+    """verify_admin_key 不得对"看起来像静态资源"的路径放行。
+
+    _is_public_path 是按文件后缀白名单判的（.js/.css/.png/...），而管理端点的最后一段
+    常常由调用方控制（DELETE /admin/model-mapping/{alias}）：把别名写成 `evil.js`
+    就能无凭据执行管理操作。「访问密钥只能打业务 API、管理面由 admin_api_key 把守」
+    这条红线整条都压在这道门上。
+    """
+    _isolate(monkeypatch, tmp_path)
+
+    # 先用正确的 key 建一个确实存在的映射，免得 404 把问题盖过去
+    assert gem_client.post(
+        "/admin/model-mapping",
+        json={"alias": "evil.js", "target": "gemini-pro"},
+        headers=_AUTH,
+    ).status_code == 200
+
+    for path in ("/admin/model-mapping/evil.js", "/admin/model-mapping/x.png",
+                 "/admin/model-mapping/plain"):
+        assert gem_client.delete(path).status_code == 401, f"{path} 无凭据就被执行了"
+
+    mappings = gem_client.get("/admin/model-mapping", headers=_AUTH).json()["mappings"]
+    assert mappings == {"evil.js": "gemini-pro"}, "无凭据的 DELETE 真的改了状态"
+    # 带正确的 key 仍然能删（证明上面的 401 不是把端点整个堵死了）
+    assert gem_client.delete("/admin/model-mapping/evil.js", headers=_AUTH).status_code == 200
+
+
+def test_panel_static_assets_stay_public(client):
+    """零回归的另一半：面板自己的静态资源不走 verify_admin_key，仍然免鉴权可取。"""
+    for path in ("/", "/login.html", "/app/app.js"):
+        assert client.get(path).status_code == 200, path
