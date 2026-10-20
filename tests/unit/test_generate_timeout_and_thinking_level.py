@@ -54,6 +54,32 @@ def test_image_intent_has_its_own_tier(monkeypatch):
     assert gc._generate_timeout("gemini-3-flash-lite", "画一张猫的图片") == 240
 
 
+def test_image_tier_raises_the_budget_and_never_lowers_it(monkeypatch):
+    """生图档是"取大"不是"覆盖"：pro 生一张图不能比 pro 答一道文字难题还短。
+
+    生图是整个产品里最慢的操作（注释自己写着"生图 pro 常 >60s"），而 pro 的文字档是
+    300s —— 覆盖式实现会把它压回 180s，正好把最慢的场景给了最短的预算，与 S7 的立意相反。
+    """
+    pro_text = gc._generate_timeout("gemini-3-pro", "证明一下这个定理")
+    pro_image = gc._generate_timeout("gemini-3-pro", "画一张赛博朋克城市的图")
+    assert pro_text == 300
+    assert pro_image == 300, "pro 生图不能比 pro 纯文本更短"
+
+    # 低档族仍然被生图档抬上去
+    assert gc._generate_timeout("gemini-3-flash-lite", "画一张猫的图") == 180
+    assert gc._generate_timeout("gemini-3-flash", "画一张猫的图") == 180
+
+
+def test_loose_image_keywords_never_shorten_a_strong_family():
+    """宽松判定的输入是拍平后的整段 prompt（含 system 与全部历史），误判面很大。
+    既然它只会"加时"，一句含图像关键词的多轮难题就不会把 pro 从 300s 砍到 180s。"""
+    from app.utils.tools import maybe_image_generation_intent
+
+    text = "想做个图像识别的方案，先帮我证明这个复杂度下界"
+    assert maybe_image_generation_intent(text) is True, "判定前提：这句确实会被误判成生图"
+    assert gc._generate_timeout("gemini-3-pro", text) == 300
+
+
 def test_config_overrides_a_family(monkeypatch):
     monkeypatch.setattr(gc.settings, "generate_timeouts", "pro=450,flash=90", raising=False)
     assert gc._generate_timeout("gemini-3-pro", "x") == 450
@@ -90,24 +116,118 @@ def _client_with_failing_send(monkeypatch, exc):
     return client, calls
 
 
-def test_curl_timeout_is_not_retried(monkeypatch):
-    """curl 超时（code 28）= 我们自己掐断了一个还在生成的回答，再发两遍只会让用户多等。"""
+def test_generation_timeout_is_not_retried(monkeypatch):
+    """生成期超时 = 我们自己掐断了一个还在生成的回答，再发两遍只会让用户多等。"""
+    exc = gc.GenerationTimedOut(120.0, 121.0, RequestsError("Operation timed out",
+                                                            gc._CURL_TIMEDOUT))
+    client, calls = _client_with_failing_send(monkeypatch, exc)
+
+    with pytest.raises(gc.GenerationTimedOut):
+        asyncio.run(client.generate("hi", "gemini-flash"))
+
+    assert len(calls) == 1, f"生成期超时只能发一次，实际发了 {len(calls)} 次"
+
+
+def test_connect_phase_timeout_is_still_retried(monkeypatch):
+    """连接期的超时同样是 curl code 28，但它该重试 —— 原样再发一次大概率就通了。
+
+    过去这两种超时混在一条 `_is_timeout_error` 判断里：一次短暂的建连超时既不重试、
+    也不是 5xx（account_pool 不会换号），用户直接拿到 500 硬失败。
+    """
     exc = RequestsError("Operation timed out", gc._CURL_TIMEDOUT)
     client, calls = _client_with_failing_send(monkeypatch, exc)
 
-    with pytest.raises(RequestsError):
+    with pytest.raises(Exception):
         asyncio.run(client.generate("hi", "gemini-flash"))
 
-    assert len(calls) == 1, f"超时只能发一次，实际发了 {len(calls)} 次"
+    assert len(calls) == gc.settings.max_retries == 3
 
 
-def test_asyncio_timeout_is_not_retried(monkeypatch):
+def test_asyncio_timeout_is_retried_like_any_other_failure(monkeypatch):
+    """裸 asyncio.TimeoutError 不再被当成生成期超时（它不带耗时信息，分不出是哪一段）。"""
     client, calls = _client_with_failing_send(monkeypatch, asyncio.TimeoutError())
 
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(Exception):
         asyncio.run(client.generate("hi", "gemini-flash"))
 
-    assert len(calls) == 1
+    assert len(calls) == gc.settings.max_retries == 3
+
+
+# ---------------------------------------------------------------------------
+# S7：生成期超时 vs 连接期超时的判定（按耗时，不按 curl code）
+# ---------------------------------------------------------------------------
+
+def _send_request_client(monkeypatch, *, budget: float, delay: float, exc):
+    """让 _send_request 的 POST 等 delay 秒后抛 exc，整体预算是 budget 秒。"""
+    client = gc.GeminiWebClient.__new__(gc.GeminiWebClient)
+    client._session_token = "TOKEN"
+    client._session_uuid = "SESSION-UUID"
+    client._family_model = {}
+    client._push_id = ""
+
+    class _Jar:
+        def update_from_response(self, resp):
+            return None
+
+    client._cookie_jar = _Jar()
+
+    class _Http:
+        async def post(self, *a, **kw):
+            await asyncio.sleep(delay)
+            raise exc
+
+    client._http = _Http()
+
+    async def _noop(*a, **kw):
+        return None
+
+    monkeypatch.setattr(gc, "apply_jitter", _noop)
+    monkeypatch.setattr(gc, "_generate_timeout", lambda *a, **kw: budget)
+    monkeypatch.setattr(client, "_ensure_session_current", _noop)
+    monkeypatch.setattr(client, "_clear_session_cookies", lambda: None)
+    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_headers", lambda *a, **kw: {})
+    return client
+
+
+def test_a_timeout_that_ate_the_whole_budget_is_a_generation_timeout(monkeypatch):
+    client = _send_request_client(
+        monkeypatch, budget=0.05, delay=0.06,
+        exc=RequestsError("Operation timed out", gc._CURL_TIMEDOUT),
+    )
+
+    with pytest.raises(gc.GenerationTimedOut) as ei:
+        asyncio.run(client._send_request("hi", "gemini-flash"))
+
+    assert ei.value.budget == 0.05
+    assert ei.value.elapsed >= 0.05
+
+
+def test_a_fast_timeout_stays_a_plain_connection_error(monkeypatch):
+    """几毫秒就回来的 code 28 = 建连阶段的瞬断，不许被当成生成期超时。"""
+    client = _send_request_client(
+        monkeypatch, budget=5.0, delay=0.0,
+        exc=RequestsError("Operation timed out", gc._CURL_TIMEDOUT),
+    )
+
+    with pytest.raises(RequestsError) as ei:
+        asyncio.run(client._send_request("hi", "gemini-flash"))
+
+    assert not isinstance(ei.value, gc.GenerationTimedOut)
+
+
+def test_non_timeout_failures_are_untouched(monkeypatch):
+    """零回归：非超时的错误原样抛出，不被包装。"""
+    client = _send_request_client(
+        monkeypatch, budget=0.05, delay=0.06,
+        exc=RequestsError("Connection reset", 56),
+    )
+
+    with pytest.raises(RequestsError) as ei:
+        asyncio.run(client._send_request("hi", "gemini-flash"))
+
+    assert not isinstance(ei.value, gc.GenerationTimedOut)
+    assert ei.value.code == 56
 
 
 def test_other_curl_errors_still_retry(monkeypatch):

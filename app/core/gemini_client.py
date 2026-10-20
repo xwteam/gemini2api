@@ -68,15 +68,24 @@ def _parse_generate_timeouts(raw: str) -> dict:
 def _generate_timeout(resolved_model: str, prompt: str) -> float:
     """这一次非流式 POST 该等多久（秒）。
 
-    生图意图单独一档（见 _GENERATE_TIMEOUT_IMAGE）；其余按模型族分层，族认不出时用兜底值。
+    先按模型族分层（族认不出时用兜底值），"疑似生图"再单独抬一档（_GENERATE_TIMEOUT_IMAGE）。
+    注意生图这一档是**取大**而不是覆盖：生图是整个产品里最慢的操作，让 pro 生一张图
+    （180s）比 pro 答一道文字难题（300s）还短，等于把"模型越强给越久"这条分层用反了。
+    何况这里的判定输入是拍平后的整段 prompt（含 system 与全部历史），多轮对话里任何一句
+    含图像关键词的话都会命中（`maybe_image_generation_intent("想做个图像识别的方案")`
+    就是 True）—— 一个关键词猜测只被允许"加时"，绝不允许"减时"。
     """
-    if maybe_image_generation_intent(prompt):
-        return float(getattr(settings, "generate_timeout_image", None) or _GENERATE_TIMEOUT_IMAGE)
     info = GEMINI_MODELS.get(resolved_model)
     family = str(info["family"]) if info else ""
     overrides = _parse_generate_timeouts(getattr(settings, "generate_timeouts", "") or "")
     value = overrides.get(family) or _GENERATE_TIMEOUT_BY_FAMILY.get(family)
-    return float(value or _GENERATE_TIMEOUT_DEFAULT)
+    timeout = float(value or _GENERATE_TIMEOUT_DEFAULT)
+    if maybe_image_generation_intent(prompt):
+        image_timeout = float(
+            getattr(settings, "generate_timeout_image", None) or _GENERATE_TIMEOUT_IMAGE
+        )
+        timeout = max(timeout, image_timeout)
+    return timeout
 
 
 # curl 的 code 28 既是"读超时"也是"连接超时"（实测两者都是 28，无法用 code 区分）。
@@ -1625,10 +1634,12 @@ class GeminiWebClient:
                 await asyncio.sleep(wait)
             except Exception as e:
                 last_err = e
-                if _is_timeout_error(e):
-                    # 超时意味着我们自己把一个还在生成的回答掐断了。原样再发两遍不会有
+                if isinstance(e, GenerationTimedOut):
+                    # 生成期超时：我们自己把一个还在生成的回答掐断了。原样再发两遍不会有
                     # 不同的结果，只会把用户的等待时间翻三倍（60→等1s→60→等2s→60 =
                     # 183 秒才看到失败）。直接抛出去。
+                    # 判定由 _send_request 按耗时做（见 _TIMEOUT_ELAPSED_RATIO）：连接期的
+                    # 超时同样是 curl code 28，但它该走下面的通用重试。
                     logger.warning(f"Generate timed out, not retrying: {e}")
                     raise
                 # 最后一次尝试失败后不再有重试，跳过退避空耗，立即抛错让上层 failover
@@ -1865,10 +1876,22 @@ class GeminiWebClient:
             headers["x-goog-ext-525005358-jspb"] = f'["{uuid_val}",1]'
 
         gen_timeout = _generate_timeout(resolved, prompt)
-        resp = await self._http.post(
-            GENERATE_URL, data=form_data, cookies=cookies, headers=headers,
-            timeout=gen_timeout,
-        )
+        started = time.monotonic()
+        try:
+            resp = await self._http.post(
+                GENERATE_URL, data=form_data, cookies=cookies, headers=headers,
+                timeout=gen_timeout,
+            )
+        except Exception as e:
+            # curl 的 code 28 既是读超时也是连接超时（实测两者都是 28，无法用 code 区分）。
+            # 只有"耗时已经吃掉整个预算"才说明我们掐断的是一个还在生成的回答 —— 那种情况
+            # 原样再发两遍只会让用户多等。几秒就回来的 28 是建连阶段的瞬断，照旧交给通用
+            # 重试：过去二者混在一起，于是一次短暂的连接超时既不重试、也不是 5xx
+            # （account_pool 不换号），用户直接拿到 500 硬失败。
+            elapsed = time.monotonic() - started
+            if _is_timeout_error(e) and elapsed >= gen_timeout * _TIMEOUT_ELAPSED_RATIO:
+                raise GenerationTimedOut(gen_timeout, elapsed, e) from e
+            raise
         self._cookie_jar.update_from_response(resp)
 
         if resp.status_code >= 400:
