@@ -11,6 +11,7 @@ import { initLogs } from './logs.js';
 import { initSettings, loadSettings } from './settings.js';
 import { initApiKeys, loadApiKeys } from './api-keys.js';
 import { initGems, loadAccountsThenGems } from './gems.js';
+import { initAccessKeys, loadAccessKeys } from './access-keys.js';
 import { initI18n, t } from './i18n.js';
 import { initLanguageSwitcher } from './language-switcher.js';
 
@@ -88,6 +89,9 @@ async function loadSectionData(sectionId) {
                 break;
             case 'api-keys':
                 await loadApiKeys();
+                break;
+            case 'access-keys':
+                await loadAccessKeys();
                 break;
             case 'gems':
                 await loadAccountsThenGems();
@@ -1323,6 +1327,7 @@ async function initApp() {
     initUsageStats();
     initSettings();
     initApiKeys();
+    initAccessKeys();
     initGems();
     initLightbox();
 
