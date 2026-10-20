@@ -18,6 +18,17 @@ curl -H "x-api-key: sk-your-api-key" http://localhost:5918/...
 
 > **注意：** API Key 在首次啟動時自動生成，格式為 `sk-` 前綴 + 32 位隨機字元。
 
+### 兩種可用的金鑰
+
+| 類型 | 來源 | 能存取 | 計數 |
+|------|------|--------|------|
+| `API_KEY`（`.env`） | 首次啟動自動生成，或自行設定 | 業務 API + `/admin/*`（未單獨設定 `ADMIN_API_KEY` 時） | 不計 |
+| 存取金鑰 | 管理員在面板「存取金鑰」頁或 `POST /admin/access-keys` 簽發 | **只有業務 API**，存取不到 `/admin/*` | 每個請求 +1 |
+
+存取金鑰是**附加**的一層：`API_KEY` 始終保有全部權限，一把存取金鑰都不簽發時認證行為與舊版完全一致。存取金鑰可以各自帶有效期、請求數上限、綁定帳號與允許模型，詳見 `POST /admin/access-keys`。
+
+存取金鑰失效時的狀態碼：已停用／已到期／已超額都回傳 401，回應內文裡的 `message` 會說明具體原因。
+
 ## 路徑說明
 
 自 v1.6.4 起，每家介面同時支援兩套路徑：
@@ -1003,6 +1014,130 @@ curl -X POST http://localhost:5918/admin/cleanup-web-chats \
 }
 ```
 
+### GET /admin/access-keys
+
+列出所有存取金鑰（含明文金鑰、狀態、用量與權限範圍）。
+
+**請求：**
+```bash
+curl http://localhost:5918/admin/access-keys \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+**回應：**
+```json
+{
+  "keys": [
+    {
+      "id": 1,
+      "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "張三",
+      "display_name": "張三",
+      "enabled": true,
+      "created_at": "2026-10-20T03:00:00+00:00",
+      "expires_at": null,
+      "duration_days": 7,
+      "activated_at": null,
+      "request_limit": 500,
+      "request_count": 0,
+      "bound_account_ids": null,
+      "allowed_models": ["gemini-flash"],
+      "last_used_at": null,
+      "state": "pending"
+    }
+  ]
+}
+```
+
+`state` 取值：`valid`（有效）／`disabled`（已停用）／`pending`（未啟動，設定了 `duration_days` 但還沒被用過）／`expired`（已到期）／`quota_exceeded`（已超額）。判定按 `disabled` → `expired` → `quota_exceeded` → `pending` → `valid` 的優先級短路。
+
+### GET /admin/access-keys/options
+
+面板簽發表單的候選項：帳號池裡的帳號 + 對外可見的模型名（口徑與 `GET /v1/models` 一致）。
+
+**請求：**
+```bash
+curl http://localhost:5918/admin/access-keys/options \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### POST /admin/access-keys
+
+簽發存取金鑰。
+
+**參數：**
+
+| 欄位 | 類型 | 必填 | 說明 |
+|------|------|------|------|
+| `name` | string | ❌ | 標籤；`count > 1` 時自動編號為 `name-1`、`name-2`…… |
+| `count` | integer | ❌ | 一次簽發幾把，預設 1，**上限 50** |
+| `expires_at` | string | ❌ | 絕對到期時間（ISO8601），與 `duration_days` 互斥 |
+| `duration_days` | number | ❌ | 有效天數，**惰性啟動**：持有人首次使用才開始計時（上限 36500） |
+| `request_limit` | integer | ❌ | 請求數上限，留空＝不限 |
+| `bound_account_ids` | string[] | ❌ | 綁定帳號，留空＝不限制 |
+| `allowed_models` | string[] | ❌ | 允許模型，留空＝不限制 |
+| `enabled` | boolean | ❌ | 是否立即可用，預設 `true` |
+
+**請求：**
+```bash
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "name": "張三",
+    "duration_days": 7,
+    "request_limit": 500,
+    "allowed_models": ["gemini-flash"]
+  }'
+```
+
+回應裡 `keys` 是本次簽發的全部金鑰，`key` 是其中第一把（方便單把簽發時直接取用）。
+
+> `count` 傳 0 或大於 50 回傳 400；`expires_at` 與 `duration_days` 同時給出回傳 400；寫入磁碟失敗回傳 500（絕不會在沒存下來的情況下回 200，否則發出去的金鑰重啟後就失效了）。
+
+### PATCH /admin/access-keys/{id}
+
+修改金鑰設定。
+
+**請求：**
+```bash
+# 停用
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"enabled": false}'
+
+# 清空請求數上限與模型限制
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"clear": ["request_limit", "allowed_models"]}'
+```
+
+> **JSON 裡傳 `null` 表示「不改這個欄位」**，不是「清空」。要真的清空 `expires_at` / `duration_days` / `request_limit` / `bound_account_ids` / `allowed_models`，必須把欄位名放進 `clear` 陣列。`clear` 裡出現其它欄位名回傳 400。
+
+### DELETE /admin/access-keys/{id}
+
+撤銷金鑰，使用它的用戶端立即斷線。
+
+**請求：**
+```bash
+curl -X DELETE http://localhost:5918/admin/access-keys/1 \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### POST /admin/access-keys/{id}/reset-usage
+
+把 `request_count` 清零，已超額的金鑰可繼續使用。
+
+**請求：**
+```bash
+curl -X POST http://localhost:5918/admin/access-keys/1/reset-usage \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+> **計數口徑**：每個業務請求在認證入口原子 +1，單調不減、不退還（上游報錯也算）。**`GET /v1/models` 同樣計數** —— 有些用戶端每輪對話前都會列一次模型，等於一輪消耗 2 次，設定 `request_limit` 時要留餘量。
+
 ## 系統 API
 
 ### GET /health
@@ -1052,6 +1187,25 @@ curl http://localhost:5918/health
   }
 }
 ```
+
+## 超時
+
+非流式（`stream: false`）請求的生成超時**按模型族分層**，可用 `GENERATE_TIMEOUTS` 覆寫：
+
+| 模型族 | 預設超時 |
+|------|------|
+| flash-lite | 60 秒 |
+| flash | 120 秒 |
+| flash-thinking | 120 秒 |
+| pro | 300 秒 |
+| 認不出的族 | 60 秒 |
+
+疑似生圖的請求與 `GENERATE_TIMEOUT_IMAGE`（預設 180 秒）**取大**。超時不再重試三遍 —— 失敗就是失敗。
+
+> [!IMPORTANT]
+> 非流式路徑在生成回傳之前**連線上是零位元組輸出**，所以這是**首位元組**超時而不是閒置超時。
+> **pro 非流式最長要乾等 300 秒，會超過常見前置代理的首位元組上限**（EdgeOne 免費版 15 秒，不少反向代理預設 60 秒），這時用戶端拿到的是代理的 504 而不是本服務的錯誤內文。
+> 有前置代理的部署建議對這類請求直接用 `stream: true`；流式路徑受自己的包線約束（單 chunk 120 秒／整條 180 秒），不受上表影響。
 
 ## 最佳實踐
 

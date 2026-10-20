@@ -32,6 +32,17 @@ docker compose logs | grep "API_KEY"
 cat .env | grep API_KEY
 ```
 
+### 两种可用的密钥
+
+| 类型 | 来源 | 能访问 | 计数 |
+|------|------|--------|------|
+| `API_KEY`（`.env`） | 首次启动自动生成，或自行设置 | 业务 API + `/admin/*`（未单独设置 `ADMIN_API_KEY` 时） | 不计 |
+| 访问密钥 | 管理员在面板「访问密钥」页或 `POST /admin/access-keys` 签发 | **只有业务 API**，访问不到 `/admin/*` | 每个请求 +1 |
+
+访问密钥是**附加**的一层：`API_KEY` 始终全权有效，一把访问密钥都不签发时鉴权行为与旧版完全一致。访问密钥可以各自带有效期、请求数上限、绑定账号与允许模型，详见 [`POST /admin/access-keys`](#post-adminaccess-keys)。
+
+访问密钥失效时的状态码：已停用 / 已过期 / 已超额都返回 401，响应体里的 `message` 会说明具体原因。
+
 ## 路径说明
 
 从 v1.6.4 起，每家接口同时支持两套路径：
@@ -1293,6 +1304,138 @@ curl -X DELETE http://localhost:5918/admin/model-mapping/gpt-4o \
   -H "Authorization: Bearer sk-你的API密钥"
 ```
 
+### GET /admin/access-keys
+
+列出所有访问密钥（含明文密钥、状态、用量与权限范围）。
+
+**请求**：
+```bash
+curl http://localhost:5918/admin/access-keys \
+  -H "Authorization: Bearer sk-你的API密钥"
+```
+
+**响应**：
+```json
+{
+  "keys": [
+    {
+      "id": 1,
+      "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "张三",
+      "display_name": "张三",
+      "enabled": true,
+      "created_at": "2026-10-20T03:00:00+00:00",
+      "expires_at": null,
+      "duration_days": 7,
+      "activated_at": null,
+      "request_limit": 500,
+      "request_count": 0,
+      "bound_account_ids": null,
+      "allowed_models": ["gemini-flash"],
+      "last_used_at": null,
+      "state": "pending"
+    }
+  ]
+}
+```
+
+`state` 取值：`valid`（有效）/ `disabled`（已停用）/ `pending`（未激活，配了 `duration_days` 但还没被用过）/ `expired`（已过期）/ `quota_exceeded`（已超额）。判定按 `disabled` → `expired` → `quota_exceeded` → `pending` → `valid` 的优先级短路。
+
+### GET /admin/access-keys/options
+
+面板签发表单的候选项：账号池里的账号 + 对外可见的模型名（口径与 `GET /v1/models` 一致）。
+
+**请求**：
+```bash
+curl http://localhost:5918/admin/access-keys/options \
+  -H "Authorization: Bearer sk-你的API密钥"
+```
+
+**响应**：
+```json
+{
+  "accounts": [{"id": "account-0", "label": "我的主号", "status": "active"}],
+  "models": ["gemini-pro", "gemini-flash", "gemini-flash-thinking", "gemini-flash-lite"]
+}
+```
+
+### POST /admin/access-keys
+
+签发访问密钥。
+
+**参数**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `name` | string | ❌ | 标签；`count > 1` 时自动编号为 `name-1`、`name-2`…… |
+| `count` | integer | ❌ | 一次签发几把，默认 1，**上限 50** |
+| `expires_at` | string | ❌ | 绝对过期时间（ISO8601），与 `duration_days` 互斥 |
+| `duration_days` | number | ❌ | 有效天数，**惰性激活**：持有人首次使用才开始计时（上限 36500） |
+| `request_limit` | integer | ❌ | 请求数上限，留空=不限 |
+| `bound_account_ids` | string[] | ❌ | 绑定账号，留空=不限制 |
+| `allowed_models` | string[] | ❌ | 允许模型，留空=不限制 |
+| `enabled` | boolean | ❌ | 是否立即可用，默认 `true` |
+
+**请求**：
+```bash
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{
+    "name": "张三",
+    "duration_days": 7,
+    "request_limit": 500,
+    "allowed_models": ["gemini-flash"]
+  }'
+```
+
+响应里 `keys` 是本次签发的全部密钥，`key` 是其中第一把（方便单把签发时直接取用）。
+
+> `count` 传 0 或大于 50 返回 400；`expires_at` 与 `duration_days` 同时给出返回 400；落盘失败返回 500（绝不会在没存下来的情况下回 200，否则发出去的密钥重启后就失效了）。
+
+### PATCH /admin/access-keys/{id}
+
+修改密钥配置。
+
+**请求**：
+```bash
+# 停用
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{"enabled": false}'
+
+# 清空请求数上限与模型限制
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{"clear": ["request_limit", "allowed_models"]}'
+```
+
+> **JSON 里传 `null` 表示「不改这个字段」**，不是「清空」。要真的清空 `expires_at` / `duration_days` / `request_limit` / `bound_account_ids` / `allowed_models`，必须把字段名放进 `clear` 数组。`clear` 里出现其它字段名返回 400。
+
+### DELETE /admin/access-keys/{id}
+
+吊销密钥，使用它的客户端立即断连。
+
+**请求**：
+```bash
+curl -X DELETE http://localhost:5918/admin/access-keys/1 \
+  -H "Authorization: Bearer sk-你的API密钥"
+```
+
+### POST /admin/access-keys/{id}/reset-usage
+
+把 `request_count` 清零，已超额的密钥可继续使用。
+
+**请求**：
+```bash
+curl -X POST http://localhost:5918/admin/access-keys/1/reset-usage \
+  -H "Authorization: Bearer sk-你的API密钥"
+```
+
+> **计数口径**：每个业务请求在鉴权入口原子 +1，单调不减、不退还（上游报错也算）。**`GET /v1/models` 同样计数**——有些客户端每轮对话前都会列一次模型，等于一轮消耗 2 次，设 `request_limit` 时要留余量。
+
 ## 系统 API
 
 ### GET /health
@@ -1399,6 +1542,25 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
     "stream": true
   }'
 ```
+
+## 超时
+
+非流式（`stream: false`）请求的生成超时**按模型族分层**，可用 `GENERATE_TIMEOUTS` 覆盖：
+
+| 模型族 | 默认超时 |
+|------|------|
+| flash-lite | 60 秒 |
+| flash | 120 秒 |
+| flash-thinking | 120 秒 |
+| pro | 300 秒 |
+| 认不出的族 | 60 秒 |
+
+疑似生图的请求与 `GENERATE_TIMEOUT_IMAGE`（默认 180 秒）**取大**。超时不再重试三遍——失败就是失败。
+
+> [!IMPORTANT]
+> 非流式路径在生成返回之前**连接上是零字节输出**，所以这是**首字节**超时而不是空闲超时。
+> **pro 非流式最长要干等 300 秒，会超过常见前置代理的首字节上限**（EdgeOne 免费版 15 秒，不少反向代理默认 60 秒），这时客户端拿到的是代理的 504 而不是本服务的错误体。
+> 有前置代理的部署建议对这类请求直接用 `stream: true`；流式路径受自己的包线约束（单 chunk 120 秒 / 整条 180 秒），不受上表影响。
 
 ## 获取帮助
 

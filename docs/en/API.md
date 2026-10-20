@@ -22,6 +22,17 @@ curl http://localhost:5918/health \
   -H "Authorization: Bearer sk-your-api-key"
 ```
 
+### Two kinds of keys
+
+| Kind | Source | Can reach | Counted |
+|------|------|--------|------|
+| `API_KEY` (`.env`) | Auto-generated on first start, or set by you | Business API + `/admin/*` (when no separate `ADMIN_API_KEY` is set) | No |
+| Access key | Issued by the administrator on the panel's "Access Keys" page or via `POST /admin/access-keys` | **Business API only** — never `/admin/*` | +1 per request |
+
+Access keys are an **additional** layer: `API_KEY` always keeps full privileges, and with no access key issued the authentication behavior is identical to previous versions. Each access key can carry its own expiry, request limit, bound accounts and allowed models — see `POST /admin/access-keys`.
+
+When an access key is rejected (disabled / expired / limit reached) the response is 401, and `message` in the body states the reason.
+
 ## Standard Bare Paths
 
 As of v1.6.4, each API supports two sets of paths:
@@ -1271,6 +1282,130 @@ curl -X POST http://localhost:5918/admin/cleanup-web-chats \
 > [!NOTE]
 > The cleanup task runs asynchronously and loops until all old sessions across all accounts are deleted. Check logs for completion status and deleted session counts.
 
+### GET /admin/access-keys
+
+List all access keys (including the plaintext key, state, usage and scope).
+
+**Request:**
+```bash
+curl http://localhost:5918/admin/access-keys \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+**Response:**
+```json
+{
+  "keys": [
+    {
+      "id": 1,
+      "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "Alice",
+      "display_name": "Alice",
+      "enabled": true,
+      "created_at": "2026-10-20T03:00:00+00:00",
+      "expires_at": null,
+      "duration_days": 7,
+      "activated_at": null,
+      "request_limit": 500,
+      "request_count": 0,
+      "bound_account_ids": null,
+      "allowed_models": ["gemini-flash"],
+      "last_used_at": null,
+      "state": "pending"
+    }
+  ]
+}
+```
+
+`state` is one of `valid`, `disabled`, `pending` (`duration_days` is set but the key has never been used), `expired`, `quota_exceeded`. It is resolved by short-circuiting in the order `disabled` → `expired` → `quota_exceeded` → `pending` → `valid`.
+
+### GET /admin/access-keys/options
+
+Choices for the panel's issue form: accounts in the pool plus the externally visible model names (same set as `GET /v1/models`).
+
+**Request:**
+```bash
+curl http://localhost:5918/admin/access-keys/options \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### POST /admin/access-keys
+
+Issue access keys.
+
+**Parameters:**
+
+| Field | Type | Required | Description |
+|------|------|------|------|
+| `name` | string | ❌ | Label; auto-numbered `name-1`, `name-2`, … when `count > 1` |
+| `count` | integer | ❌ | How many to issue, default 1, **max 50** |
+| `expires_at` | string | ❌ | Absolute expiry (ISO8601); mutually exclusive with `duration_days` |
+| `duration_days` | number | ❌ | Valid days with **lazy activation**: the clock starts on the holder's first use (max 36500) |
+| `request_limit` | integer | ❌ | Request cap; empty = unlimited |
+| `bound_account_ids` | string[] | ❌ | Bound accounts; empty = unrestricted |
+| `allowed_models` | string[] | ❌ | Allowed models; empty = unrestricted |
+| `enabled` | boolean | ❌ | Usable immediately, default `true` |
+
+**Request:**
+```bash
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "name": "Alice",
+    "duration_days": 7,
+    "request_limit": 500,
+    "allowed_models": ["gemini-flash"]
+  }'
+```
+
+In the response, `keys` holds every key issued by this call and `key` is the first of them (convenient when issuing a single key).
+
+> A `count` of 0 or above 50 returns 400; giving both `expires_at` and `duration_days` returns 400; a failed write to disk returns 500 (the endpoint never returns 200 for a key it did not persist — otherwise a key you already handed out would stop working after a restart).
+
+### PATCH /admin/access-keys/{id}
+
+Change a key's configuration.
+
+**Request:**
+```bash
+# Disable
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"enabled": false}'
+
+# Clear the request cap and the model restriction
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"clear": ["request_limit", "allowed_models"]}'
+```
+
+> **A JSON `null` means "leave this field unchanged"**, not "clear it". To actually clear `expires_at` / `duration_days` / `request_limit` / `bound_account_ids` / `allowed_models`, put the field name in the `clear` array. Any other field name in `clear` returns 400.
+
+### DELETE /admin/access-keys/{id}
+
+Revoke a key; clients using it are cut off immediately.
+
+**Request:**
+```bash
+curl -X DELETE http://localhost:5918/admin/access-keys/1 \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### POST /admin/access-keys/{id}/reset-usage
+
+Zero `request_count` so a key that hit its limit can be used again.
+
+**Request:**
+```bash
+curl -X POST http://localhost:5918/admin/access-keys/1/reset-usage \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+> **How counting works:** every business request increments the counter atomically at the auth entry point; it is monotonic and never refunded (an upstream error still counts). **`GET /v1/models` counts too** — some clients list the models before every turn, which means two counts per round, so leave headroom when setting `request_limit`.
+
 ## System Endpoints
 
 ### GET /health
@@ -1353,3 +1488,22 @@ data: [DONE]
 ```
 
 Set `stream: true` in request body to enable streaming.
+
+## Timeouts
+
+The generation timeout for non-streaming (`stream: false`) requests is **tiered per model family** and can be overridden with `GENERATE_TIMEOUTS`:
+
+| Model family | Default timeout |
+|------|------|
+| flash-lite | 60 s |
+| flash | 120 s |
+| flash-thinking | 120 s |
+| pro | 300 s |
+| Unrecognized family | 60 s |
+
+Requests that look like image generation take the **larger** of the tier above and `GENERATE_TIMEOUT_IMAGE` (default 180 s). A timeout is no longer retried three times — a failure is a failure.
+
+> [!IMPORTANT]
+> On the non-streaming path the connection emits **zero bytes** until generation returns, so this is a **time-to-first-byte** timeout, not an idle timeout.
+> **A non-streaming pro request can sit silent for up to 300 seconds, which exceeds the first-byte limit of common front proxies** (15 seconds on the EdgeOne free tier, 60 seconds by default on many reverse proxies); the client then receives the proxy's 504 instead of this service's error body.
+> Behind a front proxy, prefer `stream: true` for these requests. The streaming path has its own envelope (120 s per chunk / 180 s overall) and is unaffected by the table above.

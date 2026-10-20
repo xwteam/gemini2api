@@ -114,6 +114,9 @@ MAX_CONCURRENT_PER_ACCOUNT=8
 | `IMAGE_DOWNLOAD_TIMEOUT` | 画像ダウンロード 1 回あたりの HTTP タイムアウト（秒） | 25.0 |
 | `FALLBACK_ENABLED` | Gemini → 第三者フォールバックを有効化：任意の Gemini モデル（flash/pro/thinking）がエラーまたは空レスポンスを返した場合、API キープール内の第三者モデルに自動で切り替えて「ネイティブにリトライ」 | false |
 | `FALLBACK_MODELS` | フォールバックモデル（カンマ区切り、順に試行）；空の場合はプール内のすべての「チャットに適した」第三者を自動選択（名前で image/video/audio/embedding などの非チャットモデルを除外）してランダムにローテーション、1 つが失敗（エラー/空）したら次へ切り替え | — |
+| `BARD_ERROR_CODES` | Gemini が **HTTP 200** の本文で返す拒否ブロックの code→意味の対照表。`1152=rate_limit,404=session_expired` の形式で、分類は `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**空の場合はすべての拒否ブロックを不明として扱います（該当アカウントをクールダウン + 別アカウントでリトライ）。これは意図した安全なフォールバックです** | — |
+| `GENERATE_TIMEOUTS` | 非ストリーミング生成タイムアウトをモデルファミリー単位で上書き（秒）。`pro=300,flash=120` の形式。空の場合は組み込みの段階設定 flash-lite 60 / flash 120 / flash-thinking 120 / pro 300（認識できないファミリーは 60）。⚠️ これは**最初の 1 バイトまで**のタイムアウトであり、前段プロキシの上限より小さくしてください | — |
+| `GENERATE_TIMEOUT_IMAGE` | 画像生成と推定されるリクエストの非ストリーミングタイムアウト（秒）。モデルファミリーの値と比べて大きい方を採用し、非ストリーミング経路にのみ作用します | 180.0 |
 
 > **注意**: 値に引用符は不要です。余分なスペースや改行がないことを確認してください。
 
@@ -389,7 +392,7 @@ docker compose restart
 API_KEY=sk-生成されたキーを使用
 
 # パフォーマンス
-REFRESH_INTERVAL=10
+REFRESH_INTERVAL=30  # 下限は 10 分。ローテーションは常駐するので、広めのほうがリスク判定に引っかかりにくい
 MAX_RETRIES=5
 MAX_CONCURRENT_PER_ACCOUNT=5
 ROTATION_STRATEGY=failover

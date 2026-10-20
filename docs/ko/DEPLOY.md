@@ -93,7 +93,7 @@ API_KEY=
 # 선택: 서비스 포트 (기본값 5918)
 PORT=5918
 
-# 선택: Cookie 갱신 주기 (분, 기본값 5)
+# 선택: Cookie 갱신 주기 (분, 기본값 30; 코드에서 10분 하한을 강제하므로 더 작게 쓰면 10으로 올라갑니다)
 REFRESH_INTERVAL=30
 
 # 선택: 실패 재시도 횟수 (기본값 3)
@@ -156,9 +156,11 @@ docker compose logs -f
 ### Cookie 자동 보활
 
 gemini2api는 내장 Cookie 자동 갱신 메커니즘 포함:
-- 5분마다 Google RotateCookies API를 통해 `__Secure-1PSIDTS` 갱신
+- 기본 30분마다(`REFRESH_INTERVAL`, 하한 10분) Google RotateCookies API를 통해 `__Secure-1PSIDTS` 갱신
 - batchexecute 하트비트로 브라우저 활동 모의
 - 세션 수명 연장
+
+> `REFRESH_INTERVAL` 기본값은 5분에서 30분으로 바뀌었고 하한 10분이 강제됩니다. 예전에는 "시작할 때 토큰을 가져오지 못한" 경우에만 로테이션 루프가 올라왔기 때문에 정상적으로 시작한 게이트웨이는 아예 로테이션하지 않았습니다([issue #11](https://github.com/xwteam/gemini2api/issues/11)). 이제 루프가 항상 상주하므로 같은 간격이면 Google 쪽 백그라운드 요청량이 약 3.5배가 되어, 간격도 그만큼 넓혀야 합니다 —— 너무 자주 로테이션하면 Google 입장에서 자동화로 보여 오히려 세션이 차단됩니다.
 
 Web 패널의 "계정 관리" → "Cookie 업데이트"로 수동 갱신 가능 (서비스 재시작 불필요).
 

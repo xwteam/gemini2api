@@ -353,6 +353,9 @@ kill -9 <PID>
 | `IMAGE_DOWNLOAD_TIMEOUT` | 25.0 | 單次圖片下載 HTTP 超時（秒） |
 | `FALLBACK_ENABLED` | false | 啟用 Gemini→第三方兜底：任意 Gemini 模型（flash/pro/thinking）報錯或回傳空回應時，自動改用 API Key 池中的第三方模型「原生重試」 |
 | `FALLBACK_MODELS` | — | 兜底模型（逗號分隔、按序嘗試）；留空＝自動選用池中所有「適合聊天」的第三方（按名稱排除 image/video/audio/embedding 等非聊天模型）並隨機輪詢、一個失敗（報錯/空）就換下一個 |
+| `BARD_ERROR_CODES` | — | Gemini 在 **HTTP 200** 內文裡回傳的拒絕區塊的 code→語意對照表，形如 `1152=rate_limit,404=session_expired`；分類可取 `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**留空時所有拒絕區塊按未知處理（冷卻該帳號 + 換帳號重試），這是刻意的安全兜底** |
+| `GENERATE_TIMEOUTS` | — | 非流式生成超時按模型族覆寫（秒），形如 `pro=300,flash=120`；留空＝內建分層 flash-lite 60 / flash 120 / flash-thinking 120 / pro 300（認不出的族回落 60）。⚠️ 這是**首位元組**超時，必須小於前置代理的首位元組上限 |
+| `GENERATE_TIMEOUT_IMAGE` | 180.0 | 疑似生圖請求的非流式超時（秒）。與模型族檔位取大，只作用於非流式路徑 |
 
 ## Docker Compose 參考
 
@@ -360,7 +363,7 @@ kill -9 <PID>
 
 ```yaml
 volumes:
-  - ./data:/app/data           # 持久化資料（Cookie、日誌、統計）
+  - ./data:/app/data           # 持久化資料（Cookie、日誌、統計、存取金鑰 access_keys.json）
   - ./api:/app/api             # 熱重載資源（二維碼、公告）
   - /etc/localtime:/etc/localtime:ro  # 系統時區
 ```

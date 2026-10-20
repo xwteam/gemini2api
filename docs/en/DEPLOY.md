@@ -356,6 +356,9 @@ kill -9 <PID>
 | `IMAGE_DOWNLOAD_TIMEOUT` | 25.0 | Per-image download HTTP timeout (seconds) |
 | `FALLBACK_ENABLED` | false | Enable Gemini → third-party fallback: when any Gemini model (flash/pro/thinking) errors or returns an empty response, automatically retry natively with a third-party model from the API Key pool |
 | `FALLBACK_MODELS` | — | Fallback models (comma-separated, tried in order); empty = automatically use all "chat-capable" third-party models in the pool (excludes non-chat models such as image/video/audio/embedding by name) with random round-robin, switching to the next one whenever one fails (errors or empty) |
+| `BARD_ERROR_CODES` | — | Lookup table mapping the codes of reject blocks Gemini returns inside an **HTTP 200** body to a meaning, e.g. `1152=rate_limit,404=session_expired`; categories are `rate_limit` / `session_expired` / `context_too_long` / `captcha`. **While empty, every reject block is treated as unknown (cool down that account + retry on another), which is a deliberate safe fallback** |
+| `GENERATE_TIMEOUTS` | — | Per-model-family override for the non-streaming generation timeout (seconds), e.g. `pro=300,flash=120`; empty = built-in tiers flash-lite 60 / flash 120 / flash-thinking 120 / pro 300 (60 for unrecognized families). ⚠️ This is a **time-to-first-byte** timeout and must stay below your front proxy's first-byte limit |
+| `GENERATE_TIMEOUT_IMAGE` | 180.0 | Non-streaming timeout (seconds) for requests that look like image generation. Takes the larger of this and the model-family tier, and only applies to the non-streaming path |
 
 ## Docker Compose Reference
 
@@ -363,7 +366,7 @@ Key volumes and their purposes:
 
 ```yaml
 volumes:
-  - ./data:/app/data           # Persistent data (cookies, logs, stats)
+  - ./data:/app/data           # Persistent data (cookies, logs, stats, access keys in access_keys.json)
   - ./api:/app/api             # Hot-reload resources (QR codes, announcements)
   - /etc/localtime:/etc/localtime:ro  # System timezone
 ```

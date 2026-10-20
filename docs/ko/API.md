@@ -20,6 +20,17 @@ curl -H "x-api-key: sk-당신의키"
 
 > API Key는 `.env` 파일의 `API_KEY` 값 또는 서비스 시작 로그에서 확인 가능합니다.
 
+### 사용할 수 있는 두 가지 키
+
+| 종류 | 출처 | 접근 범위 | 집계 |
+|------|------|--------|------|
+| `API_KEY`(`.env`) | 첫 시작 시 자동 생성 또는 직접 설정 | 업무 API + `/admin/*`(`ADMIN_API_KEY`를 따로 설정하지 않은 경우) | 안 함 |
+| 액세스 키 | 관리자가 패널 "액세스 키" 페이지 또는 `POST /admin/access-keys`로 발급 | **업무 API만**. `/admin/*`에는 접근 불가 | 요청마다 +1 |
+
+액세스 키는 **추가** 계층입니다: `API_KEY`는 항상 모든 권한을 가지며, 액세스 키를 하나도 발급하지 않으면 인증 동작은 이전 버전과 완전히 동일합니다. 액세스 키는 각각 유효 기간, 요청 한도, 바인딩 계정, 허용 모델을 가질 수 있습니다(자세한 내용은 `POST /admin/access-keys`).
+
+액세스 키가 거부될 때(비활성 / 만료 / 한도 초과)의 상태 코드는 401이며, 본문의 `message`에 구체적인 사유가 담깁니다.
+
 ## 표준 베어 경로
 
 v1.6.4부터 각 API는 두 가지 경로 형식을 지원합니다:
@@ -1102,6 +1113,137 @@ curl -X POST http://localhost:5918/admin/update \
   -H "Authorization: Bearer sk-당신의키"
 ```
 
+### GET /admin/access-keys
+
+모든 액세스 키 목록 (평문 키, 상태, 사용량, 적용 범위 포함)
+
+**요청**:
+
+```bash
+curl http://localhost:5918/admin/access-keys \
+  -H "Authorization: Bearer sk-당신의키"
+```
+
+**응답**:
+
+```json
+{
+  "keys": [
+    {
+      "id": 1,
+      "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "홍길동",
+      "display_name": "홍길동",
+      "enabled": true,
+      "created_at": "2026-10-20T03:00:00+00:00",
+      "expires_at": null,
+      "duration_days": 7,
+      "activated_at": null,
+      "request_limit": 500,
+      "request_count": 0,
+      "bound_account_ids": null,
+      "allowed_models": ["gemini-flash"],
+      "last_used_at": null,
+      "state": "pending"
+    }
+  ]
+}
+```
+
+`state` 값: `valid`(유효) / `disabled`(비활성) / `pending`(미활성. `duration_days`는 설정됐지만 아직 사용된 적 없음) / `expired`(만료됨) / `quota_exceeded`(한도 초과). 판정은 `disabled` → `expired` → `quota_exceeded` → `pending` → `valid` 우선순위로 단축 평가됩니다.
+
+### GET /admin/access-keys/options
+
+패널 발급 폼의 선택 항목: 계정 풀의 계정과 외부에 노출되는 모델 이름(`GET /v1/models`와 동일한 범위)
+
+**요청**:
+
+```bash
+curl http://localhost:5918/admin/access-keys/options \
+  -H "Authorization: Bearer sk-당신의키"
+```
+
+### POST /admin/access-keys
+
+액세스 키 발급
+
+**파라미터**:
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `name` | string | ❌ | 라벨. `count > 1`이면 `name-1`, `name-2` … 로 자동 번호 부여 |
+| `count` | integer | ❌ | 한 번에 발급할 개수. 기본 1, **최대 50** |
+| `expires_at` | string | ❌ | 절대 만료 시각(ISO8601). `duration_days`와 상호 배타 |
+| `duration_days` | number | ❌ | 유효 일수. **지연 활성화**: 소지자의 최초 사용부터 계산 시작 (최대 36500) |
+| `request_limit` | integer | ❌ | 요청 한도. 비우면 무제한 |
+| `bound_account_ids` | string[] | ❌ | 바인딩 계정. 비우면 제한 없음 |
+| `allowed_models` | string[] | ❌ | 허용 모델. 비우면 제한 없음 |
+| `enabled` | boolean | ❌ | 즉시 사용 가능 여부. 기본 `true` |
+
+**요청**:
+
+```bash
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-당신의키" \
+  -d '{
+    "name": "홍길동",
+    "duration_days": 7,
+    "request_limit": 500,
+    "allowed_models": ["gemini-flash"]
+  }'
+```
+
+응답의 `keys`는 이번에 발급한 모든 키이고, `key`는 그중 첫 번째입니다 (한 개만 발급할 때 바로 쓸 수 있습니다).
+
+> `count`가 0 또는 50 초과면 400, `expires_at`과 `duration_days`를 함께 주면 400, 디스크 기록 실패는 500을 반환합니다 (저장되지 않은 키에 200을 반환하는 일은 절대 없습니다 —— 이미 나눠준 키가 재시작 후 무효가 되기 때문입니다).
+
+### PATCH /admin/access-keys/{id}
+
+키 설정 변경
+
+**요청**:
+
+```bash
+# 비활성화
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-당신의키" \
+  -d '{"enabled": false}'
+
+# 요청 한도와 모델 제한 해제
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-당신의키" \
+  -d '{"clear": ["request_limit", "allowed_models"]}'
+```
+
+> **JSON의 `null`은 "이 필드를 변경하지 않음"**을 뜻하며 "비우기"가 아닙니다. `expires_at` / `duration_days` / `request_limit` / `bound_account_ids` / `allowed_models`를 실제로 비우려면 필드 이름을 `clear` 배열에 넣어야 합니다. `clear`에 그 밖의 필드 이름이 들어가면 400을 반환합니다.
+
+### DELETE /admin/access-keys/{id}
+
+키 삭제. 사용 중인 클라이언트는 즉시 연결이 끊깁니다.
+
+**요청**:
+
+```bash
+curl -X DELETE http://localhost:5918/admin/access-keys/1 \
+  -H "Authorization: Bearer sk-당신의키"
+```
+
+### POST /admin/access-keys/{id}/reset-usage
+
+`request_count`를 0으로 되돌려 한도를 초과한 키를 다시 쓸 수 있게 합니다.
+
+**요청**:
+
+```bash
+curl -X POST http://localhost:5918/admin/access-keys/1/reset-usage \
+  -H "Authorization: Bearer sk-당신의키"
+```
+
+> **집계 방식**: 모든 업무 요청은 인증 입구에서 원자적으로 증가하며, 단조 증가하고 환불되지 않습니다 (업스트림 오류도 집계됨). **`GET /v1/models`도 집계 대상입니다** —— 일부 클라이언트는 대화마다 모델 목록을 조회하므로 한 번의 대화에 2회 소비합니다. `request_limit`을 설정할 때 여유를 두세요.
+
 ### GET /health
 
 헬스 체크 (Docker 프로브 호환)
@@ -1215,3 +1357,22 @@ const response = await fetch('http://localhost:5918/openai/v1/chat/completions',
 const data = await response.json();
 console.log(data.choices[0].message.content);
 ```
+
+## 타임아웃
+
+비스트리밍(`stream: false`) 요청의 생성 타임아웃은 **모델 패밀리 단위로 구분**되며 `GENERATE_TIMEOUTS`로 재정의할 수 있습니다:
+
+| 모델 패밀리 | 기본 타임아웃 |
+|------|------|
+| flash-lite | 60초 |
+| flash | 120초 |
+| flash-thinking | 120초 |
+| pro | 300초 |
+| 인식되지 않는 패밀리 | 60초 |
+
+이미지 생성으로 추정되는 요청은 위 값과 `GENERATE_TIMEOUT_IMAGE`(기본 180초) 중 **더 큰 쪽**을 채택합니다. 타임아웃은 더 이상 3번 재시도하지 않습니다 —— 실패는 실패입니다.
+
+> [!IMPORTANT]
+> 비스트리밍 경로에서는 생성이 반환되기 전까지 연결에 **0바이트**가 흐릅니다. 즉 유휴 타임아웃이 아니라 **첫 바이트까지**의 타임아웃입니다.
+> **pro 비스트리밍은 최대 300초를 무응답으로 기다리게 되어 흔한 앞단 프록시의 첫 바이트 한도를 넘깁니다**(EdgeOne 무료 버전 15초, 많은 리버스 프록시의 기본값 60초). 그러면 클라이언트가 받는 것은 이 서비스의 오류 본문이 아니라 프록시의 504입니다.
+> 앞단 프록시가 있는 구성에서는 이런 요청에 `stream: true`를 권장합니다. 스트리밍 경로는 자체 한도(청크당 120초 / 전체 180초)를 따르며 위 표의 영향을 받지 않습니다.

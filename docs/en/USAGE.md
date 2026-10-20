@@ -99,6 +99,32 @@ Supported providers:
 
 When a requested model isn't available in Gemini Web, the service automatically forwards to the appropriate provider using stored keys.
 
+### Access Keys
+
+Issue inbound access keys you can hand out to different people. This is unrelated to "API Keys Management" above — that one manages third-party **outbound** keys, while this one controls *who may call this service*.
+
+**Issuing a key:**
+1. Click **Issue Key**
+2. Fill in **Name** (e.g. the recipient's name, so you can reconcile later)
+3. **Count** issues several keys at once (max 50); names are auto-numbered `name-1`, `name-2`, …
+4. **Valid days (from first use)** and **Absolute expiry** are mutually exclusive; leave both empty for a key that never expires
+5. **Request limit** empty = unlimited
+6. **Bound accounts** / **Allowed models**: nothing checked = unrestricted
+7. Click **Issue**, then use **Copy key** in the list to hand the plaintext over
+
+**List and management:**
+
+Each row shows the state (Valid / Not activated / Disabled / Expired / Limit reached), validity, usage and scope, and lets you:
+- **Edit**: change the name, validity, limit, bound accounts and allowed models
+- **Enable / Disable**: disabling 401s the holder immediately while the key stays in the list and can be restored
+- **Reset usage**: zero the request counter so a key that hit its limit can be reused
+- **Delete**: revoke the key; clients using it are cut off immediately
+
+**Three things to know:**
+1. The `API_KEY` in `.env` still has full privileges; access keys are only an additional layer, and with none issued the behavior is identical to previous versions.
+2. An access key can **only call the business API** — never `/admin/*`. The admin surface stays guarded by `API_KEY` / `ADMIN_API_KEY`, which is what makes it safe to hand a key to an outsider.
+3. Every business request counts +1, **including `GET /v1/models`**. Some clients list the models before every turn, which means two counts per round — leave headroom when setting the request limit.
+
 ### Settings
 
 Configure runtime behavior:

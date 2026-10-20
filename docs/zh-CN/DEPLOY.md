@@ -94,7 +94,7 @@ API_KEY=
 # 可选：服务端口（默认 5918）
 PORT=5918
 
-# 可选：Cookie 刷新周期（分钟，默认 5）
+# 可选：Cookie 刷新周期（分钟，默认 30；代码里夹了 10 分钟的硬下限，配更小会被自动抬到 10）
 REFRESH_INTERVAL=30
 
 # 可选：失败重试次数（默认 3）
@@ -130,6 +130,7 @@ FAILOVER_COOLDOWN=30.0
 
 # 可选：指纹 / 版本同步 / 抖动
 FINGERPRINT_CONFIG_PATH=data/fingerprint.json
+# 说明：管理员签发的「访问密钥」存在 data/access_keys.json，同样落在持久化卷里，重启不丢
 VERSION_SYNC_ENABLED=true
 VERSION_SYNC_INTERVAL=24
 JITTER_ENABLED=true
@@ -163,6 +164,19 @@ IMAGE_DOWNLOAD_TIMEOUT=25.0
 FALLBACK_ENABLED=false
 # 可选：兜底模型（逗号分隔、按序尝试）；留空=自动选用池中所有"适合聊天"的第三方（排除 image/video/audio/embedding 等非聊天模型）并随机轮询、失败换下一个
 FALLBACK_MODELS=
+
+# 可选：Gemini 在 HTTP 200 正文里返回的拒绝块的 code→语义对照表，形如 1152=rate_limit,404=session_expired
+# 分类可取 rate_limit / session_expired / context_too_long / captcha
+# 留空（默认）= 所有拒绝块按未知处理：冷却该账号 + 换号重试，这是刻意的安全兜底
+BARD_ERROR_CODES=
+# 可选：非流式生成超时按模型族覆盖（秒），形如 pro=300,flash=120
+# 留空 = 用内置分层：flash-lite 60 / flash 120 / flash-thinking 120 / pro 300（认不出的族回落 60）
+# ⚠️ 这整段时间里连接上是零字节输出，所以它是「首字节」超时而不是空闲超时，
+#    必须小于前置代理/CDN 的首字节上限（EdgeOne 免费版 15s、不少反代默认 60s），否则
+#    客户端拿到的是代理的 504 而不是本服务的错误体
+GENERATE_TIMEOUTS=
+# 可选：疑似生图请求的非流式超时（秒）。与上面的模型族档位取大，只作用于非流式路径
+GENERATE_TIMEOUT_IMAGE=180.0
 ```
 
 ### 配置注意事项

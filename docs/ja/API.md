@@ -22,6 +22,17 @@ curl -H "x-api-key: sk-あなたのキー" \
 
 > **ヒント**: API Key は `.env` ファイルまたはログから確認できます。
 
+### 2 種類のキー
+
+| 種類 | 入手元 | 到達範囲 | カウント |
+|------|------|--------|------|
+| `API_KEY`（`.env`） | 初回起動時に自動生成、または自分で設定 | 業務 API + `/admin/*`（`ADMIN_API_KEY` を別途設定していない場合） | されない |
+| アクセスキー | 管理者がパネルの「アクセスキー」ページまたは `POST /admin/access-keys` で発行 | **業務 API のみ**。`/admin/*` には到達できません | リクエストごとに +1 |
+
+アクセスキーは**追加**の層です：`API_KEY` は常に全権限を保持し、アクセスキーを 1 本も発行していない場合、認証の挙動は従来版と完全に同一です。アクセスキーはそれぞれ有効期限・リクエスト上限・バインドするアカウント・許可するモデルを持てます（詳細は `POST /admin/access-keys`）。
+
+アクセスキーが拒否されたとき（無効／期限切れ／上限到達）のステータスは 401 で、本文の `message` に理由が入ります。
+
 ## 標準ベアパス
 
 v1.6.4 以降、各 API は 2 種類のパスに対応しています。
@@ -1148,6 +1159,131 @@ curl -X POST http://localhost:5918/admin/cleanup-web-chats \
 }
 ```
 
+### GET /admin/access-keys
+
+すべてのアクセスキーを一覧（平文のキー・状態・使用量・適用範囲を含む）。
+
+**リクエスト:**
+```bash
+curl http://localhost:5918/admin/access-keys \
+  -H "Authorization: Bearer sk-あなたのキー"
+```
+
+**レスポンス:**
+
+```json
+{
+  "keys": [
+    {
+      "id": 1,
+      "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "name": "山田",
+      "display_name": "山田",
+      "enabled": true,
+      "created_at": "2026-10-20T03:00:00+00:00",
+      "expires_at": null,
+      "duration_days": 7,
+      "activated_at": null,
+      "request_limit": 500,
+      "request_count": 0,
+      "bound_account_ids": null,
+      "allowed_models": ["gemini-flash"],
+      "last_used_at": null,
+      "state": "pending"
+    }
+  ]
+}
+```
+
+`state` の値：`valid`（有効）／`disabled`（無効）／`pending`（未アクティブ。`duration_days` は設定済みだが未使用）／`expired`（期限切れ）／`quota_exceeded`（上限到達）。判定は `disabled` → `expired` → `quota_exceeded` → `pending` → `valid` の優先順位で短絡的に行われます。
+
+### GET /admin/access-keys/options
+
+パネル発行フォームの選択肢：アカウントプール内のアカウントと、外部に見えるモデル名（`GET /v1/models` と同じ範囲）。
+
+**リクエスト:**
+```bash
+curl http://localhost:5918/admin/access-keys/options \
+  -H "Authorization: Bearer sk-あなたのキー"
+```
+
+### POST /admin/access-keys
+
+アクセスキーを発行します。
+
+**パラメータ:**
+
+| 項目 | 型 | 必須 | 説明 |
+|------|------|------|------|
+| `name` | string | ❌ | ラベル。`count > 1` のとき `name-1`、`name-2`… と自動連番 |
+| `count` | integer | ❌ | 一度に発行する本数。デフォルト 1、**上限 50** |
+| `expires_at` | string | ❌ | 絶対有効期限（ISO8601）。`duration_days` と排他 |
+| `duration_days` | number | ❌ | 有効日数。**遅延アクティベーション**：保持者の初回利用から計時開始（上限 36500） |
+| `request_limit` | integer | ❌ | リクエスト上限。空で無制限 |
+| `bound_account_ids` | string[] | ❌ | バインドするアカウント。空で制限なし |
+| `allowed_models` | string[] | ❌ | 許可するモデル。空で制限なし |
+| `enabled` | boolean | ❌ | 即座に使用可能にするか。デフォルト `true` |
+
+**リクエスト:**
+```bash
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{
+    "name": "山田",
+    "duration_days": 7,
+    "request_limit": 500,
+    "allowed_models": ["gemini-flash"]
+  }'
+```
+
+レスポンスの `keys` は今回発行したすべてのキー、`key` はそのうちの 1 本目です（1 本だけ発行する場合にそのまま使えます）。
+
+> `count` が 0 または 50 超なら 400、`expires_at` と `duration_days` を同時に指定しても 400、ディスクへの書き込み失敗は 500 を返します（保存できていないキーに 200 を返すことは絶対にありません —— 配ったキーが再起動後に無効になってしまいます）。
+
+### PATCH /admin/access-keys/{id}
+
+キーの設定を変更します。
+
+**リクエスト:**
+```bash
+# 無効化
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{"enabled": false}'
+
+# リクエスト上限とモデル制限を解除
+curl -X PATCH http://localhost:5918/admin/access-keys/1 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{"clear": ["request_limit", "allowed_models"]}'
+```
+
+> **JSON の `null` は「この項目を変更しない」という意味**で、「空にする」ではありません。`expires_at` / `duration_days` / `request_limit` / `bound_account_ids` / `allowed_models` を実際に空にするには、項目名を `clear` 配列に入れる必要があります。`clear` にそれ以外の項目名が入っていると 400 を返します。
+
+### DELETE /admin/access-keys/{id}
+
+キーを削除します。使用中のクライアントは直ちに接続できなくなります。
+
+**リクエスト:**
+```bash
+curl -X DELETE http://localhost:5918/admin/access-keys/1 \
+  -H "Authorization: Bearer sk-あなたのキー"
+```
+
+### POST /admin/access-keys/{id}/reset-usage
+
+`request_count` をゼロに戻し、上限到達したキーを再び使えるようにします。
+
+**リクエスト:**
+```bash
+curl -X POST http://localhost:5918/admin/access-keys/1/reset-usage \
+  -H "Authorization: Bearer sk-あなたのキー"
+```
+
+> **カウントの考え方**：業務リクエストは認証入口でアトミックに加算され、単調増加で払い戻しはありません（上流がエラーでもカウントされます）。**`GET /v1/models` もカウント対象です** —— クライアントによっては対話のたびにモデル一覧を取得するため 1 ラウンドで 2 回消費します。`request_limit` を設定する際は余裕を持たせてください。
+
 ## エラーコード
 
 API エラーは以下のコードで返されます。
@@ -1185,4 +1321,19 @@ X-RateLimit-Reset: 1715970060
 
 ## タイムアウト
 
-デフォルトのタイムアウトは 30 秒です。長時間の処理にはストリーミングを使用してください。
+非ストリーミング（`stream: false`）リクエストの生成タイムアウトは**モデルファミリー単位で段階化**されており、`GENERATE_TIMEOUTS` で上書きできます。
+
+| モデルファミリー | デフォルトのタイムアウト |
+|------|------|
+| flash-lite | 60 秒 |
+| flash | 120 秒 |
+| flash-thinking | 120 秒 |
+| pro | 300 秒 |
+| 認識できないファミリー | 60 秒 |
+
+画像生成と推定されるリクエストは、上記の値と `GENERATE_TIMEOUT_IMAGE`（デフォルト 180 秒）のうち**大きい方**を採用します。タイムアウトは 3 回リトライしなくなりました —— 失敗は失敗です。
+
+> [!IMPORTANT]
+> 非ストリーミング経路では生成が返るまで接続上の出力は**ゼロバイト**です。つまりこれはアイドルタイムアウトではなく**最初の 1 バイトまで**のタイムアウトです。
+> **pro の非ストリーミングは最長 300 秒無音で待つことになり、一般的な前段プロキシの最初の 1 バイトの上限を超えます**（EdgeOne 無料版は 15 秒、多くのリバースプロキシはデフォルト 60 秒）。その場合クライアントが受け取るのは本サービスのエラー本文ではなくプロキシの 504 です。
+> 前段プロキシがある構成では、この種のリクエストに `stream: true` を使うことを推奨します。ストリーミング経路は独自の上限（1 チャンク 120 秒／全体 180 秒）に従い、上の表の影響を受けません。
