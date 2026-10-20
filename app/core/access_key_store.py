@@ -12,6 +12,7 @@
 
 import json
 import logging
+import math
 import secrets
 import string
 import threading
@@ -34,6 +35,11 @@ STATE_QUOTA_EXCEEDED = "quota_exceeded"
 STATE_VALID = "valid"
 
 _KEY_CHARS = string.ascii_letters + string.digits
+
+# duration_days 的硬上限（100 年）。再大的值在 `now + timedelta(days=N)` 处会撞上
+# datetime 的 year>9999 抛 OverflowError —— 那是在全局鉴权依赖里抛，业务请求直接 500；
+# 而且 activated_at 已经写下、expires_at 还是空的，等于把管理员设的有效期静默弄丢。
+MAX_DURATION_DAYS = 36500
 
 
 def generate_access_key() -> str:
@@ -117,9 +123,13 @@ def _coerce_str_list(value) -> Optional[list]:
 def _coerce_positive_int(value) -> Optional[int]:
     if value is None or value == "":
         return None
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("must be a finite number")
     n = int(value)
-    if n < 0:
-        raise ValueError("must be >= 0")
+    if n <= 0:
+        # 0 不是"不限"（不限 = 留空/None）。接受 0 只会产出一把签发即超额的废密钥，
+        # 而管理员把 0 当成"无限制"填进来的概率远高于真想要这个结果。
+        raise ValueError("must be > 0")
     return n
 
 
@@ -127,20 +137,86 @@ def _coerce_positive_float(value) -> Optional[float]:
     if value is None or value == "":
         return None
     f = float(value)
+    if not math.isfinite(f):
+        # NaN/Infinity：Python 的 json.loads（FastAPI 用的就是它）认这两个字面量。
+        # 一旦存进库，GET 列表端点会因为 JSONResponse 不允许 NaN 而永久 500，
+        # 面板只剩一行加载失败，而且落盘的文件对别的消费者也不再是合法 JSON。
+        raise ValueError("must be a finite number")
     if f <= 0:
         raise ValueError("must be > 0")
+    if f > MAX_DURATION_DAYS:
+        raise ValueError(f"must be <= {MAX_DURATION_DAYS}")
     return f
+
+
+def _coerce_duration_on_load(value, entry_id) -> Optional[float]:
+    """加载路径对 duration_days 宽松：非法值记 warning 后当成「没设」，不整条丢掉密钥。
+
+    整条丢掉等于持有人直接 401；而这类值（NaN/Infinity/超大）只可能出现在本版校验
+    上线之前写下的库里，写入侧已经堵死了。
+    """
+    try:
+        return _coerce_positive_float(value)
+    except (TypeError, ValueError) as e:
+        logger.warning(
+            "access key #%s has an invalid duration_days (%r): %s; ignoring it",
+            entry_id, value, e,
+        )
+        return None
+
+
+def _add_days(moment: datetime, days: float) -> Optional[datetime]:
+    """moment + days；超出 datetime 可表示范围时返回 None 而不是抛。
+
+    库里可能还存着本版校验上线之前写进去的超大值，而这个计算就在鉴权热路径上：
+    一个 OverflowError 会变成业务请求的 500，绝不能让它漏出去。
+    """
+    try:
+        return moment + timedelta(days=float(days))
+    except (OverflowError, ValueError, OSError):
+        return None
+
+
+def _sync_expiry_locked(entry: AccessKey) -> bool:
+    """expires_at 空着、但 duration_days 和 activated_at 都在 → 按"首次使用起算"重算。
+
+    duration_days 的语义就是"首次使用起 N 天"，所以这个推导随时可以重做。不重做的话，
+    激活之后一旦有人把 expires_at 清掉（面板保存 / PATCH clear），密钥就永不过期了，
+    而面板还照着 duration_days 显示"X 天有效"。
+    还没首次使用（activated_at 为空）时什么也不做：有效期要等激活那一刻才落定。
+    返回是否真的改了。
+    """
+    if entry.expires_at is not None or not entry.duration_days:
+        return False
+    started = parse_timestamp(entry.activated_at)
+    if started is None:
+        return False
+    derived = _add_days(started, entry.duration_days)
+    if derived is None:
+        logger.warning(
+            "access key %s has an out-of-range duration_days (%s); treating it as no expiry",
+            entry.id, entry.duration_days,
+        )
+        return False
+    entry.expires_at = _iso(derived)
+    return True
 
 
 class AccessKeyStore:
     def __init__(self, file_path: str = ACCESS_KEYS_PATH):
         self.file_path = Path(file_path)
-        # threading.Lock（不是 asyncio.Lock）：定时 flush 跑在 asyncio.to_thread 的工作线程里，
-        # 要和事件循环线程互斥。锁内只做纯内存操作，磁盘 IO 一律在锁外。
+        # 两把 threading 锁（不是 asyncio.Lock）：定时 flush 跑在 asyncio.to_thread 的
+        # 工作线程里，要和事件循环线程互斥。获取顺序恒为 _io_lock → _lock，反过来会死锁。
+        # _lock：保护内存态。鉴权热路径只碰它，锁内绝不做磁盘 IO。
+        # _io_lock：把「取快照 + 写盘」串成一个整体。少了它，定时 flush 的旧快照会把
+        #   管理员刚签发/刚吊销的结果覆盖回去（写盘期间别人能拿着 _lock 改内存并先落盘）。
         self._lock = threading.RLock()
+        self._io_lock = threading.RLock()
         self._keys: dict[int, AccessKey] = {}
         self._next_id = 1
         self._dirty = False
+        # 内存态每改一次 +1。用来判断一次写盘用的快照是否已经过时（过时就不清脏标记）。
+        self._version = 0
         self._load()
 
     # ------------------------------------------------------------------ 读
@@ -189,30 +265,32 @@ class AccessKeyStore:
             if not matched.enabled:
                 return STATE_DISABLED, replace(matched)
 
-            # 惰性激活：首次使用才开始计时，并据 duration_days 落定 expires_at
-            newly_activated = False
+            # 惰性激活：首次使用才开始计时
+            changed = False
             if matched.activated_at is None:
                 matched.activated_at = _iso(now)
-                newly_activated = True
-                if matched.duration_days and not matched.expires_at:
-                    matched.expires_at = _iso(now + timedelta(days=float(matched.duration_days)))
+                changed = True
+
+            if _sync_expiry_locked(matched):
+                changed = True
 
             expires_at = parse_timestamp(matched.expires_at)
             if expires_at is not None and now >= expires_at:
-                if newly_activated:
-                    self._dirty = True
+                if changed:
+                    self._touch_locked()
                 return STATE_EXPIRED, replace(matched)
 
             if matched.request_limit is not None and matched.request_count >= matched.request_limit:
-                if newly_activated:
-                    self._dirty = True
+                if changed:
+                    self._touch_locked()
                 return STATE_QUOTA_EXCEEDED, replace(matched)
 
             if consume:
                 matched.request_count += 1
                 matched.last_used_at = _iso(now)
-            if consume or newly_activated:
-                self._dirty = True
+                changed = True
+            if changed:
+                self._touch_locked()
             return STATE_VALID, replace(matched)
 
     def consume(self, key_id: int, now: Optional[datetime] = None) -> bool:
@@ -224,14 +302,51 @@ class AccessKeyStore:
                 return False
             entry.request_count += 1
             entry.last_used_at = _iso(now)
-            self._dirty = True
+            self._touch_locked()
             return True
 
     # ---------------------------------------------------------------- CRUD
 
-    def create(
+    def _mutate(self, action):
+        """管理员增删改的统一通道：改内存 → 全量落盘 → 失败回滚内存并抛出。
+
+        `action()` 必须返回 `(changed, result)`；changed=False（例如 id 不存在）时不写盘。
+
+        - 落盘在 _io_lock 内、_lock 外：fsync 不会卡住鉴权热路径，但两个并发的管理员
+          操作、以及定时 flush，都不可能拿着各自的旧快照互相覆盖。
+        - 落盘失败必须抛出去：吞掉异常会让 POST 回 200 + 一把明文密钥、DELETE 回
+          success=true，而磁盘上什么都没变 —— 重启后新签的密钥消失、被吊销的密钥复活。
+          （app/core/api_key_store.py 也是让 atomic_write_json 直接抛。）
+        """
+        with self._io_lock:
+            with self._lock:
+                backup = ({kid: replace(k) for kid, k in self._keys.items()}, self._next_id)
+                try:
+                    changed, result = action()
+                except Exception:
+                    # action 可能已经改了一半（update 逐字段赋值时第三个字段才抛）
+                    self._keys, self._next_id = backup
+                    raise
+                if not changed:
+                    return result
+                self._touch_locked()
+                data = self._serialize_locked()
+                version = self._version
+            try:
+                self._write(data, version, raise_on_error=True)
+            except Exception:
+                with self._lock:
+                    self._keys, self._next_id = backup
+                    self._touch_locked()
+                raise
+            return result
+
+    def create(self, name: str = "", **kwargs) -> AccessKey:
+        return self.create_many([name], **kwargs)[0]
+
+    def create_many(
         self,
-        name: str = "",
+        names,
         *,
         expires_at: Optional[str] = None,
         duration_days=None,
@@ -239,25 +354,39 @@ class AccessKeyStore:
         bound_account_ids=None,
         allowed_models=None,
         enabled: bool = True,
-    ) -> AccessKey:
-        with self._lock:
-            entry = AccessKey(
-                id=self._next_id,
-                key=generate_access_key(),
-                name=(name or "").strip(),
-                enabled=bool(enabled),
-                created_at=_iso(_utc_now()),
-                expires_at=(expires_at or None),
-                duration_days=_coerce_positive_float(duration_days),
-                request_limit=_coerce_positive_int(request_limit),
-                bound_account_ids=_coerce_str_list(bound_account_ids),
-                allowed_models=_coerce_str_list(allowed_models),
-            )
-            self._next_id += 1
-            self._keys[entry.id] = entry
-            snapshot = replace(entry)
-            self._persist_locked()
-        return snapshot
+    ) -> list:
+        """一次签发多把密钥，只做一次全量落盘。
+
+        逐把 create() 的话，签发 50 把就是 50 次全量写（每次两个 fsync）、写出的字节数
+        是 O(n²)，而且全在事件循环线程上 —— 整个网关会卡满这段时间。
+        """
+        duration = _coerce_positive_float(duration_days)
+        limit = _coerce_positive_int(request_limit)
+        accounts = _coerce_str_list(bound_account_ids)
+        models = _coerce_str_list(allowed_models)
+        expires = expires_at or None
+
+        def _do():
+            created = []
+            for name in names:
+                entry = AccessKey(
+                    id=self._next_id,
+                    key=generate_access_key(),
+                    name=(name or "").strip(),
+                    enabled=bool(enabled),
+                    created_at=_iso(_utc_now()),
+                    expires_at=expires,
+                    duration_days=duration,
+                    request_limit=limit,
+                    bound_account_ids=list(accounts) if accounts else None,
+                    allowed_models=list(models) if models else None,
+                )
+                self._next_id += 1
+                self._keys[entry.id] = entry
+                created.append(replace(entry))
+            return bool(created), created
+
+        return self._mutate(_do)
 
     _UPDATABLE = (
         "name", "enabled", "expires_at", "duration_days",
@@ -265,10 +394,12 @@ class AccessKeyStore:
     )
 
     def update(self, key_id: int, **fields) -> Optional[AccessKey]:
-        with self._lock:
-            entry = self._keys.get(int(key_id))
+        kid = int(key_id)
+
+        def _do():
+            entry = self._keys.get(kid)
             if entry is None:
-                return None
+                return False, None
             for field, value in fields.items():
                 if field not in self._UPDATABLE:
                     raise ValueError(f"field '{field}' is not updatable")
@@ -286,29 +417,42 @@ class AccessKeyStore:
                     entry.bound_account_ids = _coerce_str_list(value)
                 elif field == "allowed_models":
                     entry.allowed_models = _coerce_str_list(value)
-            snapshot = replace(entry)
-            self._persist_locked()
-        return snapshot
+            # 清掉 expires_at 的同时还留着 duration_days 时立刻重算，别让面板上
+            # 出现一把"显示 7 天有效、其实永不过期"的密钥（鉴权侧也会再兜一次）。
+            _sync_expiry_locked(entry)
+            return True, replace(entry)
+
+        return self._mutate(_do)
 
     def delete(self, key_id: int) -> bool:
-        with self._lock:
-            if int(key_id) not in self._keys:
-                return False
-            del self._keys[int(key_id)]
-            self._persist_locked()
-        return True
+        kid = int(key_id)
+
+        def _do():
+            if kid not in self._keys:
+                return False, False
+            del self._keys[kid]
+            return True, True
+
+        return self._mutate(_do)
 
     def reset_usage(self, key_id: int) -> Optional[AccessKey]:
-        with self._lock:
-            entry = self._keys.get(int(key_id))
+        kid = int(key_id)
+
+        def _do():
+            entry = self._keys.get(kid)
             if entry is None:
-                return None
+                return False, None
             entry.request_count = 0
-            snapshot = replace(entry)
-            self._persist_locked()
-        return snapshot
+            return True, replace(entry)
+
+        return self._mutate(_do)
 
     # ----------------------------------------------------------- 持久化
+
+    def _touch_locked(self) -> None:
+        """记一次内存态改动（需已持有 self._lock）。"""
+        self._version += 1
+        self._dirty = True
 
     def _serialize_locked(self) -> dict:
         return {
@@ -316,39 +460,44 @@ class AccessKeyStore:
             "keys": [asdict(k) for k in sorted(self._keys.values(), key=lambda k: k.id)],
         }
 
-    def _persist_locked(self) -> None:
-        """在已持有 self._lock 的前提下同步落盘（管理员操作路径）。
+    def _write(self, data: dict, version: int, *, raise_on_error: bool) -> bool:
+        """同步原子落盘。只有当这份快照仍是最新版本时才清脏标记。
 
-        必须持锁写：若先在锁内取快照、再到锁外写，两个并发的管理员操作会各持一份
-        快照，后落盘的那次会把前一次刚签发的密钥整条抹掉。管理员操作频率极低，
-        为这点确定性付一次 fsync 完全值得（与 api_key_store 的行为一致）。
+        version 守卫：写盘期间（两次 fsync，真实磁盘上几毫秒到几十毫秒）落下的用量 +1
+        不能被当成"已经写进去了" —— 否则那些增量既不会被下一轮定时 flush 写出，也不会
+        被退出前的同步 flush 写出，等于静默丢失（连 `docker compose down` 都救不回来）。
         """
-        self._write(self._serialize_locked())
-
-    def _write(self, data: dict) -> None:
-        """同步原子落盘。成功才清脏标记。"""
         try:
             atomic_write_json(self.file_path, data, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.warning("failed to persist %s: %s", self.file_path, e)
             with self._lock:
                 self._dirty = True
-            return
+            if raise_on_error:
+                raise
+            return False
         with self._lock:
-            self._dirty = False
+            if self._version == version:
+                self._dirty = False
+        return True
 
     def save(self) -> None:
-        """强制落盘（忽略脏标记）。"""
-        with self._lock:
-            self._persist_locked()
+        """强制落盘（忽略脏标记）；失败抛出。"""
+        with self._io_lock:
+            with self._lock:
+                data = self._serialize_locked()
+                version = self._version
+            self._write(data, version, raise_on_error=True)
 
     def flush(self) -> None:
-        """定时/退出前落盘：没脏就跳过；IO 在锁外；失败保持脏标记，下轮自动重试。"""
-        with self._lock:
-            if not self._dirty:
-                return
-            data = self._serialize_locked()
-        self._write(data)
+        """定时/退出前落盘：没脏就跳过；失败保持脏标记，下轮自动重试。"""
+        with self._io_lock:
+            with self._lock:
+                if not self._dirty:
+                    return
+                data = self._serialize_locked()
+                version = self._version
+            self._write(data, version, raise_on_error=False)
 
     def load(self) -> None:
         """从磁盘重新加载（丢弃内存态）。"""
@@ -396,7 +545,7 @@ class AccessKeyStore:
                     enabled=bool(item.get("enabled", True)),
                     created_at=str(item.get("created_at") or ""),
                     expires_at=item.get("expires_at") or None,
-                    duration_days=_coerce_positive_float(item.get("duration_days")),
+                    duration_days=_coerce_duration_on_load(item.get("duration_days"), entry_id),
                     activated_at=item.get("activated_at") or None,
                     request_limit=_coerce_positive_int(item.get("request_limit")),
                     request_count=int(item.get("request_count") or 0),

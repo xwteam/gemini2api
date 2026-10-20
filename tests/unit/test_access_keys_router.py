@@ -140,3 +140,90 @@ def test_admin_endpoints_require_admin_key(client, monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
     assert client.get("/admin/access-keys").status_code == 401
     assert client.post("/admin/access-keys", json={"name": "x"}).status_code == 401
+
+
+def test_batch_issue_writes_the_file_once(client, monkeypatch, tmp_path):
+    """批量签发只能落一次盘：逐把 create() 是 count 次全量写（每次两个 fsync）、
+    写出的字节数 O(n²)，而且全在事件循环线程上持锁跑——整个网关会卡满这段时间。"""
+    import app.core.access_key_store as mod
+
+    _isolate(monkeypatch, tmp_path)
+    real = mod.atomic_write_json
+    writes = []
+
+    def counting(target, data, **kw):
+        writes.append(target)
+        real(target, data, **kw)
+
+    monkeypatch.setattr(mod, "atomic_write_json", counting)
+    r = client.post("/admin/access-keys", json={"name": "team", "count": 20}, headers=_AUTH)
+    assert r.status_code == 200
+    assert len(r.json()["keys"]) == 20
+    assert len(writes) == 1, f"20 把密钥写了 {len(writes)} 次盘"
+
+
+def test_absurd_and_non_finite_numbers_are_400_and_do_not_brick_the_panel(client, monkeypatch, tmp_path):
+    """NaN/Infinity/超大 duration_days 必须在入口 400。
+
+    过去 NaN 会被存下来，于是 GET /admin/access-keys 永久 500（JSONResponse 不允许
+    NaN），整个访问密钥页只剩一行加载失败——连本来健康的密钥也一起看不见，
+    而且只能进容器手改 data/access_keys.json 才救得回来。
+    """
+    store = _isolate(monkeypatch, tmp_path)
+    assert client.post("/admin/access-keys", json={"name": "ok"}, headers=_AUTH).status_code == 200
+
+    bad_bodies = [
+        '{"name": "nan", "duration_days": NaN}',
+        '{"name": "inf", "duration_days": Infinity}',
+        '{"name": "huge", "duration_days": 10000000}',
+        '{"name": "zero", "request_limit": 0}',
+    ]
+    for raw in bad_bodies:
+        r = client.post("/admin/access-keys", content=raw, headers={
+            **_AUTH, "Content-Type": "application/json",
+        })
+        assert r.status_code == 400, f"{raw} -> {r.status_code} {r.text[:120]}"
+
+    assert len(store.list_keys()) == 1, "被拒的签发不得留下记录"
+    listed = client.get("/admin/access-keys", headers=_AUTH)
+    assert listed.status_code == 200, "列表端点必须还活着"
+    assert len(listed.json()["keys"]) == 1
+
+    # PATCH 同理
+    kid = store.list_keys()[0].id
+    r = client.patch(f"/admin/access-keys/{kid}", content='{"duration_days": NaN}', headers={
+        **_AUTH, "Content-Type": "application/json",
+    })
+    assert r.status_code == 400
+    assert client.get("/admin/access-keys", headers=_AUTH).status_code == 200
+
+
+def test_persist_failure_is_reported_instead_of_a_fake_success(client, monkeypatch, tmp_path):
+    """data/ 不可写时，签发/吊销必须报 500。
+
+    回 200 + 一把明文密钥，管理员就会把一把重启后立刻 401 的密钥发出去；
+    DELETE 回 success=true，被吊销的密钥会在重启后原地复活——而面板上什么都看不出来。
+    """
+    import app.core.access_key_store as mod
+
+    store = _isolate(monkeypatch, tmp_path)
+    existing = store.create("keep")
+
+    def boom(*a, **kw):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(mod, "atomic_write_json", boom)
+
+    r = client.post("/admin/access-keys", json={"name": "ghost"}, headers=_AUTH)
+    assert r.status_code == 500
+    assert "sk-" not in r.text, "失败的签发不得把明文密钥回给管理员"
+
+    assert client.delete(f"/admin/access-keys/{existing.id}", headers=_AUTH).status_code == 500
+    assert client.patch(f"/admin/access-keys/{existing.id}", json={"name": "x"},
+                        headers=_AUTH).status_code == 500
+    assert client.post(f"/admin/access-keys/{existing.id}/reset-usage",
+                       headers=_AUTH).status_code == 500
+
+    listed = client.get("/admin/access-keys", headers=_AUTH).json()["keys"]
+    assert [k["id"] for k in listed] == [existing.id], "内存态必须回滚成磁盘上的样子"
+    assert listed[0]["name"] == "keep"

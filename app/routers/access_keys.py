@@ -127,24 +127,29 @@ async def create_access_keys(req: CreateAccessKeyRequest):
     if req.expires_at and store_module.parse_timestamp(req.expires_at) is None:
         raise HTTPException(status_code=400, detail="expires_at is not a valid ISO8601 timestamp")
 
-    store = _store()
-    created = []
+    base = (req.name or "").strip()
+    names = [
+        (f"{base}-{i + 1}" if base and count > 1 else base)
+        for i in range(count)
+    ]
     try:
-        for i in range(count):
-            name = (req.name or "").strip()
-            if name and count > 1:
-                name = f"{name}-{i + 1}"
-            created.append(store.create(
-                name=name,
-                expires_at=req.expires_at,
-                duration_days=req.duration_days,
-                request_limit=req.request_limit,
-                bound_account_ids=req.bound_account_ids,
-                allowed_models=req.allowed_models,
-                enabled=req.enabled,
-            ))
-    except (TypeError, ValueError) as e:
+        # create_many：整批只做一次落盘。逐把 create() 会在事件循环线程上做 count 次
+        # 全量 fsync（写出的字节数 O(n²)），批量签发时整个网关都卡在那里。
+        created = _store().create_many(
+            names,
+            expires_at=req.expires_at,
+            duration_days=req.duration_days,
+            request_limit=req.request_limit,
+            bound_account_ids=req.bound_account_ids,
+            allowed_models=req.allowed_models,
+            enabled=req.enabled,
+        )
+    except (TypeError, ValueError, OverflowError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        # 落盘失败绝不能回 200：管理员会把一把其实没存下来的明文密钥发出去，
+        # 重启后持有人直接 401。
+        raise HTTPException(status_code=500, detail=f"failed to persist access keys: {e}")
     return {"keys": [_serialize(k) for k in created], "key": _serialize(created[0])}
 
 
@@ -162,8 +167,10 @@ async def update_access_key(key_id: int, req: UpdateAccessKeyRequest):
         raise HTTPException(status_code=400, detail="expires_at is not a valid ISO8601 timestamp")
     try:
         entry = _store().update(key_id, **fields)
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError, OverflowError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"failed to persist access keys: {e}")
     if entry is None:
         raise HTTPException(status_code=404, detail="access key not found")
     return {"key": _serialize(entry)}
@@ -171,14 +178,22 @@ async def update_access_key(key_id: int, req: UpdateAccessKeyRequest):
 
 @router.delete("/{key_id}")
 async def delete_access_key(key_id: int):
-    if not _store().delete(key_id):
+    try:
+        deleted = _store().delete(key_id)
+    except OSError as e:
+        # 吊销没落盘就回 success=true，重启后这把密钥会原地复活。
+        raise HTTPException(status_code=500, detail=f"failed to persist access keys: {e}")
+    if not deleted:
         raise HTTPException(status_code=404, detail="access key not found")
     return {"success": True}
 
 
 @router.post("/{key_id}/reset-usage")
 async def reset_access_key_usage(key_id: int):
-    entry = _store().reset_usage(key_id)
+    try:
+        entry = _store().reset_usage(key_id)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"failed to persist access keys: {e}")
     if entry is None:
         raise HTTPException(status_code=404, detail="access key not found")
     return {"key": _serialize(entry)}
