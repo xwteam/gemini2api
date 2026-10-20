@@ -350,10 +350,12 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
         prompt_tokens = estimate_tokens(prompt)
         response_text = ""
 
-        # 有工具/附件：需完整文本，走非流式收集后切片（零回归）。
+        # 只有「工具调用」才强制走 buffered：tool_calls 必须拿到完整 JSON 才能解析。
+        # 附件不再挡在这里（底层 generate_stream 本就先上传附件再对话，下方真流式路径也已
+        # 把 attachments 原样传下去），与 /v1/chat/completions 同口径。
         # generate() 阻塞期间此前零字节输出——不是空闲读超时，是首字节超时，60s 首字节限制的
         # 代理会直接杀连接。NDJSON 流不能用 SSE 注释帧保活，改发空行（与下方真流式路径同款）。
-        if has_tools or attachments:
+        if has_tools:
             gen_task = asyncio.create_task(gemini_client.generate(prompt, model, "", attachments,
                                                                   gem_id=gem_id, account_id=gem_account_id))
             try:

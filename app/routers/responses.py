@@ -199,8 +199,9 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
     yield enc.created()
     yield enc.in_progress()
 
-    if has_tools or attachments:
-        # 工具调用/附件：需要完整文本才能判断，走非流式收集（同 openai.py 的 buffered 门禁）。
+    if has_tools:
+        # 只有工具调用才走非流式收集（同 openai.py 的 buffered 门禁）：tool_calls 必须拿到
+        # 完整 JSON 才能解析。附件不再挡在这里（底层 generate_stream 本就先上传附件再对话）。
         # Codex CLI 恒带 tools，这条分支必走——generate() 阻塞期间必须有心跳，否则首字节超时。
         gen_task = asyncio.create_task(gemini_client.generate(prompt, model, "", attachments,
                                                               gem_id=gem_id, account_id=gem_account_id,

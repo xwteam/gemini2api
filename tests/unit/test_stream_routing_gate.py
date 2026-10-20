@@ -6,6 +6,9 @@ maybe_image_generation_intent(prompt)` 三条里有两条不该在这儿：
   带图/带文件的请求都失去真流式；
 - 生图意图：那是个关键词猜测，误判面很大，会把一堆普通对话一起拖进 buffered。
 has_tools 这条保留 —— tool_calls 必须拿到完整 JSON 才能解析。
+
+四个协议路由（/v1/chat/completions、/v1/messages、/v1beta、/v1/responses）必须同口径：
+否则同一个网关对"带附件的流式请求"给出两种延迟特征（一边 TTFB 几十毫秒，一边等整轮生成完）。
 """
 
 import base64
@@ -111,3 +114,132 @@ def test_image_intent_only_affects_the_timeout():
 
     assert gc._generate_timeout("gemini-3-flash", "画一张猫的图片") == 180
     assert gc._generate_timeout("gemini-3-flash", "你好") == 120
+
+
+# ---------------------------------------------------------------------------
+# 四个协议路由必须同口径（此前只有 /v1/chat/completions 摘掉了 attachments 门禁，
+# /v1/messages、/v1beta、/v1/responses 三处仍是 `has_tools or attachments`：
+# 同一个网关对"带附件的流式请求"给出两种延迟特征）
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def routed_for(monkeypatch):
+    """按 router 模块名打桩两条路径，返回"这次请求实际走了哪条"的记录。"""
+    import importlib
+
+    def _install(module_name: str):
+        mod = importlib.import_module(module_name)
+        calls = []
+
+        async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                                account_id=None, extended_thinking=False):
+            calls.append(("buffered", attachments))
+            return {"text": "answer", "images": [], "conversation_id": "c", "thoughts": ""}
+
+        async def fake_generate_stream(prompt, model, conversation_id="", attachments=None,
+                                       gem_id=None, account_id=None, extended_thinking=False):
+            calls.append(("stream", attachments))
+            yield {"type": "delta", "text": "an"}
+            yield {"type": "delta", "text": "swer"}
+            yield {"type": "final", "text": "answer", "conversation_id": "c",
+                   "images": [], "thoughts": ""}
+
+        monkeypatch.setattr(mod.gemini_client, "generate", fake_generate)
+        monkeypatch.setattr(mod.gemini_client, "generate_stream", fake_generate_stream)
+        return calls
+
+    return _install
+
+
+_CLAUDE_IMAGE_MSG = [{"role": "user", "content": [
+    {"type": "text", "text": "这张图里是什么"},
+    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": _PNG}},
+]}]
+
+_CLAUDE_TOOLS = [{"name": "f", "description": "d",
+                  "input_schema": {"type": "object", "properties": {}}}]
+
+
+def test_claude_protocol_streams_with_attachments(gem_client, routed_for):
+    calls = routed_for("app.routers.claude")
+
+    r = gem_client.post("/v1/messages", json={
+        "model": "gemini-flash", "max_tokens": 100, "stream": True,
+        "messages": _CLAUDE_IMAGE_MSG,
+    }, headers=_AUTH)
+
+    assert r.status_code == 200, r.text
+    assert [c[0] for c in calls] == ["stream"]
+    assert calls[0][1], "附件必须照常交给 generate_stream"
+
+
+def test_claude_protocol_still_buffers_tools(gem_client, routed_for):
+    calls = routed_for("app.routers.claude")
+
+    r = gem_client.post("/v1/messages", json={
+        "model": "gemini-flash", "max_tokens": 100, "stream": True,
+        "tools": _CLAUDE_TOOLS,
+        "messages": [{"role": "user", "content": "查一下天气"}],
+    }, headers=_AUTH)
+
+    assert r.status_code == 200, r.text
+    assert [c[0] for c in calls] == ["buffered"]
+
+
+def test_gemini_protocol_streams_with_attachments(gem_client, routed_for):
+    calls = routed_for("app.routers.gemini")
+
+    r = gem_client.post("/v1beta/models/gemini-flash:streamGenerateContent", json={
+        "contents": [{"role": "user", "parts": [
+            {"text": "这张图里是什么"},
+            {"inline_data": {"mime_type": "image/png", "data": _PNG}},
+        ]}],
+    }, headers=_AUTH)
+
+    assert r.status_code == 200, r.text
+    assert [c[0] for c in calls] == ["stream"]
+    assert calls[0][1], "附件必须照常交给 generate_stream"
+
+
+def test_gemini_protocol_still_buffers_tools(gem_client, routed_for):
+    calls = routed_for("app.routers.gemini")
+
+    r = gem_client.post("/v1beta/models/gemini-flash:streamGenerateContent", json={
+        "contents": [{"role": "user", "parts": [{"text": "查一下天气"}]}],
+        "tools": [{"function_declarations": [
+            {"name": "f", "description": "d",
+             "parameters": {"type": "object", "properties": {}}},
+        ]}],
+    }, headers=_AUTH)
+
+    assert r.status_code == 200, r.text
+    assert [c[0] for c in calls] == ["buffered"]
+
+
+def test_responses_protocol_streams_with_attachments(gem_client, routed_for):
+    calls = routed_for("app.routers.responses")
+
+    r = gem_client.post("/v1/responses", json={
+        "model": "gemini-flash", "stream": True,
+        "input": [{"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "这张图里是什么"},
+            {"type": "input_image", "image_url": f"data:image/png;base64,{_PNG}"},
+        ]}],
+    }, headers=_AUTH)
+
+    assert r.status_code == 200, r.text
+    assert [c[0] for c in calls] == ["stream"]
+    assert calls[0][1], "附件必须照常交给 generate_stream"
+
+
+def test_responses_protocol_still_buffers_tools(gem_client, routed_for):
+    calls = routed_for("app.routers.responses")
+
+    r = gem_client.post("/v1/responses", json={
+        "model": "gemini-flash", "stream": True, "input": "查一下天气",
+        "tools": [{"type": "function", "name": "f", "description": "d",
+                   "parameters": {"type": "object", "properties": {}}}],
+    }, headers=_AUTH)
+
+    assert r.status_code == 200, r.text
+    assert [c[0] for c in calls] == ["buffered"]

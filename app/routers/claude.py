@@ -211,8 +211,11 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     model_name = display_model or model
 
-    # 有工具/附件：需完整文本，走非流式收集后切片（零回归）
-    if has_tools or attachments:
+    # 只有「工具调用」才强制走 buffered：tool_calls 必须拿到完整 JSON 才能解析。
+    # 附件不再挡在这里 —— 附件在 generate_stream 里照样会先上传完再开始对话（底层支持，
+    # 下面的真流式路径本来就把 attachments 原样传了下去），把它挡进 buffered 只是让所有
+    # 带图/带文件的请求都"等全文生成完才吐第一个字"。与 /v1/chat/completions 同口径。
+    if has_tools:
         async for sse in _stream_claude_buffered(prompt, model, has_tools, attachments, msg_id, model_name, gem_id, account_id,
                                                  request=request):
             yield sse
