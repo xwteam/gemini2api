@@ -328,15 +328,22 @@ BARD_CATEGORY_UNKNOWN = "unknown"
 #                       下一次请求走既有的 reload_cookies 自愈
 #   captcha           → 403 同上。人机验证只能人工处理，先把账号让出去
 #   context_too_long  → 400 请求侧问题，给客户端明确错误，绝不换号重试
-#   unknown           → 429 既不冷却账号也不跨账号 failover：一个系统性的未知拒绝若按 5xx
-#                       处理，会把整池账号一起拖进冷却（比今天的空回复更糟）。429 至少给
-#                       客户端一个"稍后再试"的明确信号，而不是静默的空回复。
+#   unknown           → 503 同 rate_limit：走既有的"冷却 + 换号"口径。
+#                       这里原本是 429，想的是"既不冷却也不 failover，至少给客户端一个
+#                       稍后再试的信号"——但 429 既不在 account_pool._is_retryable 也不是
+#                       5xx，于是它走的是 release(success=False) 那条"3 连败即 EXPIRED"的
+#                       通道。而 BARD_ERROR_CODES 默认是空的，**默认配置下所有拒绝块都是
+#                       unknown**：实测 9 个请求就能把 3 个账号全部标 EXPIRED（基线里同样的
+#                       响应被当成"空响应"、走 release(success=True, empty=True) 把
+#                       consecutive_failures 清零，账号始终 ACTIVE）。
+#                       503 的冷却只是"30 秒内不优先选它"（_find_available 里全冷却也仍可
+#                       兜底选），既不累计失败也不标 EXPIRED —— 比把账号踢出轮换轻得多。
 _BARD_CATEGORY_STATUS = {
     BARD_CATEGORY_RATE_LIMIT: 503,
     BARD_CATEGORY_SESSION_EXPIRED: 401,
     BARD_CATEGORY_CAPTCHA: 403,
     BARD_CATEGORY_CONTEXT_TOO_LONG: 400,
-    BARD_CATEGORY_UNKNOWN: 429,
+    BARD_CATEGORY_UNKNOWN: 503,
 }
 
 # code→语义的对照表**默认为空**：BardErrorInfo 的 code 语义 Google 没有公开文档，两个
@@ -628,8 +635,24 @@ def _stable_placeholder_prefix(text: str) -> str:
     return cleaned[:cut]
 
 
+# 流式响应里的顶层帧标记。`er` 是 Google 放错误/状态块的另一个标记，参考实现对
+# `wrb.fr` 和 `er` 都收（refs/gemini-web-to-api 的 collectGeminiModelRecords：
+# `marker == "wrb.fr" || marker == "er"`）。只扫 wrb.fr 的话，以 `["er",...]` 形态下发的
+# 拒绝块（BardErrorInfo）在流式侧永远切不出来，于是又退回 S4 要消灭的那个死法：
+# 静默空响应、账号不标不健康、cookie 自愈永不触发。
+# 注意这里匹配的是**原始 buffer 里的字面量**：帧的第 2 格是 JSON 字符串，里面的引号是
+# 转义的（\"er\"），所以不会误把回答正文里的内容当成一个新帧的开头。
+_STREAM_FRAME_MARKERS = ('["wrb.fr"', '["er"')
+
+
+def _next_frame_start(buf: str, i: int) -> int:
+    """从 i 开始找下一个顶层帧的起点；没有就返回 -1。"""
+    starts = [pos for pos in (buf.find(m, i) for m in _STREAM_FRAME_MARKERS) if pos != -1]
+    return min(starts) if starts else -1
+
+
 def _scan_complete_wrb_frames(buf: str) -> tuple[list, int]:
-    """从流式累积 buffer 中切出所有完整的 `["wrb.fr",...]` 顶层元素。
+    """从流式累积 buffer 中切出所有完整的 `["wrb.fr",...]` / `["er",...]` 顶层元素。
 
     Gemini StreamGenerate 的响应是 `)]}'\\n\\n` 前缀 + 一个不断增长的 JSON 数组，
     元素形如 `["wrb.fr",null,"<json字符串>",...]` 逐个流式追加（chunk 边界随意切，
@@ -642,7 +665,7 @@ def _scan_complete_wrb_frames(buf: str) -> tuple[list, int]:
     i = 0
     n = len(buf)
     while i < n:
-        start = buf.find('["wrb.fr"', i)
+        start = _next_frame_start(buf, i)
         if start == -1:
             break
         # 从 start 开始做括号深度匹配，切出完整的 [...] 元素

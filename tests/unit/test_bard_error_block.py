@@ -101,14 +101,52 @@ def test_configured_codes_map_to_the_right_status(monkeypatch, code, status):
     assert mapped_type == ("api_error" if status >= 500 else "invalid_request_error")
 
 
-def test_unknown_code_is_conservative(monkeypatch):
-    """认不出的 code → 429：给客户端明确的"稍后再试"，但既不冷却账号也不跨账号 failover
-    （一个系统性的未知拒绝若按 5xx 处理，会把整池账号一起拖进冷却）。"""
+def test_unknown_code_goes_through_the_cooldown_path(monkeypatch):
+    """认不出的 code → 503：走既有的"冷却 + 换号"口径，绝不能走"3 连败即 EXPIRED"。
+
+    BARD_ERROR_CODES 默认是空的，所以**默认配置下所有拒绝块都是 unknown** —— 这一条的
+    状态码直接决定了一次系统性拒绝会不会把整池账号踢出轮换。429 既不在
+    account_pool._is_retryable 也不是 5xx，于是它吃 consecutive_failures，满 3 就 EXPIRED。
+    """
     monkeypatch.setattr(gc.settings, "bard_error_codes", _CODES_CONF, raising=False)
     with pytest.raises(GeminiRejectionError) as ei:
         _client()._parse_output(_raw(_error_line(123456, outer=0)))
     assert ei.value.category == gc.BARD_CATEGORY_UNKNOWN
-    assert classify_error(ei.value) == (429, "rate_limit_error", None)
+    assert classify_error(ei.value) == (503, "api_error", None)
+
+
+def test_unknown_rejection_is_retryable_and_cooled_not_expired():
+    """把口径钉在 account_pool 的判据上：换号可重试、按 5xx 冷却。"""
+    from app.core import account_pool as ap
+
+    err = gc.GeminiRejectionError([13, 1152], gc.BARD_CATEGORY_UNKNOWN)
+    assert ap._is_retryable(err) is True, "必须能换号重试（429 不行）"
+    assert ap._is_5xx(err) is True, "必须走 cooldown 分支（它不累计 consecutive_failures）"
+
+
+def test_unknown_rejections_do_not_expire_the_account():
+    """3 次拒绝块之后账号必须仍然 ACTIVE（基线行为：同样的响应被当成空响应，照旧 ACTIVE）。"""
+    import asyncio
+
+    from app.core.account_pool import Account, AccountPool, AccountStatus
+
+    pool = AccountPool()
+    account = Account(id="account-1", psid="p", psidts="t", label="a1",
+                      status=AccountStatus.ACTIVE)
+    pool._accounts = [account]
+
+    err = gc.GeminiRejectionError([13, 1152], gc.BARD_CATEGORY_UNKNOWN)
+
+    async def run():
+        from app.core.account_pool import _is_5xx
+        for _ in range(3):
+            account.active_requests = 1
+            await pool.release(account, success=False, cooldown=_is_5xx(err), error=str(err))
+
+    asyncio.run(run())
+
+    assert account.status is AccountStatus.ACTIVE, "一次系统性拒绝不该把账号踢出轮换"
+    assert account.consecutive_failures == 0
 
 
 def test_broken_config_is_ignored_not_fatal(monkeypatch):
@@ -206,6 +244,30 @@ def test_stream_rejection_raises(monkeypatch):
     client = _stream_client(monkeypatch, _raw(_error_line(1152)))
     with pytest.raises(GeminiRejectionError) as ei:
         _drain(client)
+    assert ei.value.codes == (13, 1152)
+
+
+def _er_error_line(code: int, outer: int = 13) -> str:
+    """同一个拒绝块，但以 `["er",...]` 形态下发（参考实现对 wrb.fr 和 er 都收）。"""
+    return json.dumps(
+        [["er", None, None, None, None, [outer, None, [[_TYPE_URL, [code]]]]], ["di", 2461]]
+    )
+
+
+def test_stream_recognises_an_er_framed_rejection(monkeypatch):
+    """流式侧过去只扫 `["wrb.fr"` 字面量，`["er",...]` 形态的拒绝块永远切不出来 ——
+    于是又退回那个最难受的死法：静默空响应、账号不标不健康、cookie 自愈永不触发。
+    附件与"疑似生图"的请求现在都走真流式，这条路是主路径。"""
+    client = _stream_client(monkeypatch, _raw(_er_error_line(1152)))
+    with pytest.raises(GeminiRejectionError) as ei:
+        _drain(client)
+    assert ei.value.codes == (13, 1152)
+
+
+def test_nonstream_recognises_an_er_framed_rejection():
+    """非流式侧本来就认（_extract_bard_error 的 framed 判断含 "er"），一起钉住。"""
+    with pytest.raises(GeminiRejectionError) as ei:
+        _client()._parse_output(_raw(_er_error_line(1152)))
     assert ei.value.codes == (13, 1152)
 
 
