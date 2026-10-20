@@ -10,7 +10,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
-from app.core.access_context import ensure_model_allowed, filter_models_for_access_key
+from app.core.access_context import (
+    ensure_model_allowed, filter_models_for_access_key, scoped_conversation_id,
+)
 from app.core.api_forwarder import forward_to_provider, open_stream
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
@@ -283,7 +285,8 @@ async def chat_completions(req: ChatRequest, request: Request):
     gemini_conv_id = ""
     conv = None
     if req.conversation_id:
-        conv = await conversation_store.get(req.conversation_id)
+        # 存储键按访问密钥隔离；回给客户端的仍是它自己给的那个 id（见 _conv_echo_id）
+        conv = await conversation_store.get(scoped_conversation_id(req.conversation_id))
         if conv and conv.gemini_conv_id:
             gemini_conv_id = conv.gemini_conv_id
 
@@ -403,7 +406,7 @@ async def chat_completions(req: ChatRequest, request: Request):
     # 持久化对话
     if new_conv_id:
         if not conv:
-            conv_store_id = req.conversation_id or completion_id
+            conv_store_id = scoped_conversation_id(req.conversation_id or completion_id)
             conv = await conversation_store.create(conv_store_id, resolved_model)
         conv.gemini_conv_id = new_conv_id
         last_user = messages_raw[-1].get("content", "") if messages_raw else ""
@@ -445,7 +448,7 @@ async def chat_completions(req: ChatRequest, request: Request):
                     completion_tokens=estimate_tokens(text),
                     total_tokens=estimate_tokens(prompt) + estimate_tokens(text),
                 ),
-                conversation_id=conv.id if conv else None,
+                conversation_id=(req.conversation_id or completion_id) if conv else None,
             )
         text = parsed.get("content", text)
 
@@ -462,7 +465,7 @@ async def chat_completions(req: ChatRequest, request: Request):
             completion_tokens=estimate_tokens(text),
             total_tokens=estimate_tokens(prompt) + estimate_tokens(text),
         ),
-        conversation_id=conv.id if conv else None,
+        conversation_id=(req.conversation_id or completion_id) if conv else None,
     )
 
 

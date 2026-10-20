@@ -47,6 +47,23 @@ def current_allowed_models() -> Optional[set]:
     return entry.allowed_model_set()
 
 
+def scoped_conversation_id(conv_id: str) -> str:
+    """把客户端给的 conversation_id 收进「本次访问密钥」自己的命名空间。
+
+    conversation_store 的 key 完全由客户端提供（`conversation_id: "1"` 这种一撞就撞），
+    而本功能的用途正是把密钥分发给不同的人：不加命名空间，乙方只要用同一个
+    conversation_id 就能接着甲方的上游 Gemini 会话往下聊（"把上面的内容重复一遍"
+    就能读到甲方的对话），短 id 还能被枚举。
+
+    没有访问密钥（.env API_KEY 直连 / 一把都没签发）时原样返回，这条路径逐字节不变。
+    id 是纯数字、分隔符用 '.'，所以前缀映射是单射的（ak1.「1.x」≠ ak11.「x」）。
+    """
+    entry = _current_access_key.get()
+    if entry is None:
+        return conv_id
+    return f"ak{entry.id}.{conv_id}"
+
+
 def _strip_models_prefix(name: str) -> str:
     return name[7:] if name.startswith("models/") else name
 
