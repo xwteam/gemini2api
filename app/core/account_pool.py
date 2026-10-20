@@ -28,6 +28,13 @@ HEAL_RETRY_COOLDOWN = 60.0
 # 清掉它，超过这个阈值就当陈旧、可回收 —— 双保险，绝不指望它成为常态触发路径。
 HEALING_STALE_SECONDS = 120.0
 
+# EXPIRED 账号恢复探测（check_account）的冷却秒数。只在「访问密钥绑定了账号」的请求上
+# 生效：那种请求在池里别的账号都健康时也会走到恢复分支，没有冷却就等于每个请求一次
+# 持锁网络 I/O —— 把别的租户（含 .env API_KEY 的请求）一起卡住，还对 Google 形成
+# 逐请求的敲门风暴。无绑定的请求只有在"一个 ACTIVE 账号都没有"时才会走到那里，
+# 行为保持改动前原样（见 _try_recover_expired）。
+EXPIRED_RECOVER_COOLDOWN = 60.0
+
 # 连续多少次空响应才允许在面板的 Errors 上留痕（issue #11）。单次空响应太常见
 # （内容拒答、被安全策略拦下），不足以说明账号坏了，所以单次绝不降级账号。
 EMPTY_STREAK_THRESHOLD = 3
@@ -127,6 +134,11 @@ class Account:
     healing_started_at: float = 0.0
     # 自愈失败后的冷却截止时间戳（loop.time()）；冷却期内不再触发自愈
     heal_cooldown_until: float = 0.0
+    # EXPIRED 恢复探测失败后的冷却截止时间戳（loop.time()）；只有绑定账号的请求会读它
+    recover_cooldown_until: float = 0.0
+    # EXPIRED 恢复探测的单飞标志（照 healing 的样子：锁外跑、只允许一个请求在跑）
+    recovering: bool = False
+    recovering_started_at: float = 0.0
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     client: GeminiWebClient | None = field(default=None, repr=False)
 
@@ -370,8 +382,94 @@ class AccountPool:
             else:
                 account.heal_cooldown_until = heal_cooldown_until
 
+    def _check_pinned_account(self, account_id: str) -> None:
+        """Gem 锁定账号的前置校验（generate/generate_stream 共用）。
+
+        账号必须存在，且必须在本次请求的访问密钥绑定白名单里。第二条必须在这里就
+        fail-closed 报准确原因：否则 acquire 会因为"其它账号全被 exclude"而报
+        「No more accounts to failover to」，再被改写成「Pinned gem account ...
+        unavailable (expired/busy/cooldown)」—— 运维会去查一个其实很健康的账号，
+        而且那条文案不被 classify_error 认成 503，会以 500 面世。
+        """
+        if self._get_account(account_id) is None:
+            raise ValueError(f"Account {account_id} not found")
+        bound = current_bound_account_ids()
+        if bound is not None and account_id not in bound:
+            raise RuntimeError(
+                f"{BOUND_ACCOUNT_UNAVAILABLE_MSG}: "
+                f"the pinned gem account is not bound to this access key"
+            )
+
+    def _pick_recover_candidates(self, only: set) -> list[Account]:
+        """挑出绑定集合里值得探测的 EXPIRED 账号，并就地打上 recovering 单飞标志
+        （需已持有 self._cond 锁）。
+
+        单飞 + 冷却的理由同 _pick_heal_candidate：绑定账号真的死了的时候，不能让每个
+        请求都去对 Google 敲一次门；陈旧回收（HEALING_STALE_SECONDS）同样是双保险。
+        """
+        now = asyncio.get_event_loop().time()
+        picked: list[Account] = []
+        for a in self._accounts:
+            if a.status != AccountStatus.EXPIRED or a.client is None:
+                continue
+            if a.id not in only:
+                continue
+            if a.recovering:
+                if now - a.recovering_started_at <= HEALING_STALE_SECONDS:
+                    continue
+                logger.warning(
+                    f"Account {a.id} recovering flag stale for "
+                    f"{now - a.recovering_started_at:.0f}s, reclaiming it"
+                )
+            elif a.recover_cooldown_until > now:
+                continue
+            a.recovering = True
+            a.recovering_started_at = now
+            picked.append(a)
+        return picked
+
+    async def _recover_expired_unlocked(self, targets: list[Account], deadline: float) -> None:
+        """锁外探测 EXPIRED 账号是否已恢复（绑定账号路径专用）。
+
+        为什么不能复用 _try_recover_expired：那条路径是**持锁**跑 check_account() 的。
+        一把绑定到 EXPIRED 账号的密钥会在池子整体健康的情况下每个请求都撞进恢复分支，
+        持锁做网络 I/O 就等于让别的租户（含 .env API_KEY 的请求）跟着一起卡住。
+        这里照 F2 自愈那条路子办：锁外、单飞、带冷却，结果落盘时才短暂取锁。
+        """
+        loop = asyncio.get_event_loop()
+        for a in targets:
+            ok = False
+            try:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    continue
+                result = await asyncio.wait_for(a.client.check_account(), timeout=remaining)
+                ok = bool(result.get("valid"))
+            except Exception:
+                ok = False
+            finally:
+                # 照 H1 的教训：单飞标志是不需要锁的普通属性写，必须无条件同步清掉，
+                # 绝不能放进下面需要抢锁的 async with 里（取消会让它永远跑不到）。
+                a.recovering = False
+            async with self._cond:
+                if ok:
+                    a.status = AccountStatus.ACTIVE
+                    a.consecutive_failures = 0
+                    a.recover_cooldown_until = 0.0
+                    logger.info(f"Account {a.id} recovered during acquire")
+                    self._cond.notify_all()
+                else:
+                    a.recover_cooldown_until = (
+                        asyncio.get_event_loop().time() + EXPIRED_RECOVER_COOLDOWN
+                    )
+
     async def _try_recover_expired(self):
-        """无可用账号时，尝试恢复 EXPIRED 账号（已持有锁）。"""
+        """无可用账号时，尝试恢复 EXPIRED 账号（已持有锁）。
+
+        只有「没有访问密钥绑定」的请求会走到这里，且只在池里一个 ACTIVE 账号都不剩时
+        才会走到 —— 与本功能引入前逐字节一致。绑定账号的恢复走锁外的
+        _recover_expired_unlocked（持锁扫全池会把别的租户一起卡住，见那里的说明）。
+        """
         for a in self._accounts:
             if a.status == AccountStatus.EXPIRED and a.client:
                 try:
@@ -402,8 +500,11 @@ class AccountPool:
                 )
         # 每次 acquire 最多触发一次自愈：失败了就按 F3 诚实报错，绝不在这里反复重试自旋。
         heal_attempted = False
+        # 绑定账号的 EXPIRED 恢复探测同理：每次 acquire 最多一轮
+        recover_attempted = False
         while True:
             heal_target: Account | None = None
+            recover_targets: list[Account] = []
             async with self._cond:
                 while True:
                     account = self._find_available(exclude, only)
@@ -434,21 +535,30 @@ class AccountPool:
                     if not has_available_account:
                         unhealthy = self._unhealthy_active(only)
                         if not unhealthy:
+                            if only is not None:
+                                # 绑定账号路径：绝不在这里持锁跑 check_account()。池里别人的
+                                # 账号可能正健康着，持锁做网络 I/O 会把所有其他请求（含
+                                # .env API_KEY 的）一起卡住，而且没有冷却就是逐请求敲门。
+                                # 跳出临界区，到锁外单飞探测一轮（见 _recover_expired_unlocked）。
+                                if not recover_attempted:
+                                    recover_targets = self._pick_recover_candidates(only)
+                                    if recover_targets:
+                                        break
+                                # 没有可探测的目标（已试过/正被别的请求跑/还在冷却）：
+                                # fail-closed，绝不回退到池里其他账号。
+                                raise RuntimeError(
+                                    f"{BOUND_ACCOUNT_UNAVAILABLE_MSG}: {sorted(only)}"
+                                )
                             # 真正的"一个 ACTIVE 账号都没有"（其余是 EXPIRED/DISABLED）：
                             # 这是修复前就存在的持锁网络恢复路径，不是本次改动引入的新东西，
-                            # 维持原样——check_account 比 reload_cookies 轻量得多，且只有在
-                            # 彻底没有 ACTIVE 账号时才会走到这里。
+                            # 对无绑定的请求维持原样——check_account 比 reload_cookies 轻量
+                            # 得多，且只有在彻底没有 ACTIVE 账号时才会走到这里。
                             await self._try_recover_expired()
-                            account = self._find_available(only=only)
+                            account = self._find_available()
                             if account is not None:
                                 account.active_requests += 1
                                 account.last_used = datetime.now(timezone.utc)
                                 return account
-                            if only is not None:
-                                # 绑定账号全不可用：fail-closed，绝不回退到池里其他账号。
-                                raise RuntimeError(
-                                    f"{BOUND_ACCOUNT_UNAVAILABLE_MSG}: {sorted(only)}"
-                                )
                             raise RuntimeError("No available accounts")
                         # H2（reviewer FIX_FIRST）：这里绝不能再调 _try_recover_expired()。
                         # F1 把 has_available_account 的判定收紧成"ACTIVE 且健康"后，池里
@@ -480,7 +590,13 @@ class AccountPool:
                             f"waited {self._acquire_timeout}s"
                         )
 
-            # ↑ 到这里锁已释放。reload_cookies 是 60s 级网络 I/O，绝不能持锁跑。
+            # ↑ 到这里锁已释放。reload_cookies / check_account 都是网络 I/O，绝不能持锁跑。
+            if recover_targets:
+                recover_attempted = True
+                await self._recover_expired_unlocked(recover_targets, deadline)
+                # 回到外层循环重新取锁：恢复成功 → 直接拿到槽位；失败 → 下一轮按
+                # BOUND_ACCOUNT_UNAVAILABLE_MSG fail-closed。
+                continue
             heal_attempted = True
             # M1（reviewer MEDIUM）：不能让自愈把 acquire() 的总耗时顶穿 operator 配置的
             # acquire_timeout（最多可能多等一整个 reload_cookies 时长，~60s）。用剩余预算
@@ -780,8 +896,7 @@ class AccountPool:
         tried: set = set()
         # 绑定账号：排除其他所有账号，使 acquire/failover 只可能选中目标账号
         if account_id:
-            if self._get_account(account_id) is None:
-                raise ValueError(f"Account {account_id} not found")
+            self._check_pinned_account(account_id)
             tried.update({a.id for a in self._accounts if a.id != account_id})
         last_err = None
         while True:
@@ -845,8 +960,7 @@ class AccountPool:
         tried: set = set()
         # 绑定账号：排除其他所有账号，使 acquire/failover 只可能选中目标账号
         if account_id:
-            if self._get_account(account_id) is None:
-                raise ValueError(f"Account {account_id} not found")
+            self._check_pinned_account(account_id)
             tried.update({a.id for a in self._accounts if a.id != account_id})
         last_err = None
         while True:

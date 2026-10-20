@@ -320,3 +320,167 @@ def test_model_gate_also_covers_images_tokens_and_deepresearch(gem_client, monke
         "messages": [{"role": "user", "content": "hi"}],
     }, headers=_bearer(key))
     assert r.status_code == 200, r.text
+
+
+# -------------------------------------------- 绑定账号是 EXPIRED 时的恢复探测
+
+class _ProbeClient(_FakeClient):
+    """记录 check_account 次数，并能把它模拟成一次真实的网络往返。
+
+    探测如果是持锁跑的，这个 delay 就会原样变成"别人的请求也得等这么久"。
+    """
+
+    def __init__(self, healthy: bool = True, valid: bool = False, delay: float = 0.0):
+        super().__init__(healthy=healthy)
+        self.check_calls = 0
+        self.generate_calls = 0
+        self._valid = valid
+        self._delay = delay
+
+    async def check_account(self) -> dict:
+        self.check_calls += 1
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return {"valid": self._valid}
+
+    async def generate(self, *a, **kw) -> dict:
+        self.generate_calls += 1
+        return await super().generate(*a, **kw)
+
+
+def _expired_pool(*clients, acquire_timeout=5.0) -> AccountPool:
+    pool = _make_pool(list(clients), acquire_timeout=acquire_timeout)
+    for account in pool._accounts:
+        if isinstance(account.client, _ProbeClient) and not account.client.is_healthy:
+            account.status = AccountStatus.EXPIRED
+    return pool
+
+
+def test_bound_expired_account_probe_does_not_stall_the_rest_of_the_pool(tmp_path, monkeypatch):
+    """绑定账号是 EXPIRED 时的恢复探测必须：只碰绑定的那个账号、且在锁外跑。
+
+    否则一把绑定到 EXPIRED 账号的密钥，会让**每个**请求都持锁把整池的 EXPIRED 账号
+    逐个 check_account() 一遍——池里别人的账号明明健康、空闲，所有其他租户（含
+    .env API_KEY 的请求）却要陪等整轮网络 I/O。
+    """
+    store = _isolate(monkeypatch, tmp_path)
+    key = store.create("bound", bound_account_ids=["account-0"])
+    _, entry = store.validate_and_consume(key.key)
+
+    pool = _expired_pool(
+        _ProbeClient(healthy=False, valid=False, delay=0.3),   # account-0：绑定的，已 EXPIRED
+        _FakeClient(),                                         # account-1：别人的，健康空闲
+        _ProbeClient(healthy=False, valid=False, delay=0.3),   # account-2：无关的 EXPIRED
+    )
+
+    async def _run():
+        set_current_access_key(entry)
+        tenant = asyncio.create_task(pool.acquire())  # 任务创建时复制上下文 → 带着绑定
+        set_current_access_key(None)
+        await asyncio.sleep(0.05)  # 让租户的请求先进到恢复探测里
+
+        t0 = time.monotonic()
+        account = await pool.acquire()  # .env API_KEY 的请求：无绑定
+        elapsed = time.monotonic() - t0
+
+        with pytest.raises(RuntimeError) as ei:
+            await tenant
+        return account.id, elapsed, str(ei.value)
+
+    picked, elapsed, msg = asyncio.run(_run())
+
+    assert picked == "account-1"
+    assert elapsed < 0.15, f"别人的请求被绑定账号的恢复探测卡了 {elapsed:.2f}s（探测在持锁跑）"
+    assert BOUND_ACCOUNT_UNAVAILABLE_MSG in msg
+    assert pool.accounts[0].client.check_calls == 1
+    assert pool.accounts[2].client.check_calls == 0, "绝不该去探测与这把密钥无关的账号"
+
+
+def test_bound_expired_probe_is_rate_limited_not_once_per_request(tmp_path, monkeypatch):
+    """绑定账号真的死了：不能每个请求都对 Google 敲一次门（逐请求的敲门风暴 = 风控面）。"""
+    store = _isolate(monkeypatch, tmp_path)
+    key = store.create("bound", bound_account_ids=["account-0"])
+    _, entry = store.validate_and_consume(key.key)
+    set_current_access_key(entry)
+
+    pool = _expired_pool(_ProbeClient(healthy=False, valid=False), _FakeClient())
+
+    async def _run():
+        for _ in range(4):
+            with pytest.raises(RuntimeError):
+                await pool.acquire()
+
+    asyncio.run(_run())
+    assert pool.accounts[0].client.check_calls == 1, (
+        f"4 个请求探测了 {pool.accounts[0].client.check_calls} 次，冷却没生效"
+    )
+
+
+def test_bound_expired_account_that_comes_back_is_used(tmp_path, monkeypatch):
+    """收窄 + 冷却不能把"恢复"这件事本身弄丢：cookie 又好了就该立刻接着用。"""
+    store = _isolate(monkeypatch, tmp_path)
+    key = store.create("bound", bound_account_ids=["account-0"])
+    _, entry = store.validate_and_consume(key.key)
+    set_current_access_key(entry)
+
+    pool = _make_pool([_ProbeClient(healthy=True, valid=True), _FakeClient()])
+    pool._accounts[0].status = AccountStatus.EXPIRED
+
+    account = asyncio.run(pool.acquire())
+    assert account.id == "account-0"
+    assert account.status == AccountStatus.ACTIVE
+    assert pool.accounts[0].client.check_calls == 1
+
+
+def test_without_an_access_key_the_expired_sweep_is_unchanged():
+    """零回归：没有访问密钥时，恢复探测仍然是"扫全池、不看冷却"的老行为。"""
+    pool = _expired_pool(
+        _ProbeClient(healthy=False, valid=False),
+        _ProbeClient(healthy=False, valid=False),
+    )
+
+    async def _run():
+        for _ in range(2):
+            with pytest.raises(RuntimeError):
+                await pool.acquire()
+
+    asyncio.run(_run())
+    assert [a.client.check_calls for a in pool.accounts] == [2, 2]
+
+
+def test_pinned_gem_account_outside_the_binding_fails_closed_with_the_real_reason(tmp_path, monkeypatch):
+    """Gem 锁定的账号不在密钥的绑定集里：fail-closed 是对的，但错误必须说真话。
+
+    过去这条路径会落到「Pinned gem account 'account-0' unavailable
+    (expired/busy/cooldown)」—— 运维会去查一个其实健康又空闲的账号，而且那条文案
+    不被 classify_error 认成 503，会以 500 面世。
+    """
+    store = _isolate(monkeypatch, tmp_path)
+    key = store.create("bound", bound_account_ids=["account-1"])
+    _, entry = store.validate_and_consume(key.key)
+    set_current_access_key(entry)
+
+    pool = _make_pool([_ProbeClient(healthy=True), _ProbeClient(healthy=True)])
+
+    with pytest.raises(RuntimeError) as ei:
+        asyncio.run(pool.generate("hi", "gemini-pro", account_id="account-0"))
+    msg = str(ei.value)
+
+    assert BOUND_ACCOUNT_UNAVAILABLE_MSG in msg
+    assert "expired/busy/cooldown" not in msg, "别去怪一个完全健康的账号"
+    assert classify_error(RuntimeError(msg))[0] == 503
+    assert pool.accounts[0].client.generate_calls == 0, "绑定之外的账号绝不能被用上"
+    assert all(a.active_requests == 0 for a in pool.accounts)
+
+
+def test_pinned_gem_account_inside_the_binding_still_works(tmp_path, monkeypatch):
+    """零回归的另一半：Gem 锁定的账号就在绑定集里时，照常走通。"""
+    store = _isolate(monkeypatch, tmp_path)
+    key = store.create("bound", bound_account_ids=["account-0"])
+    _, entry = store.validate_and_consume(key.key)
+    set_current_access_key(entry)
+
+    pool = _make_pool([_ProbeClient(healthy=True), _ProbeClient(healthy=True)])
+    result = asyncio.run(pool.generate("hi", "gemini-pro", account_id="account-0"))
+    assert result["text"] == "ok"
+    assert pool.accounts[0].client.generate_calls == 1
