@@ -132,14 +132,38 @@ function checklistValues(containerId) {
         .map(cb => cb.value);
 }
 
+function toLocalInputValue(iso) {
+    // <input type="datetime-local"> 的 value 是「本地墙上时间」。后端存的是 UTC 瞬间，
+    // 直接截 ISO 的前 16 个字符会把 UTC 的钟面当成本地钟面，而 readExpiresAt 又按本地
+    // 解析回 UTC —— 一次「什么都没改」的保存就能把有效期整整挪掉一个时区偏移，
+    // 而且每保存一次挪一次（UTC+8 越挪越早，UTC-5 越挪越晚）。
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`
+        + `T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+
+function numberInputValue(value) {
+    // duration_days 后端是 float（0.5 天也合法），但 7 不该显示成 "7.0"
+    const n = Number(value);
+    return Number.isFinite(n) ? String(n) : '';
+}
+
 function openPanel(key) {
     editingId = key ? key.id : null;
     const set = (id, value) => { const el = document.getElementById(id); if (el) el.value = value; };
     set('akk-name', key ? (key.name || '') : '');
     set('akk-count', '1');
-    set('akk-request-limit', key && key.request_limit != null ? String(key.request_limit) : '');
-    set('akk-duration-days', key && key.duration_days != null ? String(key.duration_days) : '');
-    set('akk-expires-at', key && key.expires_at ? String(key.expires_at).slice(0, 16) : '');
+    set('akk-request-limit', key && key.request_limit != null ? numberInputValue(key.request_limit) : '');
+    // 「有效天数」与「绝对过期时间」是互斥的两个框，而有效天数的密钥**一旦首次使用**，
+    // 后端就会把算出来的 expires_at 也填上。两个框都回填的话，submitPanel 的互斥校验
+    // 会把每一次保存都拦掉——改名、改额度、改绑定全都做不了，只剩停用/重置/删除。
+    // 所以口径是：有 duration_days 就只显示它（绝对时间本来就是它派生出来的），
+    // 保存时后端会按 activated_at 重新算回同一个 expires_at。
+    const hasDuration = !!(key && key.duration_days != null);
+    set('akk-duration-days', hasDuration ? numberInputValue(key.duration_days) : '');
+    set('akk-expires-at', !hasDuration && key && key.expires_at ? toLocalInputValue(key.expires_at) : '');
     const countGroup = document.getElementById('akk-count');
     if (countGroup) countGroup.disabled = !!key;
     renderChecklist('akk-accounts-list',

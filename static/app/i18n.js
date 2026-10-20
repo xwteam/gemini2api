@@ -1634,7 +1634,7 @@ const translations = {
         'accessKeys.boundAccountsN': '{n} 個帳號',
         'accessKeys.boundModelsN': '{n} 個模型',
         'accessKeys.stateValid': '有效',
-        'accessKeys.statePending': '未啟用',
+        'accessKeys.statePending': '未啟動',
         'accessKeys.stateDisabled': '已停用',
         'accessKeys.stateExpired': '已到期',
         'accessKeys.stateQuota': '已超額',

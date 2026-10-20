@@ -91,3 +91,59 @@ def test_app_js_wires_the_section():
     assert "./access-keys.js" in app_js
     assert "initAccessKeys()" in app_js
     assert "loadAccessKeys()" in app_js
+
+
+def _values_by_lang(prefix: str) -> dict:
+    blocks: dict = {}
+    current = None
+    for line in _I18N.read_text(encoding="utf-8").splitlines():
+        lang = re.match(r"^ {4}'([A-Za-z-]+)': \{$", line)
+        if lang:
+            current = lang.group(1)
+            blocks[current] = {}
+            continue
+        if current is None:
+            continue
+        kv = re.match(rf"^ +'({re.escape(prefix)}[^']*)': '(.*?)',?$", line)
+        if kv:
+            blocks[current][kv.group(1)] = kv.group(2)
+    return blocks
+
+
+def test_pending_state_is_never_confusable_with_the_enable_action():
+    """「未激活」说的是"计时还没开始"，不能说成"没启用"。
+
+    zh-TW 之前写的是 未啟用，而停用态是 已停用、操作按钮是 啟用：管理员看到 未啟用
+    会以为密钥被关着，去点 啟用 —— 点了什么也不会变（它本来就是启用状态，只是还没被
+    用过）。纯"五个标签互不相同"的断言看不见这种撞词。
+    """
+    blocks = _values_by_lang("accessKeys.")
+    problems = {}
+    for lang in _LANGS:
+        labels = blocks.get(lang, {})
+        pending = labels.get("accessKeys.statePending")
+        enable = labels.get("accessKeys.enable")
+        assert pending and enable, f"{lang} 缺少 statePending/enable"
+        states = [labels.get(f"accessKeys.state{s}") for s in ("Valid", "Pending", "Disabled", "Expired", "Quota")]
+        if len(set(states)) != len(states):
+            problems[lang] = f"状态文案撞了: {states}"
+        elif enable in pending:
+            problems[lang] = f"statePending={pending!r} 里套着启用操作 {enable!r}"
+    assert not problems, problems
+
+
+def test_app_js_dispatches_the_exact_sidebar_section_id():
+    """侧边栏的 data-section 与 loadSectionData 的 case 标签必须字面一致。
+
+    只断言 "loadAccessKeys()" 这个字面量出现过是假守卫：把 case 写成 'access-key'
+    （少个 s）照样全绿，而浏览器里页签会永远停在转圈的 loading 占位上。
+    """
+    app_js = (_STATIC / "app" / "app.js").read_text(encoding="utf-8")
+    sidebar = _SIDEBAR.read_text(encoding="utf-8")
+    sections = set(re.findall(r'data-section="([a-z-]+)"', sidebar))
+    cases = set(re.findall(r"case '([a-z-]+)':", app_js))
+
+    assert "access-keys" in sections
+    assert "access-keys" in cases, f"loadSectionData 里没有 access-keys 分支: {sorted(cases)}"
+    unknown = sorted(cases - sections)
+    assert not unknown, f"这些 case 标签在侧边栏里没有对应的 data-section（拼错了）: {unknown}"
