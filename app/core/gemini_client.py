@@ -537,6 +537,27 @@ def _entry_field(entry: list, idx: int):
     return None
 
 
+def _entry_display_name(entry: list):
+    """心跳模型条目的显示名：第 11 格优先，兜底第 19 / 第 1 格。
+
+    参考实现接受这三个位置（refs/gemini-web-to-api internal/modules/providers/
+    gemini_models.go:205 `display := geminiFirstString(fields, 11, 19, 1)`）。只读第 11 格
+    的话，Google 把名字放在另外两格的条目会打出 display_name=None —— 日志里除了一串
+    不可读的十六进制 id 什么都没有，而"让日志说清楚是哪个模型"正是这条日志的全部价值。
+    """
+    for idx in (11, 19, 1):
+        value = _entry_field(entry, idx)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _entry_model_number(entry: list):
+    """心跳模型条目的编号：第 17 格，兜底第 9 格（参考实现 gemini_models.go:217-219 同口径）。"""
+    value = _entry_field(entry, 17)
+    return value if value is not None else _entry_field(entry, 9)
+
+
 def _model_number(model_name: str) -> int:
     """Resolved model's PR#310 model-type code (pro=3/flash=1/flash-lite=6); default 1."""
     resolved = _resolve_model(model_name)
@@ -839,6 +860,8 @@ class GeminiWebClient:
         self._check_history: deque[dict] = deque(maxlen=20)
         self._last_check_result: dict | None = None
         self._last_reload_error: str = ""
+        # 已经警告过的"心跳返回了但不在 GEMINI_MODELS 表里"的 model_id（见 _parse_models_from_status）
+        self._dropped_model_ids: set[str] = set()
 
     async def initialize(self):
         fingerprint_config.load()
@@ -1470,6 +1493,9 @@ class GeminiWebClient:
                             discovered.append(m)
                     # 内部 model_id -> 内部模型名 -> 按 family 记录账号真实可用模型
                     id_to_name = _build_id_alias_map()
+                    # 已经警告过的未知 model_id（按 client 实例）。用 __dict__ 懒初始化，
+                    # 这样 __new__ 造出来的实例也不会在这里炸。
+                    seen_dropped = self.__dict__.setdefault("_dropped_model_ids", set())
                     family_model = {}
                     for entry in discovered:
                         mid = entry[0]
@@ -1484,10 +1510,16 @@ class GeminiWebClient:
                         # 参考实现对每个被丢掉的条目都有一条带原因的 warn
                         # （refs/gemini-web-to-api internal/modules/providers/gemini_models.go
                         #  的 skip(reason, entry)）。
+                        # 按 model_id 在进程内去重：心跳每个刷新周期都跑一轮，而"表里没有
+                        # 这个 id"是个稳定事实（S5 要暴露的新模型场景必然每轮命中），
+                        # 逐轮重复同一行只会把日志里别的线索冲掉。
+                        if mid in seen_dropped:
+                            continue
+                        seen_dropped.add(mid)
                         logger.warning(
                             "Heartbeat model entry dropped (model id not in GEMINI_MODELS): "
-                            f"model_id={mid} display_name={_entry_field(entry, 11)!r} "
-                            f"model_number={_entry_field(entry, 17)!r} "
+                            f"model_id={mid} display_name={_entry_display_name(entry)!r} "
+                            f"model_number={_entry_model_number(entry)!r} "
                             f"field4={_entry_field(entry, 4)!r}"
                         )
                     if family_model:

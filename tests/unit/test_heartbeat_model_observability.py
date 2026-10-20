@@ -31,6 +31,15 @@ def _entry(model_id: str, display: str, number, field4) -> list:
     return e
 
 
+def _entry_at(model_id: str, **fields) -> list:
+    """把显示名/编号放到任意一格 —— Google 的真实条目并不总用 11/17。"""
+    e = [None] * 20
+    e[0] = model_id
+    for idx, value in fields.items():
+        e[int(idx.lstrip("f"))] = value
+    return e
+
+
 def _status_raw(*entries: list) -> str:
     body = [None] * 16
     body[15] = list(entries)
@@ -89,6 +98,92 @@ def test_unknown_entry_does_not_block_the_known_one(caplog):
     ))
 
     assert client._family_model["flash"] == _KNOWN_NAME
+
+
+@pytest.mark.parametrize("idx", [11, 19, 1])
+def test_display_name_falls_back_through_11_19_1(caplog, idx):
+    """参考实现接受 11 / 19 / 1 三个位置；只读 11 格会打出 display_name=None。"""
+    caplog.set_level(logging.WARNING, logger=gc.logger.name)
+
+    _client()._parse_models_from_status(
+        _status_raw(_entry_at("aaaa1111", **{f"f{idx}": "Gemini 3.5 Argon"}))
+    )
+
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(msgs) == 1
+    assert "Gemini 3.5 Argon" in msgs[0], f"字段 {idx} 的显示名没被取到: {msgs[0]}"
+    assert "display_name=None" not in msgs[0]
+
+
+def test_display_name_prefers_field_11():
+    assert gc._entry_display_name(_entry_at("x", f11="ELEVEN", f19="NINETEEN", f1="ONE")) == "ELEVEN"
+    assert gc._entry_display_name(_entry_at("x", f19="NINETEEN", f1="ONE")) == "NINETEEN"
+    assert gc._entry_display_name(_entry_at("x", f1="ONE")) == "ONE"
+    assert gc._entry_display_name(_entry_at("x")) is None
+    assert gc._entry_display_name(_entry_at("x", f11="   ")) is None, "空白不算名字"
+
+
+def test_model_number_falls_back_to_field_9(caplog):
+    caplog.set_level(logging.WARNING, logger=gc.logger.name)
+
+    _client()._parse_models_from_status(
+        _status_raw(_entry_at("bbbb2222", f11="Argon", f9=12))
+    )
+
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "model_number=12" in msgs[0], msgs[0]
+
+
+def test_model_number_prefers_field_17():
+    assert gc._entry_model_number(_entry_at("x", f17=7, f9=12)) == 7
+    assert gc._entry_model_number(_entry_at("x", f9=12)) == 12
+    assert gc._entry_model_number(_entry_at("x")) is None
+
+
+def test_the_same_unknown_id_is_only_logged_once(caplog):
+    """心跳每个刷新周期都跑一轮，而"表里没有这个 id"是个稳定事实：
+    逐轮重复同一行会把日志里别的线索冲掉。"""
+    caplog.set_level(logging.WARNING, logger=gc.logger.name)
+    client = _client()
+    raw = _status_raw(
+        _entry("ffffffffffffffff", "Gemini 3.5 Argon", 7, 4),
+        _entry(_KNOWN_ID, "Gemini 3 Flash", 1, 1),
+    )
+
+    for _ in range(5):
+        client._parse_models_from_status(raw)
+
+    hits = [r.getMessage() for r in caplog.records
+            if r.levelno >= logging.WARNING and "ffffffffffffffff" in r.getMessage()]
+    assert len(hits) == 1, f"同一个未知 id 只该留一条，实际 {len(hits)} 条"
+
+
+def test_a_different_unknown_id_is_still_logged(caplog):
+    """去重不能把新出现的未知模型也吞掉。"""
+    caplog.set_level(logging.WARNING, logger=gc.logger.name)
+    client = _client()
+
+    client._parse_models_from_status(_status_raw(_entry("aaaa0001", "A", 1, 1),
+                                                _entry(_KNOWN_ID, "F", 1, 1)))
+    client._parse_models_from_status(_status_raw(_entry("bbbb0002", "B", 1, 1),
+                                                _entry(_KNOWN_ID, "F", 1, 1)))
+
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("aaaa0001" in m for m in msgs)
+    assert any("bbbb0002" in m for m in msgs)
+
+
+def test_dedup_is_per_client(caplog):
+    """换一个 client（换账号/重启后重建）必须重新说一次。"""
+    caplog.set_level(logging.WARNING, logger=gc.logger.name)
+    raw = _status_raw(_entry("cccc0003", "C", 1, 1), _entry(_KNOWN_ID, "F", 1, 1))
+
+    _client()._parse_models_from_status(raw)
+    _client()._parse_models_from_status(raw)
+
+    hits = [r for r in caplog.records
+            if r.levelno >= logging.WARNING and "cccc0003" in r.getMessage()]
+    assert len(hits) == 2
 
 
 def test_entry_field_is_crash_proof():
