@@ -1,3 +1,7 @@
+# reasoning_effort 不再被布尔化：high → THINKING_LEVEL_HIGH 这个具体档位，
+# 下游用它决定 payload 的第 80 格与 model header 的第 15 位（见 gemini_client.parse_thinking_level）。
+from app.core.gemini_client import THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH
+
 _AUTH = {"Authorization": "Bearer sk-test-key"}
 
 
@@ -13,7 +17,7 @@ def test_reasoning_effort_enables_thinking_and_returns_reasoning_content(gem_cli
         "reasoning_effort": "high",
     }, headers=_AUTH)
     assert r.status_code == 200
-    assert captured["ext"] is True
+    assert captured["ext"] == THINKING_LEVEL_HIGH
     assert r.json()["choices"][0]["message"]["reasoning_content"] == "my thoughts"
 
 
@@ -79,7 +83,7 @@ def test_thinking_failure_falls_back_to_normal_generate(gem_client, monkeypatch)
         "reasoning_effort": "high",
     }, headers=_AUTH)
     assert r.status_code == 200
-    assert calls == [True, False]
+    assert calls == [THINKING_LEVEL_HIGH, False]
     body = r.json()
     assert body["choices"][0]["message"]["content"] == "recovered"
     assert body["choices"][0]["message"].get("reasoning_content") is None
@@ -102,7 +106,7 @@ def test_thinking_failure_then_normal_also_fails_returns_error(gem_client, monke
         "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}],
         "reasoning_effort": "high",
     }, headers=_AUTH)
-    assert calls == [True, False]
+    assert calls == [THINKING_LEVEL_HIGH, False]
     assert r.status_code == 400
     assert "still broken" in r.json()["error"]["message"]
 
@@ -126,7 +130,7 @@ def test_streaming_emits_reasoning_content_before_done(gem_client, monkeypatch):
         "reasoning_effort": "high", "stream": True,
     }, headers=_AUTH) as r:
         body = "".join(r.iter_text())
-    assert captured["ext"] is True
+    assert captured["ext"] == THINKING_LEVEL_HIGH
     assert "let me think" in body
     reasoning_idx = body.index("let me think")
     done_idx = body.index("[DONE]")

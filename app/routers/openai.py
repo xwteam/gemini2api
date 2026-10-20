@@ -16,7 +16,8 @@ from app.core.access_context import (
 from app.core.api_forwarder import forward_to_provider, open_stream
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
-from app.core.gemini_client import GEMINI_MODELS, MODEL_ALIASES, _resolve_model, HTTPStatusError, classify_error
+from app.core.gemini_client import (GEMINI_MODELS, MODEL_ALIASES, _resolve_model, HTTPStatusError,
+                                    classify_error, parse_thinking_level)
 from app.core.stream import split_into_chunks, format_sse, iter_with_keepalive, SSE_KEEPALIVE_INTERVAL, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.openai import (
     ChatRequest, ChatResponse, Choice, ChoiceMessage,
@@ -325,9 +326,16 @@ async def chat_completions(req: ChatRequest, request: Request):
     # 提取图片/文件附件（多模态），纯文本时为空列表
     attachments = extract_attachments(messages_raw)
 
-    # reasoning_effort（非空）+ 全局开关 → 走扩展思维链路径
+    # reasoning_effort（非空）+ 全局开关 → 走扩展思维链路径，并按 effort 定思考档位：
+    # low/medium/high 各走各的档，none/minimal 夹到 low、xhigh 夹到 high，认不出的值回默认档
+    # （见 gemini_client.parse_thinking_level）。过去这里把 effort 布尔化（bool(_eff)），
+    # 下游一律写死最高档：Codex / Cursor 这类默认带 "low" / "minimal" 的客户端全部跑成最慢的
+    # 档位 —— 用户要"快"，我们给最慢。
+    # 这个变量既是开关也是档位（False = 关闭；1/2/4 = 开启 + 档位），下游的真假判断不变。
     _eff = (req.reasoning_effort or "").strip()
-    extended_thinking = bool(_eff) and settings.extended_thinking_enabled
+    extended_thinking = (
+        parse_thinking_level(_eff) if (_eff and settings.extended_thinking_enabled) else False
+    )
 
     if req.stream:
         return StreamingResponse(

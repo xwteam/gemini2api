@@ -11,7 +11,7 @@ from threading import Lock
 from collections import deque
 from datetime import datetime, timezone
 
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import AsyncSession, RequestsError
 
 from app.config import settings
 from app.core.fingerprint.config import fingerprint_config
@@ -25,8 +25,126 @@ logger = logging.getLogger(__name__)
 
 _IMAGE_DOWNLOAD_TIMEOUT = 25  # 单次 GET 超时（秒），避免 =s0 全分辨率拖垮整条链路
 _IMAGE_SIZE_DEFAULT = "=s2048"  # 2048px 边长足够预览，字节/耗时远小于 =s0
-_GENERATE_TIMEOUT_DEFAULT = 60  # 普通对话 POST 超时
+_GENERATE_TIMEOUT_DEFAULT = 60  # 认不出模型族时的兜底
 _GENERATE_TIMEOUT_IMAGE = 180  # 生图 POST 超时（pro 常 >60s，flash 通常 <60s）
+# 非流式 POST 超时按模型族分层：同一道难题 flash-lite 几秒就回，pro / flash-thinking
+# 经常 80 秒以上（实测 87s）。过去全族共用 60s，于是"模型越强越容易被我们自己掐断"，
+# 而且掐断后还会被通用重试放大成 60→等1s→60→等2s→60，用户等 183 秒才看到失败。
+# 两个参考实现都比我们宽：refs/gemini-web-to-api 5 分钟（gemini_service.go:620 +
+# openai_controller.go:162），refs/gemini-web2api 180 秒。可用 GENERATE_TIMEOUTS 覆盖。
+_GENERATE_TIMEOUT_BY_FAMILY = {
+    "flash-lite": 60,
+    "flash": 120,
+    "flash-thinking": 120,
+    "pro": 300,
+}
+
+# curl_cffi 0.7.4 只有一个 RequestsError，超时靠 code 区分（CURLE_OPERATION_TIMEDOUT）。
+try:  # pragma: no cover - 取决于 curl_cffi 版本
+    from curl_cffi.curl import CurlECode as _CurlECode
+
+    _CURL_TIMEDOUT = int(_CurlECode.OPERATION_TIMEDOUT)
+except Exception:  # pragma: no cover
+    _CURL_TIMEDOUT = 28
+
+
+def _parse_generate_timeouts(raw: str) -> dict:
+    """解析 GENERATE_TIMEOUTS（形如 "pro=300,flash=120"）。写错的条目忽略。"""
+    out: dict = {}
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        fam, _, val = item.partition("=")
+        try:
+            seconds = float(val.strip())
+        except ValueError:
+            continue
+        if seconds > 0:
+            out[fam.strip().lower()] = seconds
+    return out
+
+
+def _generate_timeout(resolved_model: str, prompt: str) -> float:
+    """这一次非流式 POST 该等多久（秒）。
+
+    生图意图单独一档（见 _GENERATE_TIMEOUT_IMAGE）；其余按模型族分层，族认不出时用兜底值。
+    """
+    if maybe_image_generation_intent(prompt):
+        return float(getattr(settings, "generate_timeout_image", None) or _GENERATE_TIMEOUT_IMAGE)
+    info = GEMINI_MODELS.get(resolved_model)
+    family = str(info["family"]) if info else ""
+    overrides = _parse_generate_timeouts(getattr(settings, "generate_timeouts", "") or "")
+    value = overrides.get(family) or _GENERATE_TIMEOUT_BY_FAMILY.get(family)
+    return float(value or _GENERATE_TIMEOUT_DEFAULT)
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    """这次失败是不是「我们自己把一个还在生成的回答掐断了」。"""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return True
+    return isinstance(exc, RequestsError) and getattr(exc, "code", None) == _CURL_TIMEDOUT
+
+
+# ---------------------------------------------------------------------------
+# 思考档位（reasoning_effort → Gemini 的 thinking level 枚举）
+# ---------------------------------------------------------------------------
+# 映射取自参考实现：refs/gemini-web-to-api internal/modules/providers/gemini_service.go
+# 的 ParseThinkingLevel（"" / low → 1、medium → 4、high → 2，并有
+# gemini_thinking_test.go:20 的断言兜底），以及 internal/modules/openai/openai_service.go
+# 把 none/minimal 夹成 low、xhigh 夹成 high。
+# ⚠️ 证据来自对方的测试断言，**我方尚未在真机复验**（受账号状态所限没拿到干净数据）。
+# 所以做成常量：真机验证后直接改这里，不用动调用方。
+THINKING_LEVEL_LOW = 1
+THINKING_LEVEL_MEDIUM = 4
+THINKING_LEVEL_HIGH = 2
+# 不传 reasoning_effort（以及传了认不出的值）时用的档位 = 改动前写死的那个 2，
+# 保证既有行为逐字节不变。
+THINKING_LEVEL_DEFAULT = 2
+
+_THINKING_LEVELS = {
+    "low": THINKING_LEVEL_LOW,
+    "medium": THINKING_LEVEL_MEDIUM,
+    "high": THINKING_LEVEL_HIGH,
+}
+# Codex / Cursor 这类客户端会带 none/minimal/xhigh，夹到合法档位（同参考实现口径）。
+_THINKING_ALIASES = {"none": "low", "minimal": "low", "xhigh": "high"}
+
+
+def parse_thinking_level(effort: str | None) -> int:
+    """reasoning_effort → thinking level。空值/认不出的值回默认档，绝不抛错。
+
+    过去 reasoning_effort 被 bool 化（`bool(_eff)`）后一律写死最高档：客户端默认带
+    "low" / "minimal" 的请求（Codex、Cursor）全部跑成最慢的档位 —— 用户要"快"，
+    我们给最慢。
+    """
+    raw = (effort or "").strip().lower()
+    if not raw:
+        return THINKING_LEVEL_DEFAULT
+    raw = _THINKING_ALIASES.get(raw, raw)
+    return _THINKING_LEVELS.get(raw, THINKING_LEVEL_DEFAULT)
+
+
+def thinking_level_of(extended_thinking) -> int:
+    """从 extended_thinking 参数里取出思考档位。
+
+    这个参数既是开关也是档位，形态有三种：
+      False / None → 不走思考路径（调用方的 `if extended_thinking:` 为假）
+      True         → 走思考路径、用默认档 THINKING_LEVEL_DEFAULT（改动前的唯一行为）
+      1 / 2 / 4    → 走思考路径、并用这个档位
+
+    为什么不另加一个平行的 thinking_level 参数：这个值要穿过 路由 → 账号池 →
+    client 整条调用链，而账号池的 generate/generate_stream 对它只是透传。把档位搭在
+    已有的参数上，账号池一行都不用改（它的选号/冷却/failover/自愈是另一条红线），
+    调用方的真假判断也逐字节不变。
+    """
+    if extended_thinking is True:
+        return THINKING_LEVEL_DEFAULT
+    try:
+        level = int(extended_thinking)
+    except (TypeError, ValueError):
+        return THINKING_LEVEL_DEFAULT
+    return level or THINKING_LEVEL_DEFAULT
 
 
 class HTTPStatusError(Exception):
@@ -374,8 +492,9 @@ def _build_model_header(model_name: str) -> dict[str, str]:
     }
 
 
-def _build_model_header_thinking(model_name: str, session_uuid: str) -> dict[str, str]:
-    """PR#310 17-element model header with the extended-thinking flag (=2)."""
+def _build_model_header_thinking(model_name: str, session_uuid: str,
+                                 thinking_level: int | None = None) -> dict[str, str]:
+    """PR#310 17-element model header；第 15 位是思考档位（见 parse_thinking_level）。"""
     resolved = _resolve_model(model_name)
     info = GEMINI_MODELS.get(resolved)
     if not info:
@@ -383,7 +502,7 @@ def _build_model_header_thinking(model_name: str, session_uuid: str) -> dict[str
     mn = int(info.get("model_number", 1))
     arr = [1, None, None, None, info["id"], None, None, 0, [4, 5, 6, 8],
            None, None, info["capacity"], None, None, mn]
-    arr.append(2)               # 2 = extended thinking (1 = standard)
+    arr.append(int(thinking_level or THINKING_LEVEL_DEFAULT))
     arr.append(session_uuid)
     return {
         MODEL_HEADER_KEY: json.dumps(arr),
@@ -1288,7 +1407,8 @@ class GeminiWebClient:
         return outer
 
     def _encode_payload_thinking(self, prompt: str, model: str, conversation_id: str = "",
-                                 file_ids: list | None = None, gem_id: str | None = None) -> tuple[str, str]:
+                                 file_ids: list | None = None, gem_id: str | None = None,
+                                 thinking_level: int | None = None) -> tuple[str, str]:
         """PR#310 81-element thinking-path payload encoder (isolated from _encode_payload)."""
         DEFAULT_METADATA = ["", "", "", None, None, None, None, None, None, ""]
         if file_ids:
@@ -1318,13 +1438,13 @@ class GeminiWebClient:
         inner[61] = []
         inner[68] = 1
         inner[79] = mn
-        inner[80] = 2                         # 2 = extended thinking
+        inner[80] = int(thinking_level or THINKING_LEVEL_DEFAULT)   # 思考档位
         outer = json.dumps([None, json.dumps(inner)])
         return outer, uuid_val
 
     async def generate(self, prompt: str, model: str, conversation_id: str = "",
                        attachments: list | None = None, gem_id: str | None = None,
-                       extended_thinking: bool = False) -> dict:
+                       extended_thinking=False) -> dict:
         if not self._healthy:
             # 单账号自愈：抛错前单飞重载一次 Cookie，缓解会话约 2h 到期后的硬失败（Issue#1-C）
             async with self._heal_lock:
@@ -1366,6 +1486,12 @@ class GeminiWebClient:
                 await asyncio.sleep(wait)
             except Exception as e:
                 last_err = e
+                if _is_timeout_error(e):
+                    # 超时意味着我们自己把一个还在生成的回答掐断了。原样再发两遍不会有
+                    # 不同的结果，只会把用户的等待时间翻三倍（60→等1s→60→等2s→60 =
+                    # 183 秒才看到失败）。直接抛出去。
+                    logger.warning(f"Generate timed out, not retrying: {e}")
+                    raise
                 # 最后一次尝试失败后不再有重试，跳过退避空耗，立即抛错让上层 failover
                 if attempt >= settings.max_retries - 1:
                     break
@@ -1377,7 +1503,7 @@ class GeminiWebClient:
 
     async def generate_stream(self, prompt: str, model: str, conversation_id: str = "",
                               attachments: list | None = None, gem_id: str | None = None,
-                              extended_thinking: bool = False):
+                              extended_thinking=False):
         """真流式：用独立临时 AsyncSession 流式读 StreamGenerate，逐帧产出文本增量。
 
         产出事件：
@@ -1424,8 +1550,10 @@ class GeminiWebClient:
                 logger.warning("All attachment uploads failed, streaming text-only")
 
         if extended_thinking:
-            encoded, uuid_val = self._encode_payload_thinking(prompt, resolved, conversation_id, file_ids, gem_id)
-            model_headers = _build_model_header_thinking(resolved, self._session_uuid)
+            level = thinking_level_of(extended_thinking)
+            encoded, uuid_val = self._encode_payload_thinking(prompt, resolved, conversation_id, file_ids,
+                                                              gem_id, level)
+            model_headers = _build_model_header_thinking(resolved, self._session_uuid, level)
         else:
             encoded = self._encode_payload(prompt, resolved, conversation_id, file_ids, gem_id)
             model_headers = _build_model_header(resolved)
@@ -1563,7 +1691,7 @@ class GeminiWebClient:
 
     async def _send_request(self, prompt: str, model: str, conversation_id: str = "",
                            attachments: list | None = None, gem_id: str | None = None,
-                           extended_thinking: bool = False) -> dict:
+                           extended_thinking=False) -> dict:
         await apply_jitter("api_call")
         await self._ensure_session_current()
         self._clear_session_cookies()
@@ -1583,8 +1711,10 @@ class GeminiWebClient:
                 logger.warning("All attachment uploads failed, falling back to text-only")
 
         if extended_thinking:
-            encoded, uuid_val = self._encode_payload_thinking(prompt, resolved, conversation_id, file_ids, gem_id)
-            model_headers = _build_model_header_thinking(resolved, self._session_uuid)
+            level = thinking_level_of(extended_thinking)
+            encoded, uuid_val = self._encode_payload_thinking(prompt, resolved, conversation_id, file_ids,
+                                                              gem_id, level)
+            model_headers = _build_model_header_thinking(resolved, self._session_uuid, level)
         else:
             encoded = self._encode_payload(prompt, resolved, conversation_id, file_ids, gem_id)
             model_headers = _build_model_header(resolved)
@@ -1595,10 +1725,7 @@ class GeminiWebClient:
         if extended_thinking:
             headers["x-goog-ext-525005358-jspb"] = f'["{uuid_val}",1]'
 
-        gen_timeout = (
-            _GENERATE_TIMEOUT_IMAGE if maybe_image_generation_intent(prompt)
-            else _GENERATE_TIMEOUT_DEFAULT
-        )
+        gen_timeout = _generate_timeout(resolved, prompt)
         resp = await self._http.post(
             GENERATE_URL, data=form_data, cookies=cookies, headers=headers,
             timeout=gen_timeout,

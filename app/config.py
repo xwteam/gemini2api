@@ -99,6 +99,13 @@ class Settings(BaseSettings):
     # unknown 处理（映射成 429：给客户端明确的"稍后再试"，且不冷却/不换号，
     # 避免一个系统性的未知拒绝把整池账号拖进冷却）。抓到样本后往这里配即可生效。
     bard_error_codes: str = ""
+    # 非流式对话 POST 超时，按模型族分层（秒）。形如 "flash-lite=60,flash=120,pro=300"。
+    # 留空=用代码里的默认分层（flash-lite 60 / flash 120 / flash-thinking 120 / pro 300）。
+    # 同一道难题 flash-lite 几秒就回、pro 经常 80 秒以上，全族共用一个 60s 会让越强的模型
+    # 越容易被我们自己掐断。认不出的模型族回落到 60s。
+    generate_timeouts: str = ""
+    # 生图请求的 POST 超时（秒）。生图在 pro 上常超过 60s，与上面的分层互不影响。
+    generate_timeout_image: float = 180.0
 
     @field_validator("gemini_psid")
     @classmethod

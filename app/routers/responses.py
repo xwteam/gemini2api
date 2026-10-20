@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import ensure_model_allowed
-from app.core.gemini_client import GEMINI_MODELS, _resolve_model
+from app.core.gemini_client import GEMINI_MODELS, _resolve_model, parse_thinking_level
 from app.core.responses_protocol import (
     parse_responses_input, build_responses_object, new_response_id, ResponsesStreamEncoder,
 )
@@ -92,7 +92,12 @@ async def create_response(request: Request):
         _eff = str(_reasoning.get("effort") or "").strip()
     if not _eff:
         _eff = str(body.get("reasoning_effort") or "").strip()
-    extended_thinking = bool(_eff) and settings.extended_thinking_enabled
+    # 既是开关也是档位（False = 关闭；1/2/4 = 开启 + 档位）：low/medium/high 各走各的档，
+    # none/minimal 夹到 low、xhigh 夹到 high（见 gemini_client.parse_thinking_level）。
+    # Codex 默认带 reasoning_effort，过去被布尔化成"一律最高档"。
+    extended_thinking = (
+        parse_thinking_level(_eff) if (_eff and settings.extended_thinking_enabled) else False
+    )
 
     if previous_response_id:
         return _error(400, "previous_response_id is not supported by this server "

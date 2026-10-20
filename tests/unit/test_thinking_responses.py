@@ -1,5 +1,9 @@
 import json
 
+# reasoning_effort 不再被布尔化：high → THINKING_LEVEL_HIGH 这个具体档位，
+# 下游用它决定 payload 的第 80 格与 model header 的第 15 位（见 gemini_client.parse_thinking_level）。
+from app.core.gemini_client import THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH
+
 _AUTH = {"Authorization": "Bearer sk-test-key"}
 
 
@@ -14,7 +18,7 @@ def test_responses_reasoning_effort_enables_thinking(gem_client, monkeypatch):
         "model": "gemini-flash", "input": "hi", "reasoning": {"effort": "high"},
     }, headers=_AUTH)
     assert r.status_code == 200
-    assert captured["ext"] is True
+    assert captured["ext"] == THINKING_LEVEL_HIGH
     types = [it.get("type") for it in r.json()["output"]]
     assert "reasoning" in types
 
@@ -47,7 +51,7 @@ def test_responses_top_level_reasoning_effort_enables_thinking(gem_client, monke
         "model": "gemini-flash", "input": "hi", "reasoning_effort": "high",
     }, headers=_AUTH)
     assert r.status_code == 200
-    assert captured["ext"] is True
+    assert captured["ext"] == THINKING_LEVEL_HIGH
 
 
 def test_responses_extended_thinking_disabled_by_settings_toggle(gem_client, monkeypatch):
@@ -79,7 +83,7 @@ def test_responses_thinking_failure_falls_back_to_normal(gem_client, monkeypatch
         "model": "gemini-flash", "input": "hi", "reasoning": {"effort": "high"},
     }, headers=_AUTH)
     assert r.status_code == 200
-    assert calls == [True, False]
+    assert calls == [THINKING_LEVEL_HIGH, False]
     body = r.json()
     types = [it.get("type") for it in body["output"]]
     assert "reasoning" not in types
@@ -92,7 +96,7 @@ def test_responses_stream_emits_reasoning_item_in_completed_output(gem_client, m
 
     async def fake_generate_stream(prompt, model, conversation_id="", attachments=None,
                                    gem_id=None, account_id=None, extended_thinking=False):
-        assert extended_thinking is True
+        assert extended_thinking == THINKING_LEVEL_HIGH
         yield {"type": "delta", "text": "Hel"}
         yield {"type": "delta", "text": "lo"}
         yield {"type": "final", "text": "Hello", "conversation_id": "", "images": [],
@@ -131,4 +135,5 @@ def test_responses_non_string_effort_enables_thinking_without_500(gem_client, mo
         "model": "gemini-flash", "input": "hi", "reasoning": {"effort": 5},
     }, headers=_AUTH)
     assert r.status_code == 200
-    assert captured["ext"] is True
+    # 认不出的档位值回默认档（绝不 500、也不关掉思维链）
+    assert captured["ext"] == THINKING_LEVEL_DEFAULT
