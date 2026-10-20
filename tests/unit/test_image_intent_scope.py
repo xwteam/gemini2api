@@ -111,8 +111,9 @@ class TestMatcherStillPositive:
 
 
 class TestLooseHelperNotNarrowed:
-    """maybe_image_generation_intent 决定生图的加长 POST 超时与 buffered 分流，
-    收窄它会让真·生图超时。收紧严格判断后，宽松判断的召回必须原样保留。"""
+    """maybe_image_generation_intent 现在**只**决定非流式 POST 超时该不该抬一档，
+    不再参与 buffered 分流（分流只看 has_tools），而且它只会"加时"不会"减时"。
+    收窄它会让真·生图被我们自己掐断，所以收紧严格判断后，宽松判断的召回必须原样保留。"""
 
     @pytest.mark.parametrize(
         "text",

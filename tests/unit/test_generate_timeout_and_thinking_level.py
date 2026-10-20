@@ -350,6 +350,9 @@ def test_chat_completions_forwards_the_level(gem_client, monkeypatch, effort, ex
 
     assert r.status_code == 200
     assert captured["ext"] == expected
+    # `True == 1` 在 Python 里成立：不排掉 True，"把整条改动还原成 bool(_eff)" 这个变异
+    # 在 low / minimal 两档上活得下来，这两条用例等于没有守卫。
+    assert captured["ext"] is not True
 
 
 def test_chat_completions_without_effort_stays_off(gem_client, monkeypatch):
@@ -390,3 +393,4 @@ def test_responses_forwards_the_level(gem_client, monkeypatch, effort, expected)
 
     assert r.status_code == 200
     assert captured["ext"] == expected
+    assert captured["ext"] is not True

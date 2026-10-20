@@ -33,11 +33,62 @@ def test_image_download_uses_s2048_and_short_timeout():
 
 
 def test_image_generate_uses_extended_post_timeout():
-    """pro 生图常 >60s：生图意图须用更长 POST 超时，避免 flash 正常而 pro 断连。"""
-    src = (_REPO_ROOT / "app" / "core" / "gemini_client.py").read_text(encoding="utf-8")
-    assert "_GENERATE_TIMEOUT_IMAGE" in src
-    assert "_GENERATE_TIMEOUT_IMAGE" in src and "maybe_image_generation_intent" in src
-    assert "timeout=gen_timeout" in src
+    """pro 生图常 >60s：生图意图须用更长 POST 超时，避免 flash 正常而 pro 断连。
+
+    这里断言的是**行为**（算出来的预算、以及它真的被交给了 POST），不是源码里有没有某个
+    标识符 —— 后者既不守护分层也不守护传参，两个名字只要还在文件里就恒为真。
+    """
+    import asyncio
+
+    from app.core import gemini_client as gc
+
+    # 1) 生图意图确实抬高了预算（同一个族，纯文本 vs 生图）
+    assert gc._generate_timeout("gemini-3-flash", "画一张猫的图片") > \
+        gc._generate_timeout("gemini-3-flash", "你好")
+
+    # 2) 算出来的预算真的被交给了 StreamGenerate 的 POST
+    client = gc.GeminiWebClient.__new__(gc.GeminiWebClient)
+    client._session_token = "TOKEN"
+    client._session_uuid = "SESSION-UUID"
+    client._family_model = {}
+    client._push_id = ""
+    captured = {}
+
+    class _Jar:
+        def update_from_response(self, resp):
+            return None
+
+    class _Resp:
+        status_code = 200
+        text = ")]}'\n\n[]"
+        cookies: dict = {}
+        headers: dict = {}
+
+    class _Http:
+        async def post(self, url, **kw):
+            captured["timeout"] = kw.get("timeout")
+            return _Resp()
+
+    client._cookie_jar = _Jar()
+    client._http = _Http()
+
+    async def _noop(*a, **kw):
+        return None
+
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    try:
+        mp.setattr(gc, "apply_jitter", _noop)
+        mp.setattr(client, "_ensure_session_current", _noop)
+        mp.setattr(client, "_clear_session_cookies", lambda: None)
+        mp.setattr(client, "_get_cookies", lambda: {})
+        mp.setattr(client, "_get_headers", lambda *a, **kw: {})
+        asyncio.run(client._send_request("画一张猫的图片", "gemini-flash"))
+    finally:
+        mp.undo()
+
+    assert captured["timeout"] == gc._generate_timeout("gemini-3-flash", "画一张猫的图片")
+    assert captured["timeout"] >= 180
 
 
 def test_images_md_handles_download_fallback():
