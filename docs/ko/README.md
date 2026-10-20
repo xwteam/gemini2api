@@ -485,6 +485,8 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 단일 이미지 다운로드 HTTP 타임아웃(초) |
 | `FALLBACK_ENABLED` | ❌ | `false` | Gemini→타사 폴백 활성화: 임의의 Gemini 모델(flash/pro/thinking)이 오류를 내거나 빈 응답을 반환하면 API Key 풀의 타사 모델로 자동 전환하여 "네이티브 재시도" |
 | `FALLBACK_MODELS` | ❌ | — | 폴백 모델(쉼표 구분, 순서대로 시도); 비워두면 풀에서 "채팅에 적합한" 모든 타사 모델을 자동 선택(이름으로 image/video/audio/embedding 등 비채팅 모델 제외)하여 무작위 로테이션, 하나가 실패(오류/빈 응답)하면 다음으로 전환 |
+| `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 네이티브 Gemini 확장 사고 마스터 스위치(끄면 `reasoning_effort`가 적용되지 않음) |
+| `THIRDPARTY_FAILOVER_COOLDOWN` | ❌ | `180` | 동일 모델명을 공유하는 서드파티 간 장애 조치 시 실패한 제공자의 쿨다운(초, 0이면 비활성화) |
 | `BARD_ERROR_CODES` | ❌ | — | Gemini가 **HTTP 200** 본문으로 반환하는 거부 블록의 code→의미 대조표. `1152=rate_limit,404=session_expired` 형식이며 분류는 `rate_limit` / `session_expired` / `context_too_long` / `captcha`. **비워두면 모든 거부 블록을 알 수 없는 것으로 처리합니다(해당 계정 쿨다운 + 다른 계정으로 재시도). 이는 의도된 안전 폴백입니다**. 설정하면 분류별 전용 처리가 활성화됩니다(세션 만료는 쿠키 자가 복구 유발, 컨텍스트 초과는 400 반환 후 재시도하지 않음, CAPTCHA는 해당 계정을 내놓음) |
 | `GENERATE_TIMEOUTS` | ❌ | — | 비스트리밍 생성 타임아웃을 모델 패밀리 단위로 재정의. `pro=300,flash=120` 형식. 비워두면 내장 단계 설정 사용(flash-lite 60 / flash 120 / flash-thinking 120 / pro 300, 인식되지 않는 패밀리는 60으로 폴백) |
 | `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 이미지 생성으로 추정되는 요청의 비스트리밍 타임아웃(초). 모델 패밀리 값과 비교해 **더 큰 쪽**을 채택하고, 비스트리밍 경로에만 적용됩니다 |

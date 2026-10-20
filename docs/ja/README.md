@@ -608,6 +608,8 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 画像ダウンロード 1 回あたりの HTTP タイムアウト（秒） |
 | `FALLBACK_ENABLED` | ❌ | `false` | Gemini → 第三者フォールバックを有効化：任意の Gemini モデル（flash/pro/thinking）がエラーまたは空レスポンスを返した場合、API キープール内の第三者モデルに自動で切り替えて「ネイティブにリトライ」 |
 | `FALLBACK_MODELS` | ❌ | — | フォールバックモデル（カンマ区切り、順に試行）；空の場合はプール内のすべての「チャットに適した」第三者を自動選択（名前で image/video/audio/embedding などの非チャットモデルを除外）してランダムにローテーション、1 つが失敗（エラー/空）したら次へ切り替え |
+| `EXTENDED_THINKING_ENABLED` | ❌ | `true` | ネイティブ Gemini 拡張思考のマスタースイッチ（オフの場合 `reasoning_effort` は無効） |
+| `THIRDPARTY_FAILOVER_COOLDOWN` | ❌ | `180` | 同名の複数サードパーティ間フェイルオーバー時の、失敗した提供元のクールダウン秒数（0 で無効） |
 | `BARD_ERROR_CODES` | ❌ | — | Gemini が **HTTP 200** の本文で返す拒否ブロックの code→意味の対照表。`1152=rate_limit,404=session_expired` の形式で、分類は `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**空の場合はすべての拒否ブロックを不明として扱います（該当アカウントをクールダウン + 別アカウントでリトライ）。これは意図した安全なフォールバックです**。設定すると分類ごとの専用処理が有効になります（セッション期限切れは Cookie 自己修復をトリガー、コンテキスト超過は 400 を返してリトライしない、CAPTCHA は該当アカウントを解放） |
 | `GENERATE_TIMEOUTS` | ❌ | — | 非ストリーミング生成タイムアウトをモデルファミリー単位で上書き。`pro=300,flash=120` の形式。空の場合は組み込みの段階設定（flash-lite 60 / flash 120 / flash-thinking 120 / pro 300、認識できないファミリーは 60 にフォールバック） |
 | `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 画像生成と推定されるリクエストの非ストリーミングタイムアウト（秒）。モデルファミリーの値と比べて**大きい方**を採用し、非ストリーミング経路にのみ作用します |
