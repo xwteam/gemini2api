@@ -608,6 +608,28 @@ _IMAGE_GEN_PLACEHOLDER_RE = re.compile(
 _IMAGE_GEN_PLACEHOLDER_PREFIX = "http://googleusercontent.com/"
 _IMAGE_GEN_PLACEHOLDER_PREFIX_S = "https://googleusercontent.com/"
 
+# 剥掉占位 URL 之后文本空了、而且一张真图都没有：Gemini 走的是「图片检索」而不是「生成」
+# （模糊措辞如"来张X图"易触发）。占位链接客户端用不了，给一句友好提示引导用明确的生图
+# 措辞，而不是返回空。流式与非流式共用同一句，两条路径的收尾必须一致。
+_IMAGE_RETRIEVAL_HINT = "（没有生成图片。试试更明确的生成指令，如「画一张…」「生成一张…的图片」。）"
+_IMAGE_PLACEHOLDER_MARKER = "googleusercontent.com/image"
+
+
+def _strip_image_placeholders(text: str, images: list) -> str:
+    """把文本里的 googleusercontent 占位 URL 剥干净（流式/非流式同一套口径）。
+
+    过去流式收尾只在"真的拿到图"时才做这件事（`if images:` 里面），于是 Gemini 走图片检索
+    而非生成（images 为空）时，那条客户端必定访问失败的死链被原样流给客户端 —— 而同一个
+    请求走 buffered 是会被 _parse_output 无条件剥掉的。
+    """
+    if _IMAGE_PLACEHOLDER_MARKER not in text:
+        return text
+    had_placeholder = bool(_IMAGE_GEN_PLACEHOLDER_RE.search(text))
+    cleaned = _IMAGE_GEN_PLACEHOLDER_RE.sub("", text).strip()
+    if had_placeholder and not cleaned and not images:
+        return _IMAGE_RETRIEVAL_HINT
+    return cleaned
+
 
 def _stable_placeholder_prefix(text: str) -> str:
     """返回 text 中"可安全 emit 的稳定前缀"（已剥离完整占位 URL，并 hold 住尚未成形的占位 URL 尾部）。
@@ -1829,8 +1851,12 @@ class GeminiWebClient:
                 entry = await self._build_image_entry(img, cookies)
                 if entry:
                     result_images.append(entry)
-            # 生图时模型文本里的占位 URL 无意义，过滤掉（与 _parse_output 一致）
+            # 真的有图时，正文里的占位 URL 一定无意义（真图在 images 里）
             text = _IMAGE_GEN_PLACEHOLDER_RE.sub("", text).strip()
+        else:
+            # 没有真图也必须剥：图片检索（而非生成）的回答里只有占位死链，
+            # 这正是 _parse_output 无条件做、而这里过去漏掉的那一半。
+            text = _strip_image_placeholders(text, images)
         return {
             "type": "final",
             "text": text,
@@ -2034,14 +2060,9 @@ class GeminiWebClient:
                     conv_id = str(payload[1])
 
         # 生图/找图时模型文本里会带 googleusercontent 占位 URL（无实际意义，真图在 images 里；
-        # image_retrieval/image_collection 是检索占位客户端访问无效），无条件过滤，避免显示成网址
-        if "googleusercontent.com/image" in text_content:
-            had_placeholder = bool(_IMAGE_GEN_PLACEHOLDER_RE.search(text_content))
-            text_content = _IMAGE_GEN_PLACEHOLDER_RE.sub("", text_content).strip()
-            # 过滤后文本空了且没有真图：Gemini 走了"检索图片"而非"生成"（模糊措辞如"来张X图"易触发）。
-            # 占位URL客户端用不了，给友好提示引导用明确生图措辞，而不是返回空。
-            if had_placeholder and not text_content and not images:
-                text_content = "（没有生成图片。试试更明确的生成指令，如「画一张…」「生成一张…的图片」。）"
+        # image_retrieval/image_collection 是检索占位客户端访问无效），无条件过滤，避免显示成网址。
+        # 与真流式收尾（_finalize_stream）共用同一套口径。
+        text_content = _strip_image_placeholders(text_content, images)
 
         return {"text": text_content, "conversation_id": conv_id, "images": images, "thoughts": thoughts_content}
 
