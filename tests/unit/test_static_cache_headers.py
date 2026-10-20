@@ -19,6 +19,8 @@ import pytest
         "/app/app.js",
         "/app/base.css",
         "/components/section-settings.html",
+        "/app/access-keys.js",
+        "/components/section-access-keys.html",
         "/index.html",
         "/login.html",
         # 裸地址 "/" 才是管理员实际收藏/打开的入口。没有显式路由时它会落到 StaticFiles
