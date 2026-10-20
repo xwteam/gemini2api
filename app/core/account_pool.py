@@ -733,6 +733,27 @@ class AccountPool:
         self._save_to_file()
         return account
 
+    def persist_account_cookies(self, account_id: str, psid: str, psidts: str) -> bool:
+        """把面板换上的新 cookie 回写到 accounts.json（只碰凭据字段，不碰账号状态）。
+
+        面板的「更新 cookie」走 client.reload_cookies()，它只改运行态 + data/cookies 缓存，
+        从不回写 accounts.json —— 全仓找不到任何 `.psidts = ` 的赋值点。于是 accounts.json
+        里的 psidts 永远是"添加账号那一刻"的值：面板上刚救活的账号，下次重启又拿着那份
+        早已失效的 cookie 起来，而运维完全看不出为什么。
+        """
+        for account in self._accounts:
+            if account.id != account_id:
+                continue
+            cleaned_psid = (psid or "").strip().strip('"').strip("'").rstrip(";")
+            cleaned_psidts = (psidts or "").strip().strip('"').strip("'").rstrip(";")
+            if cleaned_psid:
+                account.psid = cleaned_psid
+            # psidts 允许被清空（运维刻意只给 PSID 时），所以不做真值判断
+            account.psidts = cleaned_psidts
+            self._save_to_file()
+            return True
+        return False
+
     async def remove_account(self, account_id: str) -> bool:
         for i, account in enumerate(self._accounts):
             if account.id == account_id:

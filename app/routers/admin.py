@@ -199,6 +199,9 @@ async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
             if account.client:
                 result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
                 if result.get("success"):
+                    # 回写 accounts.json：否则面板刚救活的账号在下次重启时又拿着添加账号
+                    # 那一刻的旧 cookie 起来（启动时的"配置值"就是 accounts.json 里这一份）。
+                    account_pool.persist_account_cookies(account_id, req.psid, req.psidts)
                     return {"status": "ok", "message": f"Account {account_id} cookies updated"}
                 return JSONResponse(
                     status_code=503,

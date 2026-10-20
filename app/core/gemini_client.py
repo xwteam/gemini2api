@@ -136,6 +136,23 @@ REFRESH_UNHEALTHY_STREAK = 3
 
 
 # ---------------------------------------------------------------------------
+# 启动时「配置值 vs 磁盘缓存」的取舍
+# ---------------------------------------------------------------------------
+# 这两个值长得一样却来源完全不同，必须分得开：
+#   - 配置值（.env 的 GEMINI_PSIDTS / accounts.json 的条目）：运维手填，只在人去改它时变；
+#   - 磁盘缓存（data/cookies/<hash>.json）：PSIDTS 轮换循环与面板的「更新 cookie」会不停写新值。
+# 光比较「配置值 != 缓存值」分不出是哪一边变新了：轮换循环一跑起来，一小时内缓存就必然
+# 与配置分叉，于是每次重启都会把轮换/面板换来的**新** PSIDTS 当成「陈旧缓存」丢掉、
+# 退回当初 .env 里那份早已被 Google 轮换掉的值 —— 账号重启即死，而日志写的是
+# "dropping the stale cache"。
+# 所以把「上一次启动时生效的配置值」也存进 jar：只有它与当前配置值不同，才说明是**配置**
+# 变了（运维改了 .env / accounts.json），这时才按配置值为准并清缓存。
+# 这个条目用一个非 google 域，get_all("google.com") 取不到它，绝不会被发往上游。
+_CFG_PSIDTS_SNAPSHOT = "__cfg-1PSIDTS"
+_CFG_SNAPSHOT_DOMAIN = "config.local"
+
+
+# ---------------------------------------------------------------------------
 # 思考档位（reasoning_effort → Gemini 的 thinking level 枚举）
 # ---------------------------------------------------------------------------
 # 映射取自参考实现：refs/gemini-web-to-api internal/modules/providers/gemini_service.go
@@ -773,7 +790,8 @@ class GeminiWebClient:
         fingerprint_config.load()
 
         # 构造时传入的值（.env 的 GEMINI_PSID/PSIDTS，或 accounts.json 的条目）就是运维
-        # 当前的意图，先存一份快照：下面回放磁盘缓存时要靠它判断缓存是不是陈旧的。
+        # 当前的意图。先留一份：下面要拿它跟"上一次启动时生效的配置值"比，判断是**配置**
+        # 变了（该以配置值为准）还是只有缓存被轮换更新了（该用缓存里那个更新的值）。
         cfg_psid, cfg_psidts = self._psid, self._psidts
 
         self._cookie_jar = PersistentCookieJar(self._psid)
@@ -782,21 +800,25 @@ class GeminiWebClient:
         disk_psid = persisted.get("__Secure-1PSID")
         disk_psidts = persisted.get("__Secure-1PSIDTS")
 
-        # 配置值与磁盘缓存冲突时**以配置值为准**，并把陈旧缓存整份清掉
-        # （参考实现同口径：refs/gemini-web-to-api internal/modules/providers/gemini_service.go
-        #  Init() 里 "If config has a new PSIDTS that differs from cache, clear cache and use config"）。
+        # **配置变了**才以配置值为准并清缓存（参考实现同口径：refs/gemini-web-to-api
+        # internal/modules/providers/gemini_service.go Init() 里 "If config has a new PSIDTS
+        # that differs from cache, clear cache and use config"）。
         # 过去这里无条件偏向磁盘，于是"照文档改 .env / accounts.json 再重启"——出事时最常用的
-        # 恢复手法——完全失效：data/cookies/<hash>.json 里的旧 PSIDTS 会覆盖刚换上的新值，
-        # 重启后账号依旧是过期的，而且日志上看不出任何异常。
-        # 面板的「更新 cookie」走 reload_cookies()，不经过这里，行为不变；但它只改运行态 +
-        # 磁盘缓存、不回写 .env / accounts.json，所以只在面板改过 cookie 的部署重启后会回到
-        # 配置里的值 —— 想让改动跨重启生效，请同时更新 .env / accounts.json。
-        if cfg_psid and (
-            (disk_psid and disk_psid != cfg_psid)
-            or (cfg_psidts and disk_psidts and disk_psidts != cfg_psidts)
-        ):
+        # 恢复手法——完全失效：旧 PSIDTS 会覆盖刚换上的新值，重启后账号依旧是过期的。
+        # 但只比较"配置值 != 缓存值"又会反过来每次重启都把轮换/面板换来的新值丢掉（见
+        # _CFG_PSIDTS_SNAPSHOT 的说明），所以这里比的是**配置值自己变没变**。
+        prev_cfg_psidts = self._cookie_jar.get(_CFG_PSIDTS_SNAPSHOT)
+        psid_changed = bool(cfg_psid and disk_psid and disk_psid != cfg_psid)
+        if prev_cfg_psidts is None:
+            # 这份缓存是本版本之前写下的，没有快照可比 —— 只能沿用旧口径（配置值优先）。
+            # 只会发生一次：下面就会把快照写进去，之后就能精确分辨了。而且启动取不到 token
+            # 时现在会就地轮换重试一次，不像过去那样要空窗一个刷新周期。
+            psidts_changed = bool(cfg_psidts and disk_psidts and disk_psidts != cfg_psidts)
+        else:
+            psidts_changed = bool(cfg_psidts and cfg_psidts != prev_cfg_psidts)
+        if psid_changed or psidts_changed:
             logger.warning(
-                "Configured cookies differ from the cached ones; dropping the stale cache "
+                "Configured cookies changed since last start; dropping the cache "
                 "and using the configured PSID/PSIDTS"
             )
             self._cookie_jar.clear()
@@ -812,6 +834,15 @@ class GeminiWebClient:
             if self._psidts:
                 self._cookie_jar.set("__Secure-1PSIDTS", self._psidts)
 
+        # 记下"这一次启动时生效的配置值"，供下一次启动分辨是配置变了还是缓存被轮换更新了。
+        if cfg_psidts:
+            self._cookie_jar.set(
+                _CFG_PSIDTS_SNAPSHOT, cfg_psidts, domain=_CFG_SNAPSHOT_DOMAIN, secure=False
+            )
+        elif prev_cfg_psidts is not None:
+            # 配置里的 PSIDTS 被清空了：快照留着会把"重新填上"误判成没变。
+            self._cookie_jar.remove(_CFG_PSIDTS_SNAPSHOT)
+
         self._current_target = header_builder.get_impersonate_target()
         self._http = AsyncSession(
             impersonate=self._current_target,
@@ -820,16 +851,26 @@ class GeminiWebClient:
 
         await self._obtain_session_token()
 
+        if not self._session_token:
+            # 启动就拿不到 token：参考实现在 Init 里当场轮换一次 Cookie 再重取一次
+            # （refs/gemini-web-to-api internal/modules/providers/gemini_service.go:147-157）。
+            # 我们过去只打这一句日志就把它交给 _auto_refresh_loop —— 而那个循环第一行就是
+            # sleep(refresh_interval)，于是整池至少空窗一个刷新周期（期间 acquire() 一个
+            # ACTIVE 都找不到，每个请求都是 503），而账号早就被 _init_account_client 标 EXPIRED。
+            # 就地重试一次几乎是免费的，且正好能救回"缓存里的会话 Cookie 脏了 / PSIDTS 刚过期"
+            # 这类最常见的启动失败。
+            logger.warning("Token not found, rotating cookies")
+            if await self._rotate_cookies():
+                await self._obtain_session_token()
+
         if self._session_token:
             self._healthy = True
             await self._send_heartbeat()
             logger.info("Gemini client ready")
-        else:
-            logger.warning("Token not found, rotating cookies")
 
         # 轮换循环必须**无条件**启动（issue #11 的代码级根因）。Google 的
         # __Secure-1PSIDTS 是小时级轮换的：启动时拿着一份好 cookie，不代表一小时后它还有效。
-        # 过去只有上面那条 else（"启动就拿不到 token"）才调 _ensure_refresh_task()，
+        # 过去只有"启动就拿不到 token"那条分支才调 _ensure_refresh_task()，
         # 也就是说正常启动的网关从来不跑 _auto_refresh_loop，几小时后整池账号一起失效、
         # 只能人工换 cookie。参考实现在 Init 末尾无条件起这个循环
         # （refs/gemini-web-to-api internal/modules/providers/gemini_service.go:167-170

@@ -40,8 +40,14 @@ def _client(monkeypatch, tmp_path, *, token: str) -> tuple[gc.GeminiWebClient, l
         return None
 
     ensured = []
+    async def _rotate():
+        # 启动拿不到 token 时会就地轮换重试一次；这里只关心轮换循环的控制流，
+        # 让它返回"真失败"，不走第二次取 token。
+        return gc.RotationResult.FAILED
+
     monkeypatch.setattr(client, "_obtain_session_token", _obtain)
     monkeypatch.setattr(client, "_send_heartbeat", _heartbeat)
+    monkeypatch.setattr(client, "_rotate_cookies", _rotate)
 
     # 只拦住"真的创建后台任务"这一步，_ensure_refresh_task 本体照跑 —— 它自己也会打一句
     # "Auto-refresh loop started"。以前这里把整个方法 stub 掉，于是测试看不见它的日志，
@@ -74,7 +80,13 @@ class _DummyJar:
     def get_all(self):
         return {}
 
+    def get(self, name):
+        return None
+
     def set(self, *a, **kw):
+        return None
+
+    def remove(self, name):
         return None
 
     def clear(self):
