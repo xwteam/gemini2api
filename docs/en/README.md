@@ -472,7 +472,7 @@ response = client.chat.completions.create(
 | `GEMINI_PSID` | ✅ | — | Browser `__Secure-1PSID` |
 | `GEMINI_PSIDTS` | ✅ | — | Browser `__Secure-1PSIDTS` |
 | `API_KEY` | ❌ | Auto-generated | API access key (`sk-` prefix, auto-generated on first startup if empty) |
-| `REFRESH_INTERVAL` | ❌ | `5` | Cookie refresh interval (minutes) |
+| `REFRESH_INTERVAL` | ❌ | `30` | Cookie refresh interval (minutes, minimum 10) |
 | `MAX_RETRIES` | ❌ | `3` | Retry count on failure (exponential backoff) |
 | `PORT` | ❌ | `5918` | Service port |
 | `LOG_LEVEL` | ❌ | `info` | Log level (debug/info/warning/error) |

@@ -95,7 +95,7 @@ API_KEY=
 PORT=5918
 
 # 可选：Cookie 刷新周期（分钟，默认 5）
-REFRESH_INTERVAL=5
+REFRESH_INTERVAL=30
 
 # 可选：失败重试次数（默认 3）
 MAX_RETRIES=3

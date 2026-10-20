@@ -94,7 +94,7 @@ API_KEY=
 PORT=5918
 
 # 선택: Cookie 갱신 주기 (분, 기본값 5)
-REFRESH_INTERVAL=5
+REFRESH_INTERVAL=30
 
 # 선택: 실패 재시도 횟수 (기본값 3)
 MAX_RETRIES=3

@@ -79,11 +79,60 @@ def _generate_timeout(resolved_model: str, prompt: str) -> float:
     return float(value or _GENERATE_TIMEOUT_DEFAULT)
 
 
+# curl 的 code 28 既是"读超时"也是"连接超时"（实测两者都是 28，无法用 code 区分）。
+# 只有"耗时已经吃掉整个 POST 预算"才说明我们掐断的是一个还在生成的回答；几秒就回来的
+# 28 是建连阶段的瞬断（网络瞬断 / Google 前端某台机器黑洞丢包），原样再发一次大概率就通了。
+# 这个比例是"算不算生成期超时"的判据，见 _send_request。
+_TIMEOUT_ELAPSED_RATIO = 0.9
+
+
 def _is_timeout_error(exc: BaseException) -> bool:
-    """这次失败是不是「我们自己把一个还在生成的回答掐断了」。"""
+    """这次失败是不是一个超时（不区分连接期 / 生成期，见 _TIMEOUT_ELAPSED_RATIO）。"""
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return True
     return isinstance(exc, RequestsError) and getattr(exc, "code", None) == _CURL_TIMEDOUT
+
+
+class GenerationTimedOut(TimeoutError):
+    """我们自己把一个还在生成的回答掐断了（耗时已接近整个 POST 预算）。
+
+    只有这一类超时才"不重试"：原样再发两遍不会有不同的结果，只会把用户的等待时间
+    翻三倍。连接期的超时（同样是 curl code 28，但几秒就回来）仍走通用重试 ——
+    过去二者混在一条 `_is_timeout_error` 判断里，于是一次短暂的建连超时既不重试、
+    也不是 5xx（account_pool 不换号），用户直接拿到 500 硬失败。
+    """
+
+    def __init__(self, budget: float, elapsed: float, cause: BaseException):
+        self.budget = budget
+        self.elapsed = elapsed
+        super().__init__(
+            f"Generation timed out after {elapsed:.1f}s (budget {budget:.0f}s): {cause}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# PSIDTS 轮换循环的节流
+# ---------------------------------------------------------------------------
+# 轮换循环从"几乎不执行的旁路"变成了"启动就常驻"（见 initialize() 末尾），于是它的频率
+# 第一次成了真实的后台流量：每一轮是 5 个上游请求（RotateCookies 1 个 POST +
+# _obtain_session_token 的 3 个 GET + 心跳 1 个 POST）。
+# 参考实现的默认是 1440 分钟、并把下限硬夹在 10 分钟，注释原文：
+#   "Rotating cookies more often than this looks automated to Google and tends to get the
+#    session flagged or blocked."
+#   （refs/gemini-web-to-api internal/commons/configs/configs.go:55-58、86-89）
+# 我们的默认降到 30 分钟（PSIDTS 是小时级轮换，半小时一轮仍有一倍余量），并在这里夹一道
+# 下限 —— 既防运维把它调到秒级把账号打进风控，也防 REFRESH_INTERVAL=0 把循环变成热循环
+# （asyncio.sleep(0) 不产生任何延迟，实测 0.25 秒就能打出 6 万多次请求）。
+MIN_REFRESH_INTERVAL_MINUTES = 10
+
+# 轮换循环连续多少次取不到 token 才把账号标成不健康。
+# 过去是"一次失败就降级"：这条路径以前只在"启动就拿不到 token"的 client 上跑，碰不到健康
+# 账号；现在每个账号每隔 refresh_interval 都要走一遍，于是 Google 侧一次 502 / 连接重置 /
+# DNS 抖动就能把一个完全正常的账号踢出选号池（_find_available 要求 is_healthy），还触发一次
+# 毫无必要的 reload_cookies 自愈，而这一下抖动原本对用户完全不可见。
+# 阈值与 _health_check_loop 的 3 次对齐；参考实现更宽松（轮换与验证都失败才算不健康，
+# refs/gemini-web-to-api internal/modules/providers/gemini_service.go:403-409）。
+REFRESH_UNHEALTHY_STREAK = 3
 
 
 # ---------------------------------------------------------------------------
@@ -1361,8 +1410,17 @@ class GeminiWebClient:
             logger.debug(f"Model parse from status skipped: {e}")
 
     async def _auto_refresh_loop(self):
-        interval = settings.refresh_interval * 60
+        # 间隔夹下限：见 MIN_REFRESH_INTERVAL_MINUTES。配 0 / 配 1 分钟都不会把这个循环
+        # 变成对 Google 的持续敲门。
+        minutes = max(int(settings.refresh_interval or 0), MIN_REFRESH_INTERVAL_MINUTES)
+        if minutes != settings.refresh_interval:
+            logger.info(
+                f"Auto-refresh interval clamped to {minutes} min "
+                f"(configured {settings.refresh_interval}, minimum {MIN_REFRESH_INTERVAL_MINUTES})"
+            )
+        interval = minutes * 60
         consecutive_failures = 0
+        token_failures = 0
         while True:
             await asyncio.sleep(interval * random_delay_factor())
             try:
@@ -1373,14 +1431,31 @@ class GeminiWebClient:
                 else:
                     consecutive_failures = 0
 
+                # _obtain_session_token() 失败时会把 token 清空（任何异常都被它吞掉），
+                # 所以先留一份已知可用的 token：一次抖动不该既降级账号、又把好 token 丢掉
+                # （"健康但没有 SNlM0e" 的 client 会被池照常派活、然后每个请求都失败）。
+                prev_token = self._session_token
                 await self._obtain_session_token()
                 if self._session_token:
+                    token_failures = 0
                     self._healthy = True
                     await self._send_heartbeat()
                     logger.info("Auto-refresh: token OK")
                 else:
-                    self._healthy = False
-                    logger.error("Auto-refresh: token fetch failed, client unhealthy")
+                    token_failures += 1
+                    if token_failures >= REFRESH_UNHEALTHY_STREAK:
+                        self._healthy = False
+                        logger.error(
+                            f"Auto-refresh: token fetch failed {token_failures}x, client unhealthy"
+                        )
+                    else:
+                        # 还没到阈值：保留上一次拿到的会话，交给真实请求 / 健康检查去裁决。
+                        if prev_token:
+                            self._session_token = prev_token
+                        logger.warning(
+                            f"Auto-refresh: token fetch failed ({token_failures}x), "
+                            f"keeping the current session until {REFRESH_UNHEALTHY_STREAK}x"
+                        )
             except asyncio.CancelledError:
                 break
             except Exception as e:

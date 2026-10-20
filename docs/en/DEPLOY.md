@@ -160,7 +160,7 @@ Cookies expire periodically. The service includes automatic refresh mechanisms, 
 
 ### Automatic Refresh
 
-The service automatically refreshes cookies every 5 minutes (configurable via `REFRESH_INTERVAL`). This extends cookie lifetime significantly.
+The service automatically refreshes cookies every 30 minutes (configurable via `REFRESH_INTERVAL`, clamped to a 10-minute minimum). This extends cookie lifetime significantly. Rotating much more often than this looks automated to Google and tends to get the session flagged, so the floor is enforced in code.
 
 ### Manual Refresh via Web Panel
 
@@ -255,7 +255,7 @@ variables, then restart.
 1. Refresh cookies manually (see Cookie Refresh section)
 2. Use residential IP instead of data center IP
 3. Add more accounts for automatic failover
-4. Increase `REFRESH_INTERVAL` in `.env` (e.g., `REFRESH_INTERVAL=3` for 3-minute refresh)
+4. Lower `REFRESH_INTERVAL` in `.env` (e.g., `REFRESH_INTERVAL=15`); values below 10 are clamped to 10 minutes
 
 ### Port Already in Use
 
@@ -322,7 +322,7 @@ kill -9 <PID>
 | `GEMINI_PSID` | — | Required: `__Secure-1PSID` cookie |
 | `GEMINI_PSIDTS` | — | Required: `__Secure-1PSIDTS` cookie |
 | `API_KEY` | Auto-generated | API authentication key (sk- prefix) |
-| `REFRESH_INTERVAL` | 5 | Cookie refresh interval (minutes) |
+| `REFRESH_INTERVAL` | 30 | Cookie refresh interval (minutes, minimum 10) |
 | `MAX_RETRIES` | 3 | Failed request retry attempts |
 | `PORT` | 5918 | Service port |
 | `LOG_LEVEL` | info | Logging level (debug/info/warning/error) |

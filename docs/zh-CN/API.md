@@ -933,7 +933,7 @@ curl http://localhost:5918/admin/settings \
   "performance": {
     "rotation_strategy": "round-robin",
     "max_concurrent_per_account": 3,
-    "refresh_interval": 5
+    "refresh_interval": 30
   },
   "rate_limit": {
     "enabled": false,

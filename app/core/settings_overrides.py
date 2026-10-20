@@ -81,7 +81,6 @@ FIELD_TYPES = {
 
 # 这些字段语义上是计数/间隔，必须为非负（其中并发上限至少为 1）。
 NON_NEGATIVE_FIELDS = {
-    "refresh_interval",
     "max_retries",
     "rate_limit_window",
     "rate_limit_max",
@@ -93,6 +92,11 @@ NON_NEGATIVE_FIELDS = {
 }
 POSITIVE_FIELDS = {
     "max_concurrent_per_account",  # 并发上限必须 >= 1
+    # Cookie 刷新间隔也必须 >= 1：0 过去是合法值（面板上"填 0 表示关掉"是很自然的直觉），
+    # 而 _auto_refresh_loop 的 `asyncio.sleep(0)` 不产生任何延迟 —— 那条循环会退化成以网络
+    # RTT 为唯一节流的热循环，对每个账号无限制地重复 RotateCookies + 3 个 GET + 心跳。
+    # client 侧还有 MIN_REFRESH_INTERVAL_MINUTES 的下限兜底（.env 不经过这里）。
+    "refresh_interval",
 }
 
 # RotationStrategy 枚举的合法取值。这里刻意硬编码而不 import app.core.account_pool

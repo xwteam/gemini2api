@@ -33,7 +33,11 @@ class Settings(BaseSettings):
     gemini_psid: str = ""
     gemini_psidts: str = ""
     api_key: str = ""
-    refresh_interval: int = 5
+    # Cookie（PSIDTS）轮换循环的间隔（分钟）。这个循环现在启动就常驻，每一轮是 5 个上游
+    # 请求，所以默认值直接决定后台自动化流量的规模；参考实现默认 1440 分钟、下限 10 分钟。
+    # PSIDTS 是小时级轮换，30 分钟一轮仍有一倍余量。实际生效值还会被
+    # gemini_client.MIN_REFRESH_INTERVAL_MINUTES 夹一道下限。
+    refresh_interval: int = 30
     max_retries: int = 3
     # 遇到 5xx（尤其 Google 数据中心 IP 的 503 "Sorry" 限流）时：
     # - 同账号只快速重试 same_account_5xx_retries 次（应对瞬时抖动），不长退避空耗

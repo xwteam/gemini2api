@@ -70,7 +70,7 @@ GEMINI_PSID=g.a000xxx...
 GEMINI_PSIDTS=sidts-xxx...
 API_KEY=
 PORT=5918
-REFRESH_INTERVAL=5
+REFRESH_INTERVAL=30
 MAX_RETRIES=3
 LOG_LEVEL=info
 RATE_LIMIT_ENABLED=false
@@ -88,7 +88,7 @@ MAX_CONCURRENT_PER_ACCOUNT=8
 | `API_KEY` | API アクセスキー（空白で自動生成） | 自動生成 |
 | `ADMIN_API_KEY` | 管理パネル/`/admin` 専用認証キー（空白で `API_KEY` にフォールバック） | — |
 | `PORT` | サービスポート | 5918 |
-| `REFRESH_INTERVAL` | Cookie 更新間隔（分） | 5 |
+| `REFRESH_INTERVAL` | Cookie 更新間隔（分、最小 10） | 30 |
 | `MAX_RETRIES` | 失敗時の再試行回数 | 3 |
 | `ACCOUNTS_FILE` | マルチアカウント設定ファイルのパス（存在しなければ単一アカウントモード） | accounts.json |
 | `ROTATION_STRATEGY` | 負荷分散戦略（round-robin/failover） | round-robin |

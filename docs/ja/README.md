@@ -471,7 +471,7 @@ response = client.chat.completions.create(
 | `GEMINI_PSID` | ✅ | — | ブラウザ `__Secure-1PSID` |
 | `GEMINI_PSIDTS` | ✅ | — | ブラウザ `__Secure-1PSIDTS` |
 | `API_KEY` | ❌ | 自動生成 | API アクセスキー（`sk-` プレフィックス、空の場合は初回起動時に自動生成） |
-| `REFRESH_INTERVAL` | ❌ | `5` | Cookie 更新間隔（分） |
+| `REFRESH_INTERVAL` | ❌ | `30` | Cookie 更新間隔（分、最小 10） |
 | `MAX_RETRIES` | ❌ | `3` | 失敗時の再試行回数（指数バックオフ） |
 | `PORT` | ❌ | `5918` | サービスポート |
 | `LOG_LEVEL` | ❌ | `info` | ログレベル（debug/info/warning/error） |

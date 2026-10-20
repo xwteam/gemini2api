@@ -160,7 +160,7 @@ Cookie 會定期過期。服務包含自動更新機制，但你也可以手動�
 
 ### 自動更新
 
-服務每 5 分鐘自動更新一次 Cookie（可透過 `REFRESH_INTERVAL` 配置）。這會大幅延長 Cookie 壽命。
+服務每 30 分鐘自動更新一次 Cookie（可透過 `REFRESH_INTERVAL` 配置，下限夾在 10 分鐘）。這會大幅延長 Cookie 壽命；更頻繁的輪換在 Google 看來很像自動化，容易讓工作階段被標記，因此下限寫在程式碼裡。
 
 ### 透過 Web 面板手動更新
 
@@ -252,7 +252,7 @@ docker compose logs | grep "panel setting override"
 1. 手動更新 Cookie（見 Cookie 更新部分）
 2. 使用住宅 IP 而非資料中心 IP
 3. 新增更多帳號以實現自動故障轉移
-4. 增加 `.env` 中的 `REFRESH_INTERVAL`（例如 `REFRESH_INTERVAL=3` 為 3 分鐘更新）
+4. 調低 `.env` 中的 `REFRESH_INTERVAL`（例如 `REFRESH_INTERVAL=15`）；小於 10 的值會被夾到 10 分鐘
 
 ### 連接埠已被佔用
 
@@ -319,7 +319,7 @@ kill -9 <PID>
 | `GEMINI_PSID` | — | 必填：`__Secure-1PSID` Cookie |
 | `GEMINI_PSIDTS` | — | 必填：`__Secure-1PSIDTS` Cookie |
 | `API_KEY` | 自動生成 | API 認證金鑰（sk- 前綴） |
-| `REFRESH_INTERVAL` | 5 | Cookie 更新間隔（分鐘） |
+| `REFRESH_INTERVAL` | 30 | Cookie 更新間隔（分鐘，最小 10） |
 | `MAX_RETRIES` | 3 | 失敗請求重試次數 |
 | `PORT` | 5918 | 服務連接埠 |
 | `LOG_LEVEL` | info | 日誌級別（debug/info/warning/error） |

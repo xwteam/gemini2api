@@ -352,7 +352,7 @@ print(msg.content[0].text)
 | `GEMINI_PSID` | ✅ | — | 브라우저 `__Secure-1PSID` |
 | `GEMINI_PSIDTS` | ✅ | — | 브라우저 `__Secure-1PSIDTS` |
 | `API_KEY` | ❌ | 자동 생성 | API 액세스 키(`sk-`로 시작, 비워두면 첫 시작 시 자동 생성) |
-| `REFRESH_INTERVAL` | ❌ | `5` | 쿠키 새로고침 주기(분) |
+| `REFRESH_INTERVAL` | ❌ | `30` | 쿠키 새로고침 주기(분, 최소 10) |
 | `MAX_RETRIES` | ❌ | `3` | 실패 재시도 횟수(지수 백오프) |
 | `PORT` | ❌ | `5918` | 서비스 포트 |
 | `LOG_LEVEL` | ❌ | `info` | 로그 레벨(debug/info/warning/error) |

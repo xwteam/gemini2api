@@ -469,7 +469,7 @@ response = client.chat.completions.create(
 | `GEMINI_PSID` | ✅ | — | 浏览器 `__Secure-1PSID` |
 | `GEMINI_PSIDTS` | ✅ | — | 浏览器 `__Secure-1PSIDTS` |
 | `API_KEY` | ❌ | 自动生成 | API 访问密钥（`sk-` 开头，留空则首次启动自动生成） |
-| `REFRESH_INTERVAL` | ❌ | `5` | Cookie 刷新周期（分钟） |
+| `REFRESH_INTERVAL` | ❌ | `30` | Cookie 刷新周期（分钟，最小 10） |
 | `MAX_RETRIES` | ❌ | `3` | 失败重试次数（指数退避） |
 | `PORT` | ❌ | `5918` | 服务端口 |
 | `LOG_LEVEL` | ❌ | `info` | 日志级别（debug/info/warning/error） |
