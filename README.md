@@ -23,6 +23,7 @@
   <a href="#-快速部署">快速部署</a> &bull;
   <a href="#-接入示例">接入示例</a> &bull;
   <a href="#-api-端点">API 端点</a> &bull;
+  <a href="#-访问密钥">访问密钥</a> &bull;
   <a href="#-配置说明">配置说明</a> &bull;
   <a href="#-注意事项">注意事项</a> &bull;
   <a href="#-开发路线">开发路线</a>
@@ -84,12 +85,16 @@
 - SSE 流式输出（OpenAI / Claude）+ Chunked JSON（Gemini）
 - 函数调用（Function Calling）三种格式均支持
 - Deep Research 多步骤深度研究
+- **思考档位分级**：`reasoning_effort` 的 `low` / `medium` / `high` 分别映射到不同的思考深度（`none` / `minimal` 归 low，`xhigh` 归 high）；不传该参数时行为与旧版一致
+- **带附件也走真流式**：带图片/文件的请求不再等全文生成完才吐第一个字（带工具调用的仍为 buffered —— 工具参数必须是完整 JSON 才能解析）
 
 ### 🔐 安全与认证
 
 - API Key 自动生成（`sk-` 前缀 + 32 位随机字符串）
 - 支持 `Authorization: Bearer` 和 `x-api-key` 两种认证方式
 - 首次部署自动生成密钥，用户可自定义修改
+- **访问密钥**：管理员可签发多把可分发的入站密钥，每把独立配置有效期（支持「首次使用起算」的惰性激活）、请求数上限、绑定账号与可用模型，随时可停用或吊销
+- `.env` 的 `API_KEY` 始终全权有效，访问密钥只是**附加**的一层；且访问密钥只能调业务 API，访问不到 `/admin/*`（详见下文 [🔑 访问密钥](#-访问密钥)）
 
 ### 🔄 多账号轮询与 Cookie 自愈
 
@@ -100,6 +105,8 @@
 - 热更新 Cookie API，无需重启容器
 - 支持通过 API 动态添加/移除账号
 - 健康检查历史记录，为 Web 面板提供数据支撑
+- **Cookie 轮换循环启动即跑**：以前只有「启动时拿不到 token」才会拉起轮换循环，正常启动的网关从不轮换、Cookie 过几小时就死（[issue #11](https://github.com/xwteam/gemini2api/issues/11)）；现在无条件常驻
+- **识别 HTTP 200 里的拒绝块**：Gemini 有时在 200 响应正文里塞一个拒绝块（限流 / 会话过期 / 上下文超长 / 人机验证）。以前这类请求表现为「空回复」且不触发任何自愈，现在会被转成明确错误并走冷却 + 换号重试，可用 `BARD_ERROR_CODES` 为具体 code 配上语义
 
 ### 🛡 反检测与协议伪装
 
@@ -120,6 +127,7 @@
 - 账号管理：添加/删除账号、单独更新 Cookie、健康检测
 - **设置页面**：可视化管理运行时配置（性能、速率限制、健康检查、账号管理等），修改即时生效并传播到运行时
 - **模型映射**：将请求中的模型名映射到实际使用的模型（如 gpt-4o → gemini-2.5-pro）
+- **访问密钥**：签发/编辑/停用/吊销可分发的入站密钥，列表直接显示状态、用量与权限范围（与下面的「API Key 管理」无关，那管的是第三方**出站** Key）
 - **API Key 管理**：集中管理第三方大模型 API Key（OpenAI/Anthropic/Gemini/OpenRouter/自定义），支持导入导出
 - Playground：在线测试 API 请求
 - 实时日志：结构化表格展示，支持方向过滤、文本搜索、分页（每页15条）、JSON 详情面板，日志持久化到磁盘（重启不丢失）
@@ -296,7 +304,11 @@ docker compose logs -f
 
 ### Cookie 自动保活
 
-gemini2api 内置 Cookie 自动轮换机制：每 5 分钟通过 Google RotateCookies API 刷新 `__Secure-1PSIDTS`，配合 batchexecute 心跳模拟浏览器活跃行为，延长 session 寿命。
+gemini2api 内置 Cookie 自动轮换机制：默认每 30 分钟（`REFRESH_INTERVAL`，硬下限 10 分钟）通过 Google RotateCookies API 刷新 `__Secure-1PSIDTS`，配合 batchexecute 心跳模拟浏览器活跃行为，延长 session 寿命。
+
+> [!IMPORTANT]
+> **`REFRESH_INTERVAL` 的默认值已由 5 分钟改为 30 分钟，并在代码里夹了 10 分钟的硬下限**（配得更小会被自动抬到 10 并在启动日志里点名）。
+> 原因：以前轮换循环**只在「启动时拿不到 token」的情况下才会被拉起**，正常启动的网关其实从不轮换，Cookie 过几个小时就死（[issue #11](https://github.com/xwteam/gemini2api/issues/11)）。现在改成启动就常驻，同一个间隔下对 Google 的后台请求量会涨到约 3.5 倍，所以间隔必须相应放宽——轮换太勤在 Google 看来很像自动化，容易触发风控、反而把 session 搞死。
 
 如需手动更新 Cookie，可通过 Web 面板的「账号管理」→「更新 Cookie」操作，无需重启服务。
 
@@ -528,6 +540,8 @@ curl -X POST http://localhost:5918/v1/images/generations \
 | GET | `/web-chats` | 列出账号在 Gemini 网页端堆积的会话（只读） |
 | POST | `/cleanup-web-chats` | 手动触发清理超期网页会话（后台异步执行） |
 
+> 访问密钥的 6 个 `/admin/access-keys` 端点见下文 [🔑 访问密钥](#-访问密钥)。
+
 ### 系统
 
 | 方法 | 端点 | 功能 |
@@ -570,6 +584,95 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 
 ---
 
+## 🔑 访问密钥
+
+除了 `.env` 里那把全权 `API_KEY`，管理员还可以签发任意多把**可分发**的访问密钥：每把独立配置有效期、请求数上限、可用账号与可用模型，发给不同的人，随时可以单独停用或吊销。面板新增「访问密钥」页做可视化管理，后端对应 `/admin/access-keys` 系列端点。
+
+密钥存放在 `data/access_keys.json`（`data/` 是 docker-compose 的持久化 bind mount），重启不丢。
+
+### 每把密钥可配置的字段
+
+| 字段 | 说明 |
+|------|------|
+| `name` | 标签，用来记住这把 key 发给了谁（留空则显示为 `key-{id}`） |
+| `enabled` | 启停开关。停用后持有人立刻 401，但密钥仍在列表里，可随时恢复 |
+| `expires_at` | 绝对过期时间（ISO8601），到点失效 |
+| `duration_days` | 有效天数，**惰性激活**：发出去不计时，持有人第一次用它发请求才开始算 N 天 |
+| `request_limit` | 请求数上限，累计达到即失效（可用「重置用量」清零后继续用） |
+| `bound_account_ids` | 绑定账号，只允许用指定的 Gemini 账号（留空 = 不限制） |
+| `allowed_models` | 允许模型，只允许调用指定的模型名（留空 = 不限制） |
+
+`expires_at` 与 `duration_days` 二选一，两者都留空则永不过期。
+
+### 密钥状态
+
+| 状态 | 含义 |
+|------|------|
+| 有效 | 可正常调用 |
+| 已停用 | `enabled` 被管理员关掉 |
+| 未激活 | 配了 `duration_days` 但还没被用过，计时尚未开始 |
+| 已过期 | 已过 `expires_at` |
+| 已超额 | `request_count` 达到了 `request_limit` |
+
+判定按「已停用 → 已过期 → 已超额 → 未激活 → 有效」的优先级依次短路。
+
+### 端点
+
+| 方法 | 端点 | 功能 |
+|------|------|------|
+| GET | `/admin/access-keys` | 列出所有访问密钥（含状态、用量、权限范围） |
+| GET | `/admin/access-keys/options` | 面板签发表单的候选项（账号池里的账号 + 对外可见的模型名） |
+| POST | `/admin/access-keys` | 签发密钥，`count` 可批量（上限 50） |
+| PATCH | `/admin/access-keys/{id}` | 修改配置（清空某字段要用 `clear` 数组，见下） |
+| DELETE | `/admin/access-keys/{id}` | 吊销密钥 |
+| POST | `/admin/access-keys/{id}/reset-usage` | 重置请求计数 |
+
+```bash
+# 签发 1 把：发出去 7 天有效（首次使用才开始算）、最多 500 次请求、只能用 flash
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{"name":"张三","duration_days":7,"request_limit":500,"allowed_models":["gemini-flash"]}'
+
+# 批量签发 20 把同样配置的密钥（名称自动编号为 试用-1 … 试用-20）
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{"name":"试用","count":20,"duration_days":3}'
+
+# 列出所有密钥
+curl http://localhost:5918/admin/access-keys \
+  -H "Authorization: Bearer sk-你的API密钥"
+
+# 停用第 3 把
+curl -X PATCH http://localhost:5918/admin/access-keys/3 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{"enabled":false}'
+
+# 解除第 3 把的请求数上限和模型限制：JSON 里传 null 表示「不改」，
+# 要清空字段必须把字段名放进 clear 数组
+curl -X PATCH http://localhost:5918/admin/access-keys/3 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{"clear":["request_limit","allowed_models"]}'
+
+# 重置用量计数
+curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
+  -H "Authorization: Bearer sk-你的API密钥"
+```
+
+### ⚠ 三条重要边界
+
+> [!IMPORTANT]
+> **1. `.env` 的 `API_KEY` 仍然全权有效。** 访问密钥是**附加**的一层，不是替代：`API_KEY` 命中后立刻放行，不查密钥库、不计任何用量。**一把访问密钥都不签发时，鉴权行为与旧版完全一致。**
+>
+> **2. 访问密钥只能调业务 API，绝对访问不到 `/admin/*`。** 管理面仍然只由 `API_KEY` / `ADMIN_API_KEY` 把守。所以可以放心把访问密钥发给外人——他拿不到账号 Cookie、改不了配置，也看不到别人的密钥。
+>
+> **3. 每个业务请求都会 +1，包括 `GET /v1/models`。** 计数是在鉴权入口原子 +1 的，单调不减、不退还（上游报错也算）。有些客户端每轮对话前都会列一次模型，等于**一轮消耗 2 次**——设 `request_limit` 时记得留余量。
+
+---
+
 ## ⚙ 配置说明
 
 > [!IMPORTANT]
@@ -588,7 +691,7 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 | `GEMINI_PSID` | ✅ | — | 浏览器 `__Secure-1PSID` |
 | `GEMINI_PSIDTS` | ✅ | — | 浏览器 `__Secure-1PSIDTS` |
 | `API_KEY` | ❌ | 自动生成 | API 访问密钥（`sk-` 开头，留空则首次启动自动生成） |
-| `REFRESH_INTERVAL` | ❌ | `5` | Cookie 刷新周期（分钟） |
+| `REFRESH_INTERVAL` | ❌ | `30` | Cookie 刷新周期（分钟，最小 10） |
 | `MAX_RETRIES` | ❌ | `3` | 失败重试次数（指数退避） |
 | `PORT` | ❌ | `5918` | 服务端口 |
 | `LOG_LEVEL` | ❌ | `info` | 日志级别（debug/info/warning/error） |
@@ -622,6 +725,9 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 单次图片下载 HTTP 超时（秒） |
 | `FALLBACK_ENABLED` | ❌ | `false` | 启用 Gemini→第三方兜底：任意 Gemini 模型报错/返回空响应时，自动改用 API Key 池中的第三方模型原生重试 |
 | `FALLBACK_MODELS` | ❌ | — | 兜底模型（逗号分隔、按序尝试）；留空=自动选用池中所有"适合聊天"的第三方并随机轮询、失败换下一个 |
+| `BARD_ERROR_CODES` | ❌ | — | Gemini 在 **HTTP 200** 正文里返回的拒绝块的 code→语义对照表，形如 `1152=rate_limit,404=session_expired`，分类可取 `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**留空时所有拒绝块按未知处理（冷却该账号 + 换号重试），这是刻意的安全兜底**；配上之后各类才有专门处理（会话过期触发 Cookie 自愈、上下文超长直接回 400 不重试、人机验证让出该账号） |
+| `GENERATE_TIMEOUTS` | ❌ | — | 非流式生成超时按模型族覆盖，形如 `pro=300,flash=120`；留空用内置分层（flash-lite 60 / flash 120 / flash-thinking 120 / pro 300，认不出的族回落 60） |
+| `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 疑似生图请求的非流式超时（秒）。与模型族档位**取大**，只作用于非流式路径 |
 
 ---
 
@@ -636,6 +742,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 4. **请求频率**：即使关闭了内置限流（`RATE_LIMIT_ENABLED=false`），Google 侧仍有频率限制。高频请求可能触发验证码或临时封禁，建议合理控制调用频率。
 
 5. **网络环境**：部署服务器需能直接访问 `gemini.google.com`，部分地区可能需要配置代理。
+
+6. **非流式超时与前置代理**：非流式（`stream: false`）请求的超时按模型族分层——flash-lite 60 秒、flash 与 flash-thinking 120 秒、pro 300 秒（可用 `GENERATE_TIMEOUTS` 覆盖；疑似生图取 `GENERATE_TIMEOUT_IMAGE`，默认 180 秒），超时也不再重试三遍。注意这整段时间里连接上是**零字节输出**，所以它是**首字节**超时而不是空闲超时：**pro 非流式最长要干等 300 秒，会超过常见前置代理的首字节上限**（EdgeOne 免费版 15 秒，不少反向代理默认 60 秒），客户端拿到的将是代理的 504 而不是本服务的错误体。这类场景建议直接用流式请求。
 
 ---
 

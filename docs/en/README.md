@@ -22,6 +22,7 @@
   <a href="#-quick-deployment">Quick Deployment</a> &bull;
   <a href="#-integration-examples">Integration Examples</a> &bull;
   <a href="#-api-endpoints">API Endpoints</a> &bull;
+  <a href="#-access-keys">Access Keys</a> &bull;
   <a href="#-configuration">Configuration</a> &bull;
   <a href="#-important-notes">Important Notes</a> &bull;
   <a href="#-roadmap">Roadmap</a>
@@ -83,12 +84,16 @@
 - SSE streaming (OpenAI / Claude) + Chunked JSON (Gemini)
 - Function calling supported across all three formats
 - Deep Research multi-step research capability
+- **Tiered thinking levels**: `reasoning_effort` values `low` / `medium` / `high` now map to different thinking depths (`none` / `minimal` clamp to low, `xhigh` clamps to high); omitting the parameter behaves exactly as before
+- **Attachments stream for real again**: requests carrying images or files no longer wait for the full generation before emitting the first token (requests carrying tools stay buffered — tool arguments must be complete JSON before they can be parsed)
 
 ### 🔐 Security & Authentication
 
 - Auto-generated API Keys (`sk-` prefix + 32 random characters)
 - Supports both `Authorization: Bearer` and `x-api-key` authentication
 - Auto-generated on first deployment, customizable by users
+- **Access keys**: the administrator can issue any number of distributable inbound keys, each with its own expiry (including lazy activation that starts counting from first use), request limit, bound accounts and allowed models, and each can be disabled or revoked at any time
+- The `API_KEY` in `.env` always keeps full privileges — access keys are an **additional** layer; and an access key can only call the business API, never `/admin/*` (see [🔑 Access Keys](#-access-keys) below)
 
 ### 🔄 Multi-Account Load Balancing & Cookie Self-Healing
 
@@ -99,6 +104,8 @@
 - Hot-update Cookie API without container restart
 - Dynamic account add/remove via API
 - Health check history for web panel data support
+- **Cookie rotation loop now always runs**: previously the rotation loop was only started when the gateway *failed* to obtain a token at boot, so a normally started gateway never rotated at all and its cookies died after a few hours ([issue #11](https://github.com/xwteam/gemini2api/issues/11)); it is now unconditionally resident
+- **Reject blocks inside HTTP 200 are now recognized**: Gemini sometimes returns a reject block in the body of a 200 response (rate limit / session expired / context too long / CAPTCHA). Such requests used to surface as an "empty reply" and triggered no self-healing at all; they are now turned into an explicit error that goes through cooldown + account failover, and `BARD_ERROR_CODES` lets you attach a meaning to specific codes
 
 ### 🛡 Anti-Detection & Protocol Spoofing
 
@@ -119,6 +126,7 @@
 - Account management: add/delete accounts, update individual cookies, health checks
 - **Settings page**: visual runtime config management (performance, rate limiting, health checks, account management), changes take effect immediately
 - **Model mapping**: map request model names to actual models (e.g., gpt-4o → gemini-2.5-pro)
+- **Access keys**: issue / edit / disable / revoke distributable inbound keys, with state, usage and scope shown right in the list (unrelated to "API Key management" below, which manages third-party **outbound** keys)
 - **API Key management**: centralized third-party model API Key management (OpenAI/Anthropic/Gemini/OpenRouter/custom), import/export support
 - Playground: online API testing
 - Real-time logs: structured table display, direction filter, text search, pagination (15 per page), JSON detail panel, disk persistence (survives restart)
@@ -250,7 +258,11 @@ To use multiple Google accounts for load balancing, create `accounts.json`:
 
 ### Cookie Auto-Keep-Alive
 
-gemini2api has built-in cookie auto-rotation: refresh `__Secure-1PSIDTS` every 5 minutes via Google RotateCookies API, combined with batchexecute heartbeat to simulate browser activity and extend session lifetime.
+gemini2api has built-in cookie auto-rotation: it refreshes `__Secure-1PSIDTS` every 30 minutes by default (`REFRESH_INTERVAL`, with a hard floor of 10 minutes) via the Google RotateCookies API, combined with a batchexecute heartbeat to simulate browser activity and extend session lifetime.
+
+> [!IMPORTANT]
+> **The default for `REFRESH_INTERVAL` changed from 5 minutes to 30 minutes, and the code now clamps it to a 10-minute floor** (smaller values are raised to 10 and named in the startup log).
+> Why: the rotation loop used to be started **only when the gateway failed to obtain a token at boot**, which means a normally started gateway never rotated at all and its cookies died after a few hours ([issue #11](https://github.com/xwteam/gemini2api/issues/11)). Now that the loop is always resident, the same interval would raise background traffic to Google roughly 3.5×, so the interval has to widen to match — rotating too often looks automated to Google and tends to get the session flagged, which kills it faster than not rotating.
 
 To manually update cookies, use the Web panel's "Account Management" → "Update Cookie" without restarting the service.
 
@@ -449,6 +461,97 @@ response = client.chat.completions.create(
 | GET | `/web-chats` | List sessions accumulated on the Gemini web side per account (read-only) |
 | POST | `/cleanup-web-chats` | Manually trigger cleanup of expired web sessions (runs asynchronously in background) |
 
+> The six `/admin/access-keys` endpoints are documented under [🔑 Access Keys](#-access-keys) below.
+
+---
+
+## 🔑 Access Keys
+
+Besides the single all-powerful `API_KEY` in `.env`, the administrator can issue any number of **distributable** access keys: each one gets its own expiry, request limit, usable accounts and allowed models, can be handed to a different person, and can be disabled or revoked individually at any time. The panel has a new "Access Keys" page for managing them visually, backed by the `/admin/access-keys` endpoints.
+
+Keys are stored in `data/access_keys.json` (`data/` is the persistent bind mount used by docker-compose), so they survive restarts.
+
+### Per-key fields
+
+| Field | Description |
+|------|------|
+| `name` | Label, so you remember who a key was handed to (shown as `key-{id}` when empty) |
+| `enabled` | On/off switch. Disabling it 401s the holder immediately, but the key stays in the list and can be re-enabled |
+| `expires_at` | Absolute expiry (ISO8601); the key dies at that moment |
+| `duration_days` | Valid days, with **lazy activation**: handing the key out starts no clock — the N days begin on the holder's first request |
+| `request_limit` | Request cap; the key dies once the cumulative count reaches it ("Reset usage" zeroes it so the key can be reused) |
+| `bound_account_ids` | Bound accounts: only the listed Gemini accounts may be used (empty = unrestricted) |
+| `allowed_models` | Allowed models: only the listed model names may be called (empty = unrestricted) |
+
+`expires_at` and `duration_days` are mutually exclusive; leave both empty for a key that never expires.
+
+### Key states
+
+| State | Meaning |
+|------|------|
+| Valid | Usable |
+| Disabled | `enabled` was turned off by the administrator |
+| Not activated | `duration_days` is set but the key has never been used, so the clock has not started |
+| Expired | Past `expires_at` |
+| Limit reached | `request_count` reached `request_limit` |
+
+The state is resolved by short-circuiting in this priority order: Disabled → Expired → Limit reached → Not activated → Valid.
+
+### Endpoints
+
+| Method | Endpoint | Function |
+|------|------|------|
+| GET | `/admin/access-keys` | List all access keys (with state, usage and scope) |
+| GET | `/admin/access-keys/options` | Choices for the panel's issue form (accounts in the pool + externally visible model names) |
+| POST | `/admin/access-keys` | Issue keys; `count` issues a batch (max 50) |
+| PATCH | `/admin/access-keys/{id}` | Change a key's configuration (clearing a field requires the `clear` array, see below) |
+| DELETE | `/admin/access-keys/{id}` | Revoke a key |
+| POST | `/admin/access-keys/{id}/reset-usage` | Reset the request counter |
+
+```bash
+# Issue one key: valid 7 days from first use, at most 500 requests, flash only
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"name":"Alice","duration_days":7,"request_limit":500,"allowed_models":["gemini-flash"]}'
+
+# Issue 20 keys with the same configuration (auto-numbered trial-1 … trial-20)
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"name":"trial","count":20,"duration_days":3}'
+
+# List all keys
+curl http://localhost:5918/admin/access-keys \
+  -H "Authorization: Bearer sk-your-api-key"
+
+# Disable key 3
+curl -X PATCH http://localhost:5918/admin/access-keys/3 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"enabled":false}'
+
+# Drop key 3's request cap and model restriction: a JSON null means "leave unchanged",
+# so clearing a field requires putting its name in the clear array
+curl -X PATCH http://localhost:5918/admin/access-keys/3 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"clear":["request_limit","allowed_models"]}'
+
+# Reset the usage counter
+curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
+  -H "Authorization: Bearer sk-your-api-key"
+```
+
+### ⚠ Three boundaries worth knowing
+
+> [!IMPORTANT]
+> **1. The `API_KEY` in `.env` still has full privileges.** Access keys are an **additional** layer, not a replacement: a request matching `API_KEY` is let through immediately, without consulting the key store and without counting any usage. **With no access key issued at all, authentication behaves exactly as in previous versions.**
+>
+> **2. An access key can only call the business API — it can never reach `/admin/*`.** The admin surface is still guarded solely by `API_KEY` / `ADMIN_API_KEY`. That is what makes it safe to hand an access key to an outsider: they cannot read account cookies, cannot change configuration, and cannot see anyone else's keys.
+>
+> **3. Every business request counts +1, including `GET /v1/models`.** The counter is incremented atomically at the auth entry point; it is monotonic and never refunded (an upstream error still counts). Some clients list the models before every turn, which means **two counts per round** — leave headroom when setting `request_limit`.
+
 ---
 
 ## ⚙ Configuration
@@ -506,6 +609,9 @@ response = client.chat.completions.create(
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | Per-image download HTTP timeout (seconds) |
 | `FALLBACK_ENABLED` | ❌ | `false` | Enable Gemini → third-party fallback: when any Gemini model (flash/pro/thinking) errors or returns an empty response, automatically retry natively with a third-party model from the API Key pool |
 | `FALLBACK_MODELS` | ❌ | — | Fallback models (comma-separated, tried in order); empty = automatically use all "chat-capable" third-party models in the pool (excludes non-chat models such as image/video/audio/embedding by name) with random round-robin, switching to the next one whenever one fails (errors or empty) |
+| `BARD_ERROR_CODES` | ❌ | — | Lookup table mapping the codes of reject blocks Gemini returns inside an **HTTP 200** body to a meaning, e.g. `1152=rate_limit,404=session_expired`; categories are `rate_limit` / `session_expired` / `context_too_long` / `captcha`. **While empty, every reject block is treated as unknown (cool down that account + retry on another), which is a deliberate safe fallback**; once configured, each category gets its own handling (session expiry triggers cookie self-healing, context overflow returns 400 without retrying, CAPTCHA releases that account) |
+| `GENERATE_TIMEOUTS` | ❌ | — | Per-model-family override for the non-streaming generation timeout, e.g. `pro=300,flash=120`; empty uses the built-in tiers (flash-lite 60 / flash 120 / flash-thinking 120 / pro 300, with 60 as the fallback for unrecognized families) |
+| `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | Non-streaming timeout (seconds) for requests that look like image generation. Takes the **larger** of this and the model-family tier, and only applies to the non-streaming path |
 
 ---
 
@@ -520,6 +626,8 @@ response = client.chat.completions.create(
 4. **Request Frequency**: Even with rate limiting disabled (`RATE_LIMIT_ENABLED=false`), Google has its own limits. High-frequency requests may trigger CAPTCHAs or temporary bans. Control request frequency appropriately.
 
 5. **Network Environment**: The deployment server must have direct access to `gemini.google.com`. Some regions may need proxy configuration.
+
+6. **Non-streaming timeouts and front proxies**: non-streaming (`stream: false`) requests time out per model family — flash-lite 60s, flash and flash-thinking 120s, pro 300s (override with `GENERATE_TIMEOUTS`; requests that look like image generation use `GENERATE_TIMEOUT_IMAGE`, default 180s) — and a timeout is no longer retried three times. Note that the connection emits **zero bytes** for that entire window, so this is a **time-to-first-byte** timeout rather than an idle timeout: **a non-streaming pro request can sit silent for up to 300 seconds, which exceeds the first-byte limit of common front proxies** (15 seconds on the EdgeOne free tier, 60 seconds by default on many reverse proxies), and the client then receives the proxy's 504 instead of this service's error body. Prefer streaming requests for that scenario.
 
 ---
 

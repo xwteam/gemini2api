@@ -22,6 +22,7 @@
   <a href="#-빠른-배포">빠른 배포</a> &bull;
   <a href="#-통합-예제">통합 예제</a> &bull;
   <a href="#-api-엔드포인트">API 엔드포인트</a> &bull;
+  <a href="#-액세스-키">액세스 키</a> &bull;
   <a href="#-설정">설정</a> &bull;
   <a href="#-주의사항">주의사항</a> &bull;
   <a href="#-로드맵">로드맵</a>
@@ -83,12 +84,16 @@
 - SSE 스트리밍 출력(OpenAI / Claude) + Chunked JSON(Gemini)
 - 함수 호출(Function Calling) 세 가지 형식 모두 지원
 - Deep Research 다단계 심층 연구
+- **사고 단계 구분**: `reasoning_effort`의 `low` / `medium` / `high`가 각각 다른 사고 깊이로 매핑됩니다(`none` / `minimal`은 low로, `xhigh`는 high로 클램프). 이 파라미터를 보내지 않으면 동작은 이전 버전과 동일합니다
+- **첨부 파일이 있어도 진짜 스트리밍**: 이미지나 파일이 포함된 요청도 전체 생성이 끝날 때까지 기다리지 않고 첫 토큰부터 내보냅니다(도구 호출이 포함된 요청은 여전히 buffered —— 도구 인자는 완전한 JSON이어야 파싱할 수 있기 때문)
 
 ### 🔐 보안 및 인증
 
 - API Key 자동 생성(`sk-` 접두사 + 32자 무작위 문자열)
 - `Authorization: Bearer` 및 `x-api-key` 두 가지 인증 방식 지원
 - 첫 배포 시 자동으로 키 생성, 사용자 정의 수정 가능
+- **액세스 키**: 관리자가 배포용 인바운드 키를 여러 개 발급할 수 있습니다. 키마다 유효 기간("최초 사용 시점부터 계산"하는 지연 활성화 지원), 요청 한도, 바인딩 계정, 허용 모델을 따로 설정할 수 있고 언제든 비활성화하거나 삭제할 수 있습니다
+- `.env`의 `API_KEY`는 항상 모든 권한을 가지며, 액세스 키는 **추가** 계층일 뿐입니다. 또한 액세스 키는 업무 API만 호출할 수 있고 `/admin/*`에는 접근할 수 없습니다(자세한 내용은 아래 [🔑 액세스 키](#-액세스-키))
 
 ### 🔄 다중 계정 로테이션 및 쿠키 자가 치유
 
@@ -99,6 +104,8 @@
 - 쿠키 핫 업데이트 API, 컨테이너 재시작 불필요
 - API를 통한 계정 동적 추가/제거 지원
 - 건강 검사 기록, 웹 패널에 데이터 제공
+- **쿠키 로테이션 루프가 시작 시점부터 상주**: 이전에는 "시작할 때 토큰을 가져오지 못한" 경우에만 로테이션 루프가 올라왔기 때문에, 정상적으로 시작한 게이트웨이는 한 번도 로테이션하지 않고 쿠키가 몇 시간 만에 죽었습니다([issue #11](https://github.com/xwteam/gemini2api/issues/11)). 이제는 무조건 상주합니다
+- **HTTP 200 안의 거부 블록 인식**: Gemini는 때때로 200 응답 본문에 거부 블록(속도 제한 / 세션 만료 / 컨텍스트 초과 / CAPTCHA)을 담아 보냅니다. 예전에는 이런 요청이 "빈 응답"으로 나타나고 자가 복구도 전혀 작동하지 않았지만, 이제는 명확한 오류로 변환되어 쿨다운 + 계정 전환 재시도를 거칩니다. `BARD_ERROR_CODES`로 개별 코드에 의미를 지정할 수 있습니다
 
 ### 🛡 탐지 방지 및 프로토콜 위장
 
@@ -119,6 +126,7 @@
 - 계정 관리: 계정 추가/삭제, 개별 쿠키 업데이트, 건강 검사
 - **설정 페이지**: 런타임 구성 시각화 관리(성능, 속도 제한, 건강 검사, 계정 관리 등), 수정 즉시 적용 및 런타임에 전파
 - **모델 매핑**: 요청의 모델 이름을 실제 사용 모델로 매핑(예: gpt-4o → gemini-2.5-pro)
+- **액세스 키**: 배포용 인바운드 키를 발급/편집/비활성화/삭제하며, 상태·사용량·적용 범위가 목록에 바로 표시됩니다(아래의 "API Key 관리"와는 무관합니다. 그쪽은 타사 **아웃바운드** Key를 관리합니다)
 - **API Key 관리**: 타사 대형 모델 API Key 중앙 관리(OpenAI/Anthropic/Gemini/OpenRouter/사용자 정의), 가져오기/내보내기 지원
 - Playground: 온라인 API 요청 테스트
 - 실시간 로그: 구조화된 테이블 표시, 방향 필터링, 텍스트 검색, 페이지네이션(페이지당 15개), JSON 세부 정보 패널, 디스크에 로그 지속(재시작 후에도 유지)
@@ -330,6 +338,97 @@ print(msg.content[0].text)
 
 전체 관리 인터페이스 목록은 메인 README 또는 [API.md](API.md)를 참조하십시오.
 
+> 액세스 키의 `/admin/access-keys` 엔드포인트 6개는 아래 [🔑 액세스 키](#-액세스-키)에 정리되어 있습니다.
+
+---
+
+## 🔑 액세스 키
+
+`.env`에 있는 전권 `API_KEY` 외에, 관리자는 **배포용** 액세스 키를 원하는 만큼 발급할 수 있습니다. 키마다 유효 기간, 요청 한도, 사용 가능한 계정, 허용 모델을 따로 설정해 사람별로 나눠주고, 언제든 개별적으로 비활성화하거나 삭제할 수 있습니다. 패널에는 시각적으로 관리할 수 있는 "액세스 키" 페이지가 추가되었고, 백엔드는 `/admin/access-keys` 계열 엔드포인트에 대응합니다.
+
+키는 `data/access_keys.json`(`data/`는 docker-compose의 영속 bind mount)에 저장되므로 재시작해도 사라지지 않습니다.
+
+### 키마다 설정할 수 있는 필드
+
+| 필드 | 설명 |
+|------|------|
+| `name` | 라벨. 이 키를 누구에게 줬는지 기억하기 위한 항목(비우면 `key-{id}`로 표시) |
+| `enabled` | 활성/비활성 스위치. 비활성화하면 소지자는 즉시 401이 되지만, 키는 목록에 남아 언제든 되살릴 수 있습니다 |
+| `expires_at` | 절대 만료 시각(ISO8601). 그 시점에 무효화됩니다 |
+| `duration_days` | 유효 일수. **지연 활성화**: 나눠주는 것만으로는 시간이 흐르지 않고, 소지자의 첫 요청부터 N일을 계산합니다 |
+| `request_limit` | 요청 한도. 누적 횟수가 도달하면 무효화됩니다("사용량 초기화"로 0으로 되돌리면 계속 사용 가능) |
+| `bound_account_ids` | 바인딩 계정. 지정한 Gemini 계정만 사용 허용(비우면 = 제한 없음) |
+| `allowed_models` | 허용 모델. 지정한 모델 이름만 호출 허용(비우면 = 제한 없음) |
+
+`expires_at`과 `duration_days`는 둘 중 하나만 지정하며, 둘 다 비우면 만료되지 않는 키가 됩니다.
+
+### 키 상태
+
+| 상태 | 의미 |
+|------|------|
+| 유효 | 정상적으로 호출 가능 |
+| 비활성 | 관리자가 `enabled`를 끈 상태 |
+| 미활성 | `duration_days`는 설정됐지만 아직 사용된 적이 없어 계산이 시작되지 않음 |
+| 만료됨 | `expires_at`이 지남 |
+| 한도 초과 | `request_count`가 `request_limit`에 도달함 |
+
+판정은 "비활성 → 만료됨 → 한도 초과 → 미활성 → 유효" 우선순위로 단축 평가됩니다.
+
+### 엔드포인트
+
+| 메서드 | 엔드포인트 | 기능 |
+|------|------|------|
+| GET | `/admin/access-keys` | 모든 액세스 키 목록(상태·사용량·적용 범위 포함) |
+| GET | `/admin/access-keys/options` | 패널 발급 폼의 선택 항목(계정 풀의 계정 + 외부에 노출되는 모델 이름) |
+| POST | `/admin/access-keys` | 키 발급. `count`로 일괄 발급(최대 50) |
+| PATCH | `/admin/access-keys/{id}` | 설정 변경(특정 필드를 비우려면 `clear` 배열 사용, 아래 참조) |
+| DELETE | `/admin/access-keys/{id}` | 키 삭제 |
+| POST | `/admin/access-keys/{id}/reset-usage` | 요청 카운트 초기화 |
+
+```bash
+# 1개 발급: 최초 사용 시점부터 7일 유효, 최대 500회 요청, flash만 허용
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-내API키" \
+  -d '{"name":"홍길동","duration_days":7,"request_limit":500,"allowed_models":["gemini-flash"]}'
+
+# 같은 설정의 키를 20개 일괄 발급(이름은 trial-1 … trial-20으로 자동 번호 부여)
+curl -X POST http://localhost:5918/admin/access-keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-내API키" \
+  -d '{"name":"trial","count":20,"duration_days":3}'
+
+# 모든 키 목록
+curl http://localhost:5918/admin/access-keys \
+  -H "Authorization: Bearer sk-내API키"
+
+# 3번 키 비활성화
+curl -X PATCH http://localhost:5918/admin/access-keys/3 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-내API키" \
+  -d '{"enabled":false}'
+
+# 3번 키의 요청 한도와 모델 제한 해제: JSON의 null은 "변경하지 않음"을 뜻하므로,
+# 필드를 비우려면 필드 이름을 clear 배열에 넣어야 합니다
+curl -X PATCH http://localhost:5918/admin/access-keys/3 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-내API키" \
+  -d '{"clear":["request_limit","allowed_models"]}'
+
+# 사용량 카운트 초기화
+curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
+  -H "Authorization: Bearer sk-내API키"
+```
+
+### ⚠ 꼭 알아야 할 세 가지 경계
+
+> [!IMPORTANT]
+> **1. `.env`의 `API_KEY`는 여전히 모든 권한을 가집니다.** 액세스 키는 **추가** 계층이며 대체가 아닙니다: `API_KEY`에 일치하는 요청은 즉시 통과하고, 키 저장소를 조회하지도 사용량을 집계하지도 않습니다. **액세스 키를 하나도 발급하지 않으면 인증 동작은 이전 버전과 완전히 동일합니다.**
+>
+> **2. 액세스 키는 업무 API만 호출할 수 있고 `/admin/*`에는 절대 접근할 수 없습니다.** 관리 영역은 여전히 `API_KEY` / `ADMIN_API_KEY`만이 지킵니다. 그래서 외부인에게 액세스 키를 건네도 안전합니다 —— 계정 쿠키를 읽을 수 없고, 설정을 바꿀 수 없으며, 다른 사람의 키도 볼 수 없습니다.
+>
+> **3. 모든 업무 요청은 `GET /v1/models`를 포함해 +1 집계됩니다.** 카운트는 인증 입구에서 원자적으로 증가하며 단조 증가하고 환불되지 않습니다(업스트림 오류도 집계됨). 일부 클라이언트는 대화마다 모델 목록을 먼저 조회하므로 **한 번의 대화에 2회 소비**합니다 —— `request_limit`을 설정할 때 여유를 두세요.
+
 ---
 
 ## ⚙ 설정
@@ -386,6 +485,9 @@ print(msg.content[0].text)
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 단일 이미지 다운로드 HTTP 타임아웃(초) |
 | `FALLBACK_ENABLED` | ❌ | `false` | Gemini→타사 폴백 활성화: 임의의 Gemini 모델(flash/pro/thinking)이 오류를 내거나 빈 응답을 반환하면 API Key 풀의 타사 모델로 자동 전환하여 "네이티브 재시도" |
 | `FALLBACK_MODELS` | ❌ | — | 폴백 모델(쉼표 구분, 순서대로 시도); 비워두면 풀에서 "채팅에 적합한" 모든 타사 모델을 자동 선택(이름으로 image/video/audio/embedding 등 비채팅 모델 제외)하여 무작위 로테이션, 하나가 실패(오류/빈 응답)하면 다음으로 전환 |
+| `BARD_ERROR_CODES` | ❌ | — | Gemini가 **HTTP 200** 본문으로 반환하는 거부 블록의 code→의미 대조표. `1152=rate_limit,404=session_expired` 형식이며 분류는 `rate_limit` / `session_expired` / `context_too_long` / `captcha`. **비워두면 모든 거부 블록을 알 수 없는 것으로 처리합니다(해당 계정 쿨다운 + 다른 계정으로 재시도). 이는 의도된 안전 폴백입니다**. 설정하면 분류별 전용 처리가 활성화됩니다(세션 만료는 쿠키 자가 복구 유발, 컨텍스트 초과는 400 반환 후 재시도하지 않음, CAPTCHA는 해당 계정을 내놓음) |
+| `GENERATE_TIMEOUTS` | ❌ | — | 비스트리밍 생성 타임아웃을 모델 패밀리 단위로 재정의. `pro=300,flash=120` 형식. 비워두면 내장 단계 설정 사용(flash-lite 60 / flash 120 / flash-thinking 120 / pro 300, 인식되지 않는 패밀리는 60으로 폴백) |
+| `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 이미지 생성으로 추정되는 요청의 비스트리밍 타임아웃(초). 모델 패밀리 값과 비교해 **더 큰 쪽**을 채택하고, 비스트리밍 경로에만 적용됩니다 |
 
 ---
 
@@ -400,6 +502,8 @@ print(msg.content[0].text)
 4. **요청 빈도**: 내장 속도 제한을 끄더라도(`RATE_LIMIT_ENABLED=false`) Google 측에는 여전히 빈도 제한이 있습니다. 고빈도 요청은 CAPTCHA 또는 임시 차단을 유발할 수 있으므로 호출 빈도를 합리적으로 제어하는 것이 좋습니다.
 
 5. **네트워크 환경**: 배포 서버는 `gemini.google.com`에 직접 액세스할 수 있어야 하며, 일부 지역에서는 프록시 구성이 필요할 수 있습니다.
+
+6. **비스트리밍 타임아웃과 앞단 프록시**: 비스트리밍(`stream: false`) 요청의 타임아웃은 모델 패밀리 단위로 구분됩니다 —— flash-lite 60초, flash와 flash-thinking 120초, pro 300초(`GENERATE_TIMEOUTS`로 재정의 가능. 이미지 생성으로 추정되면 `GENERATE_TIMEOUT_IMAGE`, 기본 180초). 또한 타임아웃은 더 이상 3번 재시도하지 않습니다. 이 구간 내내 연결에는 **0바이트**가 흐른다는 점에 주의하세요. 즉 유휴 타임아웃이 아니라 **첫 바이트까지**의 타임아웃입니다: **pro 비스트리밍은 최대 300초를 무응답으로 기다리게 되어 흔한 앞단 프록시의 첫 바이트 한도를 넘깁니다**(EdgeOne 무료 버전 15초, 많은 리버스 프록시의 기본값 60초). 그러면 클라이언트가 받는 것은 이 서비스의 오류 본문이 아니라 프록시의 504입니다. 이런 상황에서는 스트리밍 요청을 권장합니다.
 
 ---
 
