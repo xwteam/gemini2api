@@ -84,6 +84,15 @@ class AccessKey:
     activated_at: Optional[str] = None
     request_limit: Optional[int] = None
     request_count: int = 0
+    # 累计**估算** token 与按模型明细。只统计、不限额 —— 额度限制只有 request_limit
+    # （计次）那一条，这三个字段一个字都不参与放行判定。
+    # 美元**不落盘**，由 /admin/access-keys 的 _serialize 按当前价格表现算：
+    # 改了价格表历史估算随之更新，不留一堆按旧价冻结的数字。
+    # tokens_by_model 形如 {"gemini-flash": {"in": 123, "out": 456}}；定价按模型分档，
+    # 不存明细就算不出钱。
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tokens_by_model: Optional[dict] = None
     # None / 空列表 = 不限制
     bound_account_ids: Optional[list] = None
     allowed_models: Optional[list] = None
@@ -102,6 +111,39 @@ class AccessKey:
         if not self.allowed_models:
             return None
         return {str(m) for m in self.allowed_models}
+
+
+# tokens_by_model 最多存几个模型名（超出的并进 "other"）。模型名虽然来自管理员配置的
+# model_mapping / gem_mapping，但这个 dict 要落盘、还要进面板的 innerHTML，不该裸信。
+_MAX_TOKEN_MODELS = 64
+
+
+def _coerce_token_map(value) -> Optional[dict]:
+    """把落盘的 tokens_by_model 规整回 {模型名: {"in": int, "out": int}}；坏数据一律丢。
+
+    全程只接受 int：这个 dict 会直接进 JSONResponse，一旦混进 NaN / inf 就会让
+    /admin/access-keys 永久 500（_coerce_positive_float 的注释里记过同类的坑）。
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict = {}
+    for name, counts in value.items():
+        if len(out) >= _MAX_TOKEN_MODELS:
+            break
+        key = str(name).strip()
+        if not key or not isinstance(counts, dict):
+            continue
+        try:
+            tokens_in = int(counts.get("in") or 0)
+            tokens_out = int(counts.get("out") or 0)
+        except (TypeError, ValueError):
+            continue
+        if tokens_in < 0 or tokens_out < 0:
+            continue
+        if not tokens_in and not tokens_out:
+            continue
+        out[key] = {"in": tokens_in, "out": tokens_out}
+    return out or None
 
 
 def _coerce_str_list(value) -> Optional[list]:
@@ -293,6 +335,47 @@ class AccessKeyStore:
                 self._touch_locked()
             return STATE_VALID, replace(matched)
 
+    def add_token_usage(self, key_id: int, model: str,
+                        input_tokens: int, output_tokens: int) -> bool:
+        """把一次请求的**估算** token 累加到这把密钥上。
+
+        与 consume() 同形状：只在 _lock 内改内存 + _touch_locked()，锁内绝不做磁盘 IO，
+        落盘交给 main.py 的 10 秒 flush 循环（崩溃时最多丢 10 秒，与 request_count
+        现有口径完全一致）。
+
+        **绝不参与任何限额判定**：这里不读 request_limit、不返回"超额"，调用方也不该
+        根据返回值拒绝请求。返回值只表示"这把密钥还在不在"。
+        """
+        try:
+            tokens_in = max(0, int(input_tokens))
+            tokens_out = max(0, int(output_tokens))
+        except (TypeError, ValueError):
+            return False
+        if not tokens_in and not tokens_out:
+            return False
+        name = str(model or "").strip() or "unknown"
+        with self._lock:
+            entry = self._keys.get(int(key_id))
+            if entry is None:
+                return False
+            entry.input_tokens += tokens_in
+            entry.output_tokens += tokens_out
+            by_model = entry.tokens_by_model
+            if not isinstance(by_model, dict):
+                by_model = {}
+                entry.tokens_by_model = by_model
+            # 上限：异常/恶意的模型名不许把这个 JSON 顶大，超出的并进 "other"。
+            if name not in by_model and len(by_model) >= _MAX_TOKEN_MODELS:
+                name = "other"
+            bucket = by_model.get(name)
+            if not isinstance(bucket, dict):
+                bucket = {"in": 0, "out": 0}
+                by_model[name] = bucket
+            bucket["in"] = int(bucket.get("in") or 0) + tokens_in
+            bucket["out"] = int(bucket.get("out") or 0) + tokens_out
+            self._touch_locked()
+            return True
+
     def consume(self, key_id: int, now: Optional[datetime] = None) -> bool:
         """计数 +1 并更新 last_used_at。"""
         now = now or _utc_now()
@@ -443,6 +526,11 @@ class AccessKeyStore:
             if entry is None:
                 return False, None
             entry.request_count = 0
+            # token / 明细必须一起清：只清 request_count 的话，面板上会出现
+            # 「请求数 0 / 估算 $4.21」这种自相矛盾的行。
+            entry.input_tokens = 0
+            entry.output_tokens = 0
+            entry.tokens_by_model = None
             return True, replace(entry)
 
         return self._mutate(_do)
@@ -549,6 +637,9 @@ class AccessKeyStore:
                     activated_at=item.get("activated_at") or None,
                     request_limit=_coerce_positive_int(item.get("request_limit")),
                     request_count=int(item.get("request_count") or 0),
+                    input_tokens=int(item.get("input_tokens") or 0),
+                    output_tokens=int(item.get("output_tokens") or 0),
+                    tokens_by_model=_coerce_token_map(item.get("tokens_by_model")),
                     bound_account_ids=_coerce_str_list(item.get("bound_account_ids")),
                     allowed_models=_coerce_str_list(item.get("allowed_models")),
                     last_used_at=item.get("last_used_at") or None,

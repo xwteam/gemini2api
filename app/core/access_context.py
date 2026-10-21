@@ -11,12 +11,15 @@ Request 对象都拿不到（参数名被 Pydantic 模型遮蔽）。ContextVar 
 所有下游判断都是一次 `is None` 短路，零开销、零行为变化。
 """
 
+import logging
 from contextvars import ContextVar
 from typing import Optional
 
 from fastapi import HTTPException
 
 from app.core.access_key_store import AccessKey
+
+logger = logging.getLogger(__name__)
 
 _current_access_key: ContextVar[Optional[AccessKey]] = ContextVar(
     "current_access_key", default=None
@@ -29,6 +32,45 @@ def set_current_access_key(entry: Optional[AccessKey]) -> None:
 
 def get_current_access_key() -> Optional[AccessKey]:
     return _current_access_key.get()
+
+
+# 本次请求是否已经记过用量。11 个落账点每一个都是它所在那条分支的终点，不可能同一个
+# 请求里有两个"真正交付了答案"的点；这道幂等守卫把 fallback / 工具重试 / 异常回落导致的
+# 重复计数一次性堵死，省掉逐点推演。
+_usage_recorded: ContextVar[bool] = ContextVar("access_key_usage_recorded", default=False)
+
+
+def record_token_usage(model: str, input_tokens: int, output_tokens: int) -> None:
+    """把本次请求的**估算** token 记到命中的访问密钥上（只统计、不限额）。
+
+    为什么不在中间件里收口：log_capture_middleware 是 `await call_next(request)` 之后
+    立刻记日志，而对 StreamingResponse 来说 call_next 返回时生成器**一个字节都还没
+    迭代**，所以流式路径算出来的 token 中间件永远看不到（仓里自己就把流式响应体标成
+    _STREAMING_NOT_CAPTURED）。ContextVar 在 verify_api_key 里设一次，端点函数、它
+    create_task 出来的子任务、以及 StreamingResponse 的生成器迭代都能读到 —— 这就是
+    "中间件拿得到 key、路由层才算得出 token"之间现成的桥，不需要动 request.state、
+    不需要改任何函数签名。
+
+    ⚠️ 调用点必须留在生成器自己的函数体里，**不能挪进 asyncio.create_task 的协程**：
+    ContextVar 在建任务时是**复制**上下文，子任务里读 key 没问题，但 _usage_recorded
+    的写不会回到父上下文，幂等守卫会失效 → 可能双计。
+
+    没有访问密钥（.env API_KEY 直连 / 一把都没签发）时是一次 `is None` 短路，
+    零开销、零行为变化。
+    """
+    entry = _current_access_key.get()
+    if entry is None or _usage_recorded.get():
+        return
+    _usage_recorded.set(True)
+    try:
+        from app.core.access_key_store import access_key_store
+        from app.core.gemini_client import MODEL_ALIASES
+        # 旧别名归一到公开名：价格表是按那几个稳定公开名配的，用 gemini-2.5-pro
+        # 调同一个模型不该在面板上单开一行、还因为"没配价"显示成 "—"。
+        name = MODEL_ALIASES.get(str(model or "").strip(), model)
+        access_key_store.add_token_usage(entry.id, name, input_tokens, output_tokens)
+    except Exception:          # 统计绝不能让一个已经成功的回答失败
+        logger.debug("record_token_usage failed", exc_info=True)
 
 
 def current_bound_account_ids() -> Optional[set]:

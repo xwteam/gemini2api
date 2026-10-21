@@ -110,6 +110,14 @@ class Settings(BaseSettings):
     generate_timeouts: str = ""
     # 生图请求的 POST 超时（秒）。生图在 pro 上常超过 60s，与上面的分层互不影响。
     generate_timeout_image: float = 180.0
+    # 访问密钥用量的**美元估算**价格表。形如
+    # "gemini-pro=2.0/12.0,gemini-flash=0.75/3.75"（公开模型名=输入价/输出价，
+    # 单位 USD / 百万 token）。留空=用 app/core/token_pricing.py 的内置默认值。
+    # ⚠️ 这只是"同样的内容若走官方 API 大约要多少钱"的参考值：本服务走网页版、本身
+    # 不花钱，且 token 数是 estimate_tokens（len//4）估出来的，不是真分词器。
+    # 配不到价格的模型在面板上显示 "—"，绝不回落到某个"差不多"的价。
+    # **不参与任何限额判定** —— 额度限制只有 request_limit（计次）这一条。
+    token_prices: str = ""
 
     @field_validator("gemini_psid")
     @classmethod

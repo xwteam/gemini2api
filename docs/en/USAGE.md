@@ -125,6 +125,20 @@ Each row shows the state (Valid / Not activated / Disabled / Expired / Limit rea
 2. An access key can **only call the business API** — never `/admin/*`. The admin surface stays guarded by `API_KEY` / `ADMIN_API_KEY`, which is what makes it safe to hand a key to an outsider.
 3. Every business request counts +1, **including `GET /v1/models`**. Some clients list the models before every turn, which means two counts per round — leave headroom when setting the request limit.
 
+#### Token usage and estimated cost
+
+Besides **Usage** (a request count), the list shows two more columns: **Tokens (est.)** — the key's cumulative input / output tokens — and **Est. cost (USD)**, always prefixed with `≈`.
+
+⚠️ **This is a reference number, not a bill.** Three things to know:
+
+1. The service talks to Gemini **Web** and **costs nothing by itself**. This column answers "what would the same content cost on the official API".
+2. Token counts come from `len(text) / 4`, **not a real tokenizer**. CJK text is badly underestimated (one Han character is usually one token, counted here as 0.25), so a long Chinese conversation can really be 3-4x this number.
+3. The price table is flattened to the published standard paid tier, ignoring long-context steps and future price changes; thinking tokens count towards output (matching the official billing convention). Requests served by a third-party fallback are not counted.
+
+**Statistics only, never a limit**: tokens and dollars take no part in any admission decision — the only quota is still the request limit (a count). "Reset usage" clears the request count and the token / cost figures together.
+
+Configure the table with the `TOKEN_PRICES` env var, e.g. `gemini-pro=2.0/12.0,gemini-flash=0.75/3.75` (public model name=input/output price, USD per million tokens). Empty means the built-in defaults; malformed entries are ignored silently, and a model with no price shows `—` instead of falling back to a "close enough" rate. A crash loses at most 10 seconds of accounting, the same window the request counter already has.
+
 ### Settings
 
 Configure runtime behavior:

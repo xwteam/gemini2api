@@ -11,7 +11,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import (
-    ensure_model_allowed, filter_models_for_access_key, scoped_conversation_id,
+    ensure_model_allowed, filter_models_for_access_key, record_token_usage,
+    scoped_conversation_id,
 )
 from app.core.api_forwarder import forward_to_provider, open_stream
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
@@ -451,11 +452,7 @@ async def chat_completions(req: ChatRequest, request: Request):
                     message=ChoiceMessage(role="assistant", tool_calls=tool_calls),
                     finish_reason="tool_calls",
                 )],
-                usage=UsageInfo(
-                    prompt_tokens=estimate_tokens(prompt),
-                    completion_tokens=estimate_tokens(text),
-                    total_tokens=estimate_tokens(prompt) + estimate_tokens(text),
-                ),
+                usage=_usage_and_record(resolved_model, prompt, text, result),
                 conversation_id=(req.conversation_id or completion_id) if conv else None,
             )
         text = parsed.get("content", text)
@@ -468,12 +465,34 @@ async def chat_completions(req: ChatRequest, request: Request):
                                   reasoning_content=(result.get("thoughts") or None)),
             finish_reason="stop",
         )],
-        usage=UsageInfo(
-            prompt_tokens=estimate_tokens(prompt),
-            completion_tokens=estimate_tokens(text),
-            total_tokens=estimate_tokens(prompt) + estimate_tokens(text),
-        ),
+        usage=_usage_and_record(resolved_model, prompt, text, result),
         conversation_id=(req.conversation_id or completion_id) if conv else None,
+    )
+
+
+def _record_usage(model: str, prompt: str, text: str, thoughts: str = "") -> None:
+    """按-key 用量落账（只统计、不限额）。
+
+    思考链计进 output：官方 API 对 thinking token 按 output 计费，这里跟着官方口径走
+    （所以面板上的 output 可能比协议里回给客户端的 completion_tokens 大）。
+    幂等（首次调用生效）由 record_token_usage 自己保证。
+    ⚠️ 必须留在生成器自己的函数体里，不能挪进 asyncio.create_task 的协程 —— 见
+    access_context.record_token_usage 的说明。
+    """
+    record_token_usage(model, estimate_tokens(prompt),
+                       estimate_tokens(text or "") + estimate_tokens(thoughts or ""))
+
+
+def _usage_and_record(model: str, prompt: str, text: str, result: dict | None = None) -> UsageInfo:
+    """算出协议要回的 UsageInfo，同时把这一次的用量记到访问密钥上。
+
+    协议里的 completion_tokens 口径一个字不改（仍只算正文），落账那份另算思考链。
+    """
+    _record_usage(model, prompt, text, (result or {}).get("thoughts") or "")
+    return UsageInfo(
+        prompt_tokens=estimate_tokens(prompt),
+        completion_tokens=estimate_tokens(text),
+        total_tokens=estimate_tokens(prompt) + estimate_tokens(text),
     )
 
 
@@ -633,6 +652,11 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
         conv.add_message("assistant", full_text)
         await conversation_store.update(conv)
 
+    # 按-key 用量落账。OpenAI 流式过去从头到尾不出现 usage/estimate_tokens（四个协议里
+    # 唯一的真空区）。这里**只在内部记账**，绝不往 SSE 里加 usage 帧 —— 那是线上协议的
+    # 实际变更（客户端会突然开始收到 usage chunk）。
+    _record_usage(model, prompt, full_text, emitted_thoughts)
+
     done_chunk = StreamChunk(
         id=completion_id, model=model_name,
         choices=[StreamChoice(delta=StreamDelta(), finish_reason="stop")],
@@ -774,6 +798,7 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
                 )
                 yield format_sse(chunk.model_dump())
 
+            _record_usage(model, prompt, text, result.get("thoughts") or "")
             final = StreamChunk(
                 id=completion_id, model=model_name,
                 choices=[StreamChoice(delta=StreamDelta(), finish_reason="tool_calls")],
@@ -782,6 +807,8 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
             yield "data: [DONE]\n\n"
             return
         text = parsed.get("content", text)
+
+    _record_usage(model, prompt, text, result.get("thoughts") or "")
 
     async for sse in _sse_stream_chunks(
         text, completion_id, model_name, fast=bool(gen_images),

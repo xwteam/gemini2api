@@ -50,6 +50,24 @@ function usageText(key) {
     return `${used} / ${formatNumber(Number(key.request_limit))}`;
 }
 
+function tokensText(key) {
+    const input = Number(key.input_tokens || 0);
+    const output = Number(key.output_tokens || 0);
+    if (!input && !output) return '-';
+    return `\u2191${formatNumber(input)} \u2193${formatNumber(output)}`;
+}
+
+// 估算成本。恒带 "≈"，算不出来显示 "—"：价格表里没配那个模型时，绝不回落到某个
+// "差不多"的价，也绝不把「不知道」显示成 0（那会让人以为账是对的）。
+function costText(key) {
+    const cost = key.estimated_cost_usd;
+    if (cost === null || cost === undefined || !isFinite(Number(cost))) {
+        return t('accessKeys.costUnpriced');
+    }
+    const n = Number(cost);
+    return `\u2248 $${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`;
+}
+
 function boundText(key) {
     const accounts = Array.isArray(key.bound_account_ids) ? key.bound_account_ids.length : 0;
     const models = Array.isArray(key.allowed_models) ? key.allowed_models.length : 0;
@@ -72,6 +90,8 @@ function render() {
         + `<th>${escapeHtml(t('accessKeys.status'))}</th>`
         + `<th>${escapeHtml(t('accessKeys.validity'))}</th>`
         + `<th>${escapeHtml(t('accessKeys.usage'))}</th>`
+        + `<th>${escapeHtml(t('accessKeys.tokens'))}</th>`
+        + `<th title="${escapeAttr(t('accessKeys.costTooltip'))}">${escapeHtml(t('accessKeys.cost'))}</th>`
         + `<th>${escapeHtml(t('accessKeys.scope'))}</th>`
         + `<th>${escapeHtml(t('accessKeys.actions'))}</th>`;
     html += '</tr></thead><tbody>';
@@ -85,6 +105,8 @@ function render() {
         html += `<td>${statusBadge(k)}</td>`;
         html += `<td>${escapeHtml(validityText(k))}</td>`;
         html += `<td>${escapeHtml(usageText(k))}</td>`;
+        html += `<td>${escapeHtml(tokensText(k))}</td>`;
+        html += `<td title="${escapeAttr(t('accessKeys.costTooltip'))}">${escapeHtml(costText(k))}</td>`;
         html += `<td>${escapeHtml(boundText(k))}</td>`;
         html += '<td class="akk-actions">'
             + `<button class="btn btn-sm btn-outline akk-edit-btn" data-id="${idEsc}" title="${escapeAttr(t('accessKeys.edit'))}"><i class="fas fa-pen"></i></button>`

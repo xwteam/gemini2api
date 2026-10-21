@@ -356,6 +356,7 @@ kill -9 <PID>
 | `BARD_ERROR_CODES` | — | Gemini 在 **HTTP 200** 內文裡回傳的拒絕區塊的 code→語意對照表，形如 `1152=rate_limit,404=session_expired`；分類可取 `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**留空時所有拒絕區塊按未知處理（冷卻該帳號 + 換帳號重試），這是刻意的安全兜底** |
 | `GENERATE_TIMEOUTS` | — | 非流式生成超時按模型族覆寫（秒），形如 `pro=300,flash=120`；留空＝內建分層 flash-lite 60 / flash 120 / flash-thinking 120 / pro 300（認不出的族回落 60）。⚠️ 這是**首位元組**超時，必須小於前置代理的首位元組上限 |
 | `GENERATE_TIMEOUT_IMAGE` | 180.0 | 疑似生圖請求的非流式超時（秒）。與模型族檔位取大，只作用於非流式路徑 |
+| `TOKEN_PRICES` | — | 存取金鑰用量的美元估算價格表，形如 `gemini-pro=2.0/12.0`（公開模型名=輸入價/輸出價，單位 USD／百萬 token）。留空用內建預設值。只統計不限額，且不是帳單 |
 
 ## Docker Compose 參考
 

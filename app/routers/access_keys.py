@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from app.core import access_key_store as store_module
 from app.core.access_key_store import AccessKey
 from app.core.account_pool import account_pool
+from app.core.token_pricing import estimate_cost_usd
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/access-keys", tags=["Access Keys"])
@@ -73,6 +74,10 @@ def _serialize(entry: AccessKey) -> dict:
     data = asdict(entry)
     data["state"] = _state_of(entry)
     data["display_name"] = entry.display_name
+    # 估算美元**现算不落盘**：改了 TOKEN_PRICES 之后历史估算随之更新，不留一堆按旧价
+    # 冻结的数字。算不出来（价格表里没有那个模型 / 完全没有用量）时是 None，面板显示 "—"
+    # —— "这把密钥没花钱"和"我们不知道这个模型多少钱"是两件事，不能都显示成 0。
+    data["estimated_cost_usd"] = estimate_cost_usd(entry.tokens_by_model)
     return data
 
 

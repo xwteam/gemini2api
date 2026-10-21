@@ -359,6 +359,7 @@ kill -9 <PID>
 | `BARD_ERROR_CODES` | — | Lookup table mapping the codes of reject blocks Gemini returns inside an **HTTP 200** body to a meaning, e.g. `1152=rate_limit,404=session_expired`; categories are `rate_limit` / `session_expired` / `context_too_long` / `captcha`. **While empty, every reject block is treated as unknown (cool down that account + retry on another), which is a deliberate safe fallback** |
 | `GENERATE_TIMEOUTS` | — | Per-model-family override for the non-streaming generation timeout (seconds), e.g. `pro=300,flash=120`; empty = built-in tiers flash-lite 60 / flash 120 / flash-thinking 120 / pro 300 (60 for unrecognized families). ⚠️ This is a **time-to-first-byte** timeout and must stay below your front proxy's first-byte limit |
 | `GENERATE_TIMEOUT_IMAGE` | 180.0 | Non-streaming timeout (seconds) for requests that look like image generation. Takes the larger of this and the model-family tier, and only applies to the non-streaming path |
+| `TOKEN_PRICES` | — | Price table for the estimated USD on access-key usage, e.g. `gemini-pro=2.0/12.0` (public model name=input/output price, USD per million tokens). Empty uses the built-in defaults. Statistics only, never a limit, and not a bill |
 
 ## Docker Compose Reference
 

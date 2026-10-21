@@ -8,7 +8,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
-from app.core.access_context import ensure_model_allowed, filter_models_for_access_key
+from app.core.access_context import (
+    ensure_model_allowed, filter_models_for_access_key, record_token_usage,
+)
 from app.core.gemini_client import HTTPStatusError, classify_error
 from app.core.stream import split_into_chunks, iter_with_keepalive, sse_keepalive_during
 from app.models.gemini import (
@@ -254,6 +256,10 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
 
     prompt_tokens = estimate_tokens(prompt)
     completion_tokens = estimate_tokens(response_text)
+    # 按-key 用量落账（只统计、不限额）。思考链计进 output：官方 API 对 thinking token
+    # 按 output 计费，这里跟着官方口径走（协议回给客户端的 usageMetadata 一个字不改）。
+    record_token_usage(model, prompt_tokens,
+                       completion_tokens + estimate_tokens(result.get("thoughts") or ""))
 
     # parts：图片在前 + 文本。inlineData（Gemini 原生 base64）给能解析的客户端，
     # 同时图片本地托管 URL 排在文字前面（图在前），方便不渲染 inlineData 的客户端拿到可点链接。
@@ -340,6 +346,9 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
 
         prompt_tokens = estimate_tokens(prompt)
         response_text = ""
+        # 这条流里拿到的思考链（两条子路径各自填）。只用于按-key 用量落账 ——
+        # 原生 Gemini 协议本来就不回思考链，wire format 一个字节不变。
+        stream_thoughts = ""
 
         # 只有「工具调用」才强制走 buffered：tool_calls 必须拿到完整 JSON 才能解析。
         # 附件不再挡在这里（底层 generate_stream 本就先上传附件再对话，下方真流式路径也已
@@ -363,6 +372,7 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                 yield json.dumps({"error": {"message": str(e), "type": "api_error"}}) + "\n"
                 return
             response_text = result.get("text", "")
+            stream_thoughts = result.get("thoughts") or ""
             if has_tools:
                 # NDJSON 流此前只发过空行保活，还没发任何 candidates 块，重试是安全的。
                 # 这条路径不发 functionCall（历史行为：原样把文本流回去），所以重试成功时
@@ -413,6 +423,7 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                         if delta:
                             yield _chunk(delta)
                     elif evt.get("type") == "final":
+                        stream_thoughts = evt.get("thoughts") or ""
                         # final.text 是过滤完占位串的完整文本，可能比已流出的 response_text
                         # 多出（流式时被 hold 住的尾部）。补发缺失尾部，保证拿到完整内容。
                         final_text = evt.get("text", response_text)
@@ -430,6 +441,9 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                 return
 
         completion_tokens = estimate_tokens(response_text)
+        # 按-key 用量落账（同非流式口径）。只在内部记账，wire format 一个字节不变。
+        record_token_usage(model, prompt_tokens,
+                           completion_tokens + estimate_tokens(stream_thoughts))
 
         # Google 原生 wire format 用 camelCase（finishReason/usageMetadata...），
         # 与非流式 generateContent 端点一致；snake_case 会被官方 SDK 静默忽略，

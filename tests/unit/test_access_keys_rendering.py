@@ -57,7 +57,8 @@ def _extract_const_object(source: str, name: str) -> str:
     raise AssertionError(f"const {name} 的大括号没配对，源码格式可能变了")
 
 
-_AK_FUNCS = ("escapeAttr", "statusBadge", "validityText", "usageText", "boundText", "render")
+_AK_FUNCS = ("escapeAttr", "statusBadge", "validityText", "usageText", "tokensText",
+             "costText", "boundText", "render")
 
 
 def _harness() -> str:
@@ -118,6 +119,8 @@ def _harness() -> str:
                 badges: keysData.map(statusBadge),
                 validity: keysData.map(validityText),
                 usage: keysData.map(usageText),
+                tokens: keysData.map(tokensText),
+                cost: keysData.map(costText),
                 scope: keysData.map(boundText),
                 consoleErrors: _consoleErrors,
             };
@@ -146,6 +149,8 @@ def _key(**kw) -> dict:
         "enabled": True, "state": "valid", "created_at": "2026-01-01T00:00:00+00:00",
         "expires_at": None, "duration_days": None, "activated_at": "2026-01-01T00:00:00+00:00",
         "request_limit": None, "request_count": 0,
+        "input_tokens": 0, "output_tokens": 0, "tokens_by_model": None,
+        "estimated_cost_usd": None,
         "bound_account_ids": None, "allowed_models": None, "last_used_at": None,
     }
     base.update(kw)
@@ -264,3 +269,66 @@ def test_no_inline_onclick_carries_user_data():
     JS 字符串字面量可以直接逸出。新代码一律 data-* + addEventListener。"""
     src = _AK_JS.read_text(encoding="utf-8")
     assert not re.search(r"onclick\s*=", src), "渲染出的 HTML 里不得有 inline onclick"
+
+
+# ---------------------------------------------------------------------------
+# Token 用量 / 估算成本两列（M2）
+# ---------------------------------------------------------------------------
+
+@_needs_node
+def test_token_column_shows_both_directions(tmp_path):
+    out = _render([_key(input_tokens=12345, output_tokens=6789)], tmp_path)
+
+    assert out["tokens"] == ["↑12,345 ↓6,789"]
+    assert "12,345" in out["list"] and "6,789" in out["list"]
+
+
+@_needs_node
+def test_token_column_is_a_dash_when_nothing_was_used(tmp_path):
+    out = _render([_key()], tmp_path)
+
+    assert out["tokens"] == ["-"]
+
+
+@_needs_node
+def test_cost_is_always_marked_as_an_estimate(tmp_path):
+    """用户点名的红线：绝不给一个看着精确其实不准的数字。"""
+    out = _render([_key(estimated_cost_usd=4.2131)], tmp_path)
+
+    assert out["cost"] == ["≈ $4.21"]
+    assert "≈" in out["list"], "面板上必须恒带 ≈"
+
+
+@_needs_node
+def test_a_tiny_cost_keeps_four_decimals(tmp_path):
+    out = _render([_key(estimated_cost_usd=0.00042)], tmp_path)
+
+    assert out["cost"] == ["≈ $0.0004"]
+
+
+@_needs_node
+def test_an_unpriced_model_shows_a_dash_not_a_zero(tmp_path):
+    """"这把密钥没花钱"和"我们不知道这个模型多少钱"是两件事，不能都显示成 0。"""
+    out = _render([_key(input_tokens=999, output_tokens=999, estimated_cost_usd=None)],
+                  tmp_path, i18n={"accessKeys.costUnpriced": "—"})
+
+    assert out["cost"] == ["—"]
+    assert "$" not in out["cost"][0]
+
+
+@_needs_node
+def test_a_nonsense_cost_value_does_not_render_nan(tmp_path):
+    for bad in ("abc", None):
+        out = _render([_key(estimated_cost_usd=bad)], tmp_path,
+                      i18n={"accessKeys.costUnpriced": "—"})
+        assert out["cost"] == ["—"], bad
+        assert "NaN" not in out["list"]
+
+
+@_needs_node
+def test_the_cost_column_carries_the_estimate_disclaimer(tmp_path):
+    tip = "仅供参考，不是账单"
+    out = _render([_key(estimated_cost_usd=1.0)], tmp_path,
+                  i18n={"accessKeys.costTooltip": tip})
+
+    assert out["list"].count(tip) >= 2, "列头和单元格都要带悬浮说明"

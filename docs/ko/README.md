@@ -490,6 +490,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `BARD_ERROR_CODES` | ❌ | — | Gemini가 **HTTP 200** 본문으로 반환하는 거부 블록의 code→의미 대조표. `1152=rate_limit,404=session_expired` 형식이며 분류는 `rate_limit` / `session_expired` / `context_too_long` / `captcha`. **비워두면 모든 거부 블록을 알 수 없는 것으로 처리합니다(해당 계정 쿨다운 + 다른 계정으로 재시도). 이는 의도된 안전 폴백입니다**. 설정하면 분류별 전용 처리가 활성화됩니다(세션 만료는 쿠키 자가 복구 유발, 컨텍스트 초과는 400 반환 후 재시도하지 않음, CAPTCHA는 해당 계정을 내놓음) |
 | `GENERATE_TIMEOUTS` | ❌ | — | 비스트리밍 생성 타임아웃을 모델 패밀리 단위로 재정의. `pro=300,flash=120` 형식. 비워두면 내장 단계 설정 사용(flash-lite 60 / flash 120 / flash-thinking 120 / pro 300, 인식되지 않는 패밀리는 60으로 폴백) |
 | `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 이미지 생성으로 추정되는 요청의 비스트리밍 타임아웃(초). 모델 패밀리 값과 비교해 **더 큰 쪽**을 채택하고, 비스트리밍 경로에만 적용됩니다 |
+| `TOKEN_PRICES` | ❌ | — | 액세스 키 사용량의 **추정 USD** 가격표. 예: `gemini-pro=2.0/12.0,gemini-flash=0.75/3.75`(공개 모델명=입력가/출력가, 단위 USD／100만 토큰). 비우면 내장 기본값을 사용하며, 형식이 잘못된 항목은 조용히 무시하고 가격이 없는 모델은 패널에 `—`로 표시됩니다. **통계 전용이며 어떤 한도 판정에도 쓰이지 않습니다.** 또한 청구액이 아닙니다(본 서비스는 Gemini 웹을 사용하므로 자체 비용이 없습니다) |
 
 ---
 

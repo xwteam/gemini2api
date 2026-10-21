@@ -612,6 +612,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `BARD_ERROR_CODES` | ❌ | — | Gemini 在 **HTTP 200** 內文裡回傳的拒絕區塊的 code→語意對照表，形如 `1152=rate_limit,404=session_expired`，分類可取 `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**留空時所有拒絕區塊按未知處理（冷卻該帳號 + 換帳號重試），這是刻意的安全兜底**；設定之後各類才有專門處理（工作階段過期觸發 Cookie 自癒、上下文超長直接回 400 不重試、人機驗證讓出該帳號） |
 | `GENERATE_TIMEOUTS` | ❌ | — | 非流式生成超時按模型族覆寫，形如 `pro=300,flash=120`；留空用內建分層（flash-lite 60 / flash 120 / flash-thinking 120 / pro 300，認不出的族回落 60） |
 | `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 疑似生圖請求的非流式超時（秒）。與模型族檔位**取大**，只作用於非流式路徑 |
+| `TOKEN_PRICES` | ❌ | — | 存取金鑰用量的**美元估算**價格表，形如 `gemini-pro=2.0/12.0,gemini-flash=0.75/3.75`（公開模型名=輸入價/輸出價，單位 USD／百萬 token）。留空用內建預設值；寫錯的條目靜默忽略，配不到價格的模型面板顯示 `—`。**只統計、不參與任何限額判定**，且不是帳單（本服務走網頁版、本身不花錢） |
 
 ---
 

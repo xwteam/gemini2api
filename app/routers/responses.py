@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
-from app.core.access_context import ensure_model_allowed
+from app.core.access_context import ensure_model_allowed, record_token_usage
 from app.core.gemini_client import GEMINI_MODELS, _resolve_model, parse_thinking_level
 from app.core.responses_protocol import (
     parse_responses_input, build_responses_object, new_response_id, ResponsesStreamEncoder,
@@ -186,10 +186,22 @@ async def create_response(request: Request):
         output = [{"type": "reasoning", "id": new_response_id().replace("resp_", "rs_"),
                   "summary": [{"type": "summary_text", "text": thoughts}]}] + output
     usage = {"input_tokens": estimate_tokens(prompt), "output_tokens": estimate_tokens(text)}
+    _record_usage(resolved_model, prompt, text, thoughts)
     obj = build_responses_object(model=resolved_model, status="completed", output=output,
                                  request_params=request_params, usage=usage,
                                  instructions=instructions)
     return JSONResponse(content=obj)
+
+
+def _record_usage(model: str, prompt: str, text: str, thoughts: str = "") -> None:
+    """按-key 用量落账（只统计、不限额）。
+
+    思考链计进 output：官方 API 对 thinking token 按 output 计费，这里跟着官方口径走
+    （协议回给客户端的 usage 一个字不改）。幂等由 record_token_usage 自己保证。
+    ⚠️ 必须留在生成器自己的函数体里，不能挪进 asyncio.create_task 的协程。
+    """
+    record_token_usage(model, estimate_tokens(prompt),
+                       estimate_tokens(text or "") + estimate_tokens(thoughts or ""))
 
 
 async def _stream_gemini_response(request, prompt, model, has_tools, attachments, gem_id,
@@ -269,6 +281,7 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
                 for frame in enc.text_message_end(msg_id, idx, full_text):
                     yield frame
         usage = {"input_tokens": estimate_tokens(prompt), "output_tokens": estimate_tokens(text)}
+        _record_usage(model, prompt, text, thoughts)
         completed_output = output
         if thoughts:
             completed_output = [{"type": "reasoning", "id": new_response_id().replace("resp_", "rs_"),
@@ -338,4 +351,5 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
         output = [{"type": "reasoning", "id": new_response_id().replace("resp_", "rs_"),
                   "summary": [{"type": "summary_text", "text": thoughts}]}] + output
     usage = {"input_tokens": estimate_tokens(prompt), "output_tokens": estimate_tokens(full_text)}
+    _record_usage(model, prompt, full_text, thoughts)
     yield enc.completed(output, usage)

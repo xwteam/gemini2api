@@ -10,7 +10,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
-from app.core.access_context import ensure_model_allowed, filter_models_for_access_key
+from app.core.access_context import (
+    ensure_model_allowed, filter_models_for_access_key, record_token_usage,
+)
 from app.core.gemini_client import HTTPStatusError, classify_error, parse_anthropic_thinking
 from app.core.stream import split_into_chunks, iter_with_keepalive, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.claude import (
@@ -36,6 +38,17 @@ def _text_block_start(index: int) -> str:
         "index": index,
         "content_block": {"type": "text", "text": "", "citations": None},
     })
+
+
+def _record_usage(model: str, prompt: str, text: str, result: dict | None = None) -> None:
+    """按-key 用量落账（只统计、不限额）。思考链计进 output：官方 API 对 thinking
+    token 按 output 计费，口径跟着官方走。详见 app/core/token_pricing.py。
+
+    幂等（首次调用生效）由 record_token_usage 自己保证，所以每条分支的终点都可以直接调。
+    """
+    thoughts = (result or {}).get("thoughts") or ""
+    record_token_usage(model, estimate_tokens(prompt),
+                       estimate_tokens(text or "") + estimate_tokens(thoughts))
 
 
 def _thinking_block_frames(blocks: list[ContentBlock]) -> list[str]:
@@ -233,6 +246,7 @@ async def create_message(req: ClaudeRequest, request: Request):
         parsed = await parse_tool_response_with_retry(text, _regenerate_for_tools)
         if parsed["type"] == "tool_calls":
             blocks = _thinking_blocks(result, extended_thinking)
+            _record_usage(resolved_model, prompt, text, result)
             for tc in parsed["tool_calls"]:
                 blocks.append(ContentBlock(
                     type="tool_use",
@@ -267,6 +281,7 @@ async def create_message(req: ClaudeRequest, request: Request):
     blocks = _thinking_blocks(result, extended_thinking) + [
         ContentBlock(type="text", text=text if text else " ")
     ]
+    _record_usage(resolved_model, prompt, text, result)
 
     return ClaudeResponse(
         id=msg_id,
@@ -489,6 +504,8 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
             "delta": {"type": "text_delta", "text": full_text},
         })
 
+    _record_usage(model, prompt, full_text, {"thoughts": emitted_thoughts})
+
     yield _claude_sse({"type": "content_block_stop", "index": text_index})
     yield _claude_sse({
         "type": "message_delta",
@@ -591,6 +608,7 @@ async def _stream_claude_buffered(prompt: str, model: str, has_tools: bool, atta
                 })
                 yield _claude_sse({"type": "content_block_stop", "index": base + i})
 
+            _record_usage(model, prompt, text, result)
             yield _claude_sse({
                 "type": "message_delta",
                 "delta": {"stop_reason": "tool_use", "stop_sequence": None},
@@ -616,6 +634,8 @@ async def _stream_claude_buffered(prompt: str, model: str, has_tools: bool, atta
     # content/delta 假设至少一块非空"的客户端假设。用单空格占位，不改变非空文本的既有行为。
     if not text:
         text = " "
+
+    _record_usage(model, prompt, text, result)
 
     for frame in _thinking_block_frames(thinking_blocks):
         yield frame
