@@ -49,6 +49,33 @@ As of v1.6.4, each API supports two sets of paths:
 
 **Important**: The bare `/v1/models` endpoint returns OpenAI format (a single path cannot return two formats). For the Claude-format model list, use `/claude/v1/models`.
 
+## 🧠 Models & Thinking Levels
+
+| Public model name | Maps automatically to the web model (as currently measured) | Notes |
+|------|------|------|
+| `gemini-pro` | 3.1 Pro | Highest quality, slower |
+| `gemini-flash` | 3.8 Flash | Fast; recommended default |
+| `gemini-flash-lite` | 3.5 Flash-Lite | Lightest and fastest; fallback when Pro/Flash are rate-limited |
+| `gemini-argon` | 4 Argon | For complex tasks; **listed only when an account actually has Argon** |
+
+- **The mapping is automatic**: each account's heartbeat reports the web models it can really use right now. The public names never change; internally they follow whatever generation the web client currently serves (no client change needed when Google ships a new one).
+- **`gemini-flash-thinking` is retired**: it was only a fake "flash + thinking mode" model, and thinking is now a level every model has (see below). For backward compatibility `gemini-flash-thinking`, `gemini-2.5-flash-thinking`, `gemini-2.0-flash-thinking` and the internal names `gemini-3-flash-thinking*` **still work** (hidden aliases of `gemini-flash`); they just no longer appear in any model list. To get thinking content back, pass a level parameter instead.
+- **Three thinking levels**: `low` / `medium` / `high`, matching the web client's low / medium / high (measured: `high` thinks deepest and longest; `low` and `medium` could not be told apart in our samples).
+- **Default level `low`**: when the client **does not pass** a thinking parameter, the "default thinking level" applies (env var `DEFAULT_THINKING_LEVEL`, or the panel's Settings → Thinking, effective on save without a restart). Factory default `low`.
+  - ⚠️ **Speed cost**: measured, the default `low` adds **about 5 s per request on average** compared with no thinking (simple flash prompts: 6.5 / 8.8 s → 8.6 / 16.6 s). If speed matters most, set the default to **`off`** (no thinking, fastest; the upstream request is identical to what older versions sent without the parameter). Watch non-streaming requests behind a proxy with a first-byte timeout (e.g. EdgeOne free tier, 15 s).
+  - Thinking turned on by the default level is **used for generation only and never returned**: no extra `reasoning_content` / `thinking` block / thought part; the response is field-for-field identical to a no-thinking response, so strict clients do not break. Thinking content is returned only when the client **explicitly** asks for a level.
+- **Master switch** `EXTENDED_THINKING_ENABLED=false`: never think, even when a client explicitly asks (advanced/compatibility option; the panel shows it only while it is off).
+- The panel's Model Test page replaces the old "Thinking" checkbox with a **level selector** (Low / Medium / High, default Low). The chosen level is sent as `reasoning_effort` and the reasoning is shown above the answer.
+
+Level parameters per protocol (**omitted → default level, and no thinking is returned**):
+
+| Protocol | Parameter | Value → level |
+|------|------|------|
+| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`; `none` / `minimal` → low, `xhigh` → high; unrecognized values → high (no error) |
+| OpenAI `/v1/responses` | `reasoning.effort` (or top-level `reasoning_effort`) | Same as above |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`: `N<2048` → low, `2048–4095` → medium, `≥4096` → high; `{"type":"adaptive"}` or an invalid budget → high; `{"type":"disabled"}` → no thinking; an unrecognized `type` counts as not passed |
+| Gemini native `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`: `LOW` / `MEDIUM` / `HIGH` (`MINIMAL` → low, unspecified → high); `thinkingBudget`: `0` → no thinking, `-1` (automatic) → high, `>0` tiered at 2048 / 4096; when both are given `thinkingLevel` wins; thinking is returned (as a part with `"thought": true`) only with `includeThoughts: true` |
+
 ## OpenAI Compatible API
 
 These endpoints follow OpenAI API format and are compatible with OpenAI SDKs.
@@ -81,13 +108,13 @@ curl http://localhost:5918/openai/v1/models \
       "owned_by": "google"
     },
     {
-      "id": "gemini-flash-thinking",
+      "id": "gemini-flash-lite",
       "object": "model",
       "created": 1715970000,
       "owned_by": "google"
     },
     {
-      "id": "gemini-flash-lite",
+      "id": "gemini-argon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "google"
@@ -98,7 +125,7 @@ curl http://localhost:5918/openai/v1/models \
 
 > 💡 **Model Selection Guide**: The four models offer different speed/quality tradeoffs.
 > - `gemini-flash`: Fastest (response ~4-5 seconds), ideal for **agent / high-frequency / high-concurrency** scenarios, recommended as default.
-> - `gemini-flash-thinking`: Includes reasoning process, speed close to flash, suitable for tasks requiring inference.
+> - `gemini-argon`: 4 Argon, for complex tasks; listed only when an account actually has Argon.
 > - `gemini-flash-lite`: Lightest & fastest tier (3.5 Flash-Lite), a usable fallback when Pro/Flash hit rate limits.
 > - `gemini-pro`: Highest quality but slower (response ~9-17 seconds, longer with extended context), suitable for quality-critical scenarios where latency is not a concern.
 >
@@ -477,17 +504,17 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `thinking` | object | No | Turns on extended thinking. **Omitting it keeps the previous behaviour byte for byte** |
+| `thinking` | object | No | Sets the thinking level. **When omitted, the upstream thinks at the default thinking level (factory `low`) but the response never contains a `thinking` block — it stays byte-for-byte identical to previous versions** |
 
 - `{"type":"enabled","budget_tokens":N}` — on. `N` maps to low / medium / high at `<2048` / `2048–4095` / `>=4096`. Those cut points are the inverse of the `{low:1024, medium:2048, high:4096}` table this service uses when forwarding to a third-party Anthropic endpoint, so a round trip through this service keeps the same level.
-- `{"type":"adaptive"}` — on, at the default level (the same level an OpenAI-protocol request gets without `reasoning_effort`).
-- `{"type":"disabled"}` / `{"type":"between_tools"}` — no thinking; byte-for-byte identical to omitting the field.
+- `{"type":"adaptive"}` — on, at the high level (same as previous versions; a missing/invalid `budget_tokens` does the same).
+- `{"type":"disabled"}` / `{"type":"between_tools"}` — no thinking (an explicit off; the default level does not apply).
 
 Thinking is returned as an Anthropic `thinking` content block, placed **before** the `text` / `tool_use` blocks; when streaming, as `content_block_start(thinking)` → `thinking_delta` → `content_block_stop`.
 
 ⚠️ Two things to know:
 - **No `signature`.** The real Anthropic API always signs `thinking` blocks; this service cannot produce a valid signature, so the field is omitted (an empty or invented signature would be worse — a client replaying it to the real API gets a 400).
-- **The mapping from level to actual web-client thinking depth is not yet verified on a real account.** Raising `budget_tokens` from 1024 to 31999 may not visibly deepen the thinking.
+- The levels match the web client's low / medium / high: measured on a real account, high thinks deepest; low and medium could not be told apart.
 - Thinking tokens are counted into `usage.output_tokens` (matching the official billing convention), but that number is still an estimate — see the access-key usage section.
 - With `EXTENDED_THINKING_ENABLED=false`, the thinking path is skipped even when `thinking` is sent.
 - **Thinking deltas that arrive after the body started are dropped** (streaming). The Anthropic block order forbids opening or extending a `thinking` block after a `text` block, so when the upstream keeps growing its thinking after the body began, that remainder has to be dropped (a WARNING records how many characters were lost). If you need the complete chain, use `reasoning_content` on the OpenAI protocol, which has no block-order constraint. The normal order (thinking first) is unaffected, and the body is always complete.
@@ -1517,8 +1544,8 @@ The generation timeout for non-streaming (`stream: false`) requests is **tiered 
 |------|------|
 | flash-lite | 60 s |
 | flash | 120 s |
-| flash-thinking | 120 s |
 | pro | 300 s |
+| argon | 300 s |
 | Unrecognized family | 60 s |
 
 Requests that look like image generation take the **larger** of the tier above and `GENERATE_TIMEOUT_IMAGE` (default 180 s). A timeout is no longer retried three times — a failure is a failure.

@@ -84,8 +84,35 @@
 - SSE streaming (OpenAI / Claude) + Chunked JSON (Gemini)
 - Function calling supported across all three formats
 - Deep Research multi-step research capability
-- **Tiered thinking levels**: `reasoning_effort` values `low` / `medium` / `high` now map to different thinking depths (`none` / `minimal` clamp to low, `xhigh` clamps to high); omitting the parameter behaves exactly as before
+- **Thinking levels**: `low` / `medium` / `high` match the web client's low / medium / high; when the client passes nothing the default is `low` (set `off` for maximum speed), and thinking turned on by default is not returned. See [🧠 Models & Thinking Levels](#-models--thinking-levels)
 - **Attachments stream for real again**: requests carrying images or files no longer wait for the full generation before emitting the first token (requests carrying tools stay buffered — tool arguments must be complete JSON before they can be parsed)
+
+### 🧠 Models & Thinking Levels
+
+| Public model name | Maps automatically to the web model (as currently measured) | Notes |
+|------|------|------|
+| `gemini-pro` | 3.1 Pro | Highest quality, slower |
+| `gemini-flash` | 3.8 Flash | Fast; recommended default |
+| `gemini-flash-lite` | 3.5 Flash-Lite | Lightest and fastest; fallback when Pro/Flash are rate-limited |
+| `gemini-argon` | 4 Argon | For complex tasks; **listed only when an account actually has Argon** |
+
+- **The mapping is automatic**: each account's heartbeat reports the web models it can really use right now. The public names never change; internally they follow whatever generation the web client currently serves (no client change needed when Google ships a new one).
+- **`gemini-flash-thinking` is retired**: it was only a fake "flash + thinking mode" model, and thinking is now a level every model has (see below). For backward compatibility `gemini-flash-thinking`, `gemini-2.5-flash-thinking`, `gemini-2.0-flash-thinking` and the internal names `gemini-3-flash-thinking*` **still work** (hidden aliases of `gemini-flash`); they just no longer appear in any model list. To get thinking content back, pass a level parameter instead.
+- **Three thinking levels**: `low` / `medium` / `high`, matching the web client's low / medium / high (measured: `high` thinks deepest and longest; `low` and `medium` could not be told apart in our samples).
+- **Default level `low`**: when the client **does not pass** a thinking parameter, the "default thinking level" applies (env var `DEFAULT_THINKING_LEVEL`, or the panel's Settings → Thinking, effective on save without a restart). Factory default `low`.
+  - ⚠️ **Speed cost**: measured, the default `low` adds **about 5 s per request on average** compared with no thinking (simple flash prompts: 6.5 / 8.8 s → 8.6 / 16.6 s). If speed matters most, set the default to **`off`** (no thinking, fastest; the upstream request is identical to what older versions sent without the parameter). Watch non-streaming requests behind a proxy with a first-byte timeout (e.g. EdgeOne free tier, 15 s).
+  - Thinking turned on by the default level is **used for generation only and never returned**: no extra `reasoning_content` / `thinking` block / thought part; the response is field-for-field identical to a no-thinking response, so strict clients do not break. Thinking content is returned only when the client **explicitly** asks for a level.
+- **Master switch** `EXTENDED_THINKING_ENABLED=false`: never think, even when a client explicitly asks (advanced/compatibility option; the panel shows it only while it is off).
+- The panel's Model Test page replaces the old "Thinking" checkbox with a **level selector** (Low / Medium / High, default Low). The chosen level is sent as `reasoning_effort` and the reasoning is shown above the answer.
+
+Level parameters per protocol (**omitted → default level, and no thinking is returned**):
+
+| Protocol | Parameter | Value → level |
+|------|------|------|
+| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`; `none` / `minimal` → low, `xhigh` → high; unrecognized values → high (no error) |
+| OpenAI `/v1/responses` | `reasoning.effort` (or top-level `reasoning_effort`) | Same as above |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`: `N<2048` → low, `2048–4095` → medium, `≥4096` → high; `{"type":"adaptive"}` or an invalid budget → high; `{"type":"disabled"}` → no thinking; an unrecognized `type` counts as not passed |
+| Gemini native `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`: `LOW` / `MEDIUM` / `HIGH` (`MINIMAL` → low, unspecified → high); `thinkingBudget`: `0` → no thinking, `-1` (automatic) → high, `>0` tiered at 2048 / 4096; when both are given `thinkingLevel` wins; thinking is returned (as a part with `"thought": true`) only with `includeThoughts: true` |
 
 ### 🔐 Security & Authentication
 
@@ -609,10 +636,11 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | Per-image download HTTP timeout (seconds) |
 | `FALLBACK_ENABLED` | ❌ | `false` | Enable Gemini → third-party fallback: when any Gemini model (flash/pro/thinking) errors or returns an empty response, automatically retry natively with a third-party model from the API Key pool |
 | `FALLBACK_MODELS` | ❌ | — | Fallback models (comma-separated, tried in order); empty = automatically use all "chat-capable" third-party models in the pool (excludes non-chat models such as image/video/audio/embedding by name) with random round-robin, switching to the next one whenever one fails (errors or empty) |
-| `EXTENDED_THINKING_ENABLED` | ❌ | `true` | Master switch for native Gemini extended thinking (when off, `reasoning_effort` has no effect on native Gemini) |
+| `DEFAULT_THINKING_LEVEL` | ❌ | `low` | Level used when the client does not specify thinking: `off` / `low` / `medium` / `high`. `low` adds about 5 s per request on average (measured), `off` is fastest; switch it live in the panel (Settings → Thinking). Thinking turned on by this default is never returned to the client |
+| `EXTENDED_THINKING_ENABLED` | ❌ | `true` | Thinking master switch (advanced/compatibility): `false` = no thinking on any of the four protocols, even when a client explicitly asks |
 | `THIRDPARTY_FAILOVER_COOLDOWN` | ❌ | `180` | Cooldown in seconds for a failing third-party provider when several share one model name (0 disables) |
 | `BARD_ERROR_CODES` | ❌ | — | Lookup table mapping the codes of reject blocks Gemini returns inside an **HTTP 200** body to a meaning, e.g. `1152=rate_limit,404=session_expired`; categories are `rate_limit` / `session_expired` / `context_too_long` / `captcha`. **While empty, every reject block is treated as unknown (cool down that account + retry on another), which is a deliberate safe fallback**; once configured, each category gets its own handling (session expiry triggers cookie self-healing, context overflow returns 400 without retrying, CAPTCHA releases that account) |
-| `GENERATE_TIMEOUTS` | ❌ | — | Per-model-family override for the non-streaming generation timeout, e.g. `pro=300,flash=120`; empty uses the built-in tiers (flash-lite 60 / flash 120 / flash-thinking 120 / pro 300, with 60 as the fallback for unrecognized families) |
+| `GENERATE_TIMEOUTS` | ❌ | — | Per-model-family override for the non-streaming generation timeout, e.g. `pro=300,flash=120`; empty uses the built-in tiers (flash-lite 60 / flash 120 / pro 300 / argon 300, with 60 as the fallback for unrecognized families) |
 | `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | Non-streaming timeout (seconds) for requests that look like image generation. Takes the **larger** of this and the model-family tier, and only applies to the non-streaming path |
 | `TOKEN_PRICES` | ❌ | — | Price table for the **estimated USD** figure on access-key usage, e.g. `gemini-pro=2.0/12.0,gemini-flash=0.75/3.75` (public model name=input/output price, USD per million tokens). Empty uses the built-in defaults; malformed entries are ignored silently and an unpriced model shows `—` in the panel. **Statistics only — it takes no part in any quota decision**, and it is not a bill (the service uses Gemini Web and costs nothing by itself) |
 
@@ -630,7 +658,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 
 5. **Network Environment**: The deployment server must have direct access to `gemini.google.com`. Some regions may need proxy configuration.
 
-6. **Non-streaming timeouts and front proxies**: non-streaming (`stream: false`) requests time out per model family — flash-lite 60s, flash and flash-thinking 120s, pro 300s (override with `GENERATE_TIMEOUTS`; requests that look like image generation use `GENERATE_TIMEOUT_IMAGE`, default 180s) — and a timeout is no longer retried three times. Note that the connection emits **zero bytes** for that entire window, so this is a **time-to-first-byte** timeout rather than an idle timeout: **a non-streaming pro request can sit silent for up to 300 seconds, which exceeds the first-byte limit of common front proxies** (15 seconds on the EdgeOne free tier, 60 seconds by default on many reverse proxies), and the client then receives the proxy's 504 instead of this service's error body. Prefer streaming requests for that scenario.
+6. **Non-streaming timeouts and front proxies**: non-streaming (`stream: false`) requests time out per model family — flash-lite 60s, flash 120s, pro and argon 300s (override with `GENERATE_TIMEOUTS`; requests that look like image generation use `GENERATE_TIMEOUT_IMAGE`, default 180s) — and a timeout is no longer retried three times. Note that the connection emits **zero bytes** for that entire window, so this is a **time-to-first-byte** timeout rather than an idle timeout: **a non-streaming pro request can sit silent for up to 300 seconds, which exceeds the first-byte limit of common front proxies** (15 seconds on the EdgeOne free tier, 60 seconds by default on many reverse proxies), and the client then receives the proxy's 504 instead of this service's error body. Prefer streaming requests for that scenario. Requests with thinking on take a few seconds longer still (the default `low` adds about 5 s per request on average, measured).
 
 ---
 

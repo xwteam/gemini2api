@@ -169,8 +169,11 @@ FALLBACK_MODELS=
 # 分类可取 rate_limit / session_expired / context_too_long / captcha
 # 留空（默认）= 所有拒绝块按未知处理：冷却该账号 + 换号重试，这是刻意的安全兜底
 BARD_ERROR_CODES=
+# 可选：客户端没指定思考参数时的默认档位 off / low / medium / high（出厂 low）。
+# low 实测每请求平均多约 5 秒；最看重速度就设 off。面板「设置 → 思考」可即时切换
+DEFAULT_THINKING_LEVEL=low
 # 可选：非流式生成超时按模型族覆盖（秒），形如 pro=300,flash=120
-# 留空 = 用内置分层：flash-lite 60 / flash 120 / flash-thinking 120 / pro 300（认不出的族回落 60）
+# 留空 = 用内置分层：flash-lite 60 / flash 120 / pro 300 / argon 300（认不出的族回落 60）
 # ⚠️ 这整段时间里连接上是零字节输出，所以它是「首字节」超时而不是空闲超时，
 #    必须小于前置代理/CDN 的首字节上限（EdgeOne 免费版 15s、不少反代默认 60s），否则
 #    客户端拿到的是代理的 504 而不是本服务的错误体

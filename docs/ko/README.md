@@ -84,8 +84,35 @@
 - SSE 스트리밍 출력(OpenAI / Claude) + Chunked JSON(Gemini)
 - 함수 호출(Function Calling) 세 가지 형식 모두 지원
 - Deep Research 다단계 심층 연구
-- **사고 단계 구분**: `reasoning_effort`의 `low` / `medium` / `high`가 각각 다른 사고 깊이로 매핑됩니다(`none` / `minimal`은 low로, `xhigh`는 high로 클램프). 이 파라미터를 보내지 않으면 동작은 이전 버전과 동일합니다
+- **사고 수준**: `low` / `medium` / `high` 3단계가 웹의 낮음 / 중간 / 높음에 대응. 클라이언트가 보내지 않으면 기본 `low`(`off`로 설정하면 가장 빠름)이며, 기본 수준으로 켠 사고는 반환하지 않습니다. 자세한 내용은 [🧠 모델과 사고 수준](#-모델과-사고-수준)
 - **첨부 파일이 있어도 진짜 스트리밍**: 이미지나 파일이 포함된 요청도 전체 생성이 끝날 때까지 기다리지 않고 첫 토큰부터 내보냅니다(도구 호출이 포함된 요청은 여전히 buffered —— 도구 인자는 완전한 JSON이어야 파싱할 수 있기 때문)
+
+### 🧠 모델과 사고 수준
+
+| 공개 모델명 | 자동으로 매핑되는 웹 모델(현재 실측) | 설명 |
+|------|------|------|
+| `gemini-pro` | 3.1 Pro | 품질 최고, 다소 느림 |
+| `gemini-flash` | 3.8 Flash | 빠름, 기본값으로 권장 |
+| `gemini-flash-lite` | 3.5 Flash-Lite | 가장 가볍고 빠름. Pro/Flash가 사용량 제한에 걸렸을 때의 대안 |
+| `gemini-argon` | 4 Argon | 복잡한 작업용. **계정이 실제로 Argon을 가진 경우에만 목록에 표시** |
+
+- **매핑은 자동입니다**: 각 계정의 하트비트가 그 계정에서 지금 실제로 쓸 수 있는 웹 모델을 알려 줍니다. 공개 이름은 바뀌지 않고, 내부적으로 웹의 현재 세대에 자동으로 맞춰집니다(Google이 세대를 바꿔도 클라이언트를 고칠 필요 없음).
+- **`gemini-flash-thinking`은 폐지되었습니다**: "flash + 사고 모드"라는 가짜 모델이었을 뿐이며, 이제 사고는 모든 모델이 가진 수준입니다(아래 참고). 기존 클라이언트 호환을 위해 `gemini-flash-thinking`, `gemini-2.5-flash-thinking`, `gemini-2.0-flash-thinking`과 내부 이름 `gemini-3-flash-thinking*`은 **계속 호출할 수 있습니다**(`gemini-flash`의 숨은 별칭). 다만 어떤 모델 목록에도 나타나지 않습니다. 사고 내용이 필요하면 수준 파라미터를 지정하세요.
+- **사고는 3단계**: `low` / `medium` / `high`, 웹의 낮음 / 중간 / 높음에 대응합니다(실측상 `high`가 가장 깊고 가장 느림. `low`와 `medium`의 차이는 실측에서 구분되지 않았습니다).
+- **기본값 `low`**: 클라이언트가 사고 파라미터를 **보내지 않으면** "기본 사고 수준"(환경 변수 `DEFAULT_THINKING_LEVEL` 또는 패널의 "설정 → 사고", 저장 즉시 적용·재시작 불필요)을 사용합니다. 출고 기본값은 `low`.
+  - ⚠️ **속도 비용**: 실측상 기본 `low`는 사고하지 않을 때보다 **요청당 평균 약 5초 더 걸립니다**(flash 간단한 질문: 6.5 / 8.8초 → 8.6 / 16.6초). 속도가 가장 중요하면 기본값을 **`off`**로 설정하세요(사고 안 함·가장 빠름. 이전 버전에서 파라미터 없이 보낼 때와 업스트림 요청이 완전히 같음). 앞단 프록시에 첫 바이트 타임아웃이 있는 경우(EdgeOne 무료 15초 등) 비스트리밍 요청에 특히 주의하세요.
+  - 기본 수준으로 켠 사고는 **생성에만 쓰이고 절대 반환되지 않습니다**: `reasoning_content` / `thinking` 블록 / 사고 part가 추가되지 않으며 사고하지 않은 응답과 필드 단위로 동일합니다(엄격한 클라이언트도 오류가 나지 않음). 클라이언트가 **명시적으로** 수준을 지정했을 때만 사고 내용을 반환합니다.
+- **마스터 스위치** `EXTENDED_THINKING_ENABLED=false`: 클라이언트가 명시적으로 요청해도 항상 사고하지 않습니다(고급·호환용. 패널에서는 꺼져 있을 때만 표시).
+- 패널의 "모델 테스트" 페이지는 기존 "사고" 체크박스 대신 **수준 선택**(낮음 / 중간 / 높음, 기본 낮음)을 사용합니다. 선택한 수준은 `reasoning_effort`로 전송되고 사고 과정은 답변 위에 표시됩니다.
+
+프로토콜별 수준 지정(**보내지 않으면 항상 기본 수준을 쓰고 사고는 반환하지 않음**):
+
+| 프로토콜 | 파라미터 | 값 → 수준 |
+|------|------|------|
+| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`. `none` / `minimal` → low, `xhigh` → high. 인식할 수 없는 값 → high(오류 없음) |
+| OpenAI `/v1/responses` | `reasoning.effort`(또는 최상위 `reasoning_effort`) | 위와 같음 |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`: `N<2048` → low, `2048–4095` → medium, `≥4096` → high. `{"type":"adaptive"}` 또는 잘못된 budget → high. `{"type":"disabled"}` → 사고 안 함. 인식할 수 없는 `type`은 보내지 않은 것으로 처리 |
+| Gemini 네이티브 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`: `LOW` / `MEDIUM` / `HIGH`(`MINIMAL` → low, 미지정 → high). `thinkingBudget`: `0` → 사고 안 함, `-1`(자동) → high, `>0`은 2048 / 4096 기준으로 구분. 둘 다 주면 `thinkingLevel` 우선. `includeThoughts: true`일 때만 응답에서 사고를 반환(`"thought": true` part) |
 
 ### 🔐 보안 및 인증
 
@@ -485,10 +512,11 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 단일 이미지 다운로드 HTTP 타임아웃(초) |
 | `FALLBACK_ENABLED` | ❌ | `false` | Gemini→타사 폴백 활성화: 임의의 Gemini 모델(flash/pro/thinking)이 오류를 내거나 빈 응답을 반환하면 API Key 풀의 타사 모델로 자동 전환하여 "네이티브 재시도" |
 | `FALLBACK_MODELS` | ❌ | — | 폴백 모델(쉼표 구분, 순서대로 시도); 비워두면 풀에서 "채팅에 적합한" 모든 타사 모델을 자동 선택(이름으로 image/video/audio/embedding 등 비채팅 모델 제외)하여 무작위 로테이션, 하나가 실패(오류/빈 응답)하면 다음으로 전환 |
-| `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 네이티브 Gemini 확장 사고 마스터 스위치(끄면 `reasoning_effort`가 적용되지 않음) |
+| `DEFAULT_THINKING_LEVEL` | ❌ | `low` | 클라이언트가 사고를 지정하지 않을 때의 수준: `off` / `low` / `medium` / `high`. `low`는 실측상 요청당 평균 약 5초 더 걸리고 `off`가 가장 빠름. 패널 "설정 → 사고"에서 즉시 전환 가능. 기본 수준으로 켠 사고는 클라이언트에 반환하지 않음 |
+| `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 사고 마스터 스위치(고급·호환용): `false` = 네 프로토콜 모두 사고 안 함. 클라이언트가 명시적으로 요청해도 무시 |
 | `THIRDPARTY_FAILOVER_COOLDOWN` | ❌ | `180` | 동일 모델명을 공유하는 서드파티 간 장애 조치 시 실패한 제공자의 쿨다운(초, 0이면 비활성화) |
 | `BARD_ERROR_CODES` | ❌ | — | Gemini가 **HTTP 200** 본문으로 반환하는 거부 블록의 code→의미 대조표. `1152=rate_limit,404=session_expired` 형식이며 분류는 `rate_limit` / `session_expired` / `context_too_long` / `captcha`. **비워두면 모든 거부 블록을 알 수 없는 것으로 처리합니다(해당 계정 쿨다운 + 다른 계정으로 재시도). 이는 의도된 안전 폴백입니다**. 설정하면 분류별 전용 처리가 활성화됩니다(세션 만료는 쿠키 자가 복구 유발, 컨텍스트 초과는 400 반환 후 재시도하지 않음, CAPTCHA는 해당 계정을 내놓음) |
-| `GENERATE_TIMEOUTS` | ❌ | — | 비스트리밍 생성 타임아웃을 모델 패밀리 단위로 재정의. `pro=300,flash=120` 형식. 비워두면 내장 단계 설정 사용(flash-lite 60 / flash 120 / flash-thinking 120 / pro 300, 인식되지 않는 패밀리는 60으로 폴백) |
+| `GENERATE_TIMEOUTS` | ❌ | — | 비스트리밍 생성 타임아웃을 모델 패밀리 단위로 재정의. `pro=300,flash=120` 형식. 비워두면 내장 단계 설정 사용(flash-lite 60 / flash 120 / pro 300 / argon 300, 인식되지 않는 패밀리는 60으로 폴백) |
 | `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 이미지 생성으로 추정되는 요청의 비스트리밍 타임아웃(초). 모델 패밀리 값과 비교해 **더 큰 쪽**을 채택하고, 비스트리밍 경로에만 적용됩니다 |
 | `TOKEN_PRICES` | ❌ | — | 액세스 키 사용량의 **추정 USD** 가격표. 예: `gemini-pro=2.0/12.0,gemini-flash=0.75/3.75`(공개 모델명=입력가/출력가, 단위 USD／100만 토큰). 비우면 내장 기본값을 사용하며, 형식이 잘못된 항목은 조용히 무시하고 가격이 없는 모델은 패널에 `—`로 표시됩니다. **통계 전용이며 어떤 한도 판정에도 쓰이지 않습니다.** 또한 청구액이 아닙니다(본 서비스는 Gemini 웹을 사용하므로 자체 비용이 없습니다) |
 
@@ -506,7 +534,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 
 5. **네트워크 환경**: 배포 서버는 `gemini.google.com`에 직접 액세스할 수 있어야 하며, 일부 지역에서는 프록시 구성이 필요할 수 있습니다.
 
-6. **비스트리밍 타임아웃과 앞단 프록시**: 비스트리밍(`stream: false`) 요청의 타임아웃은 모델 패밀리 단위로 구분됩니다 —— flash-lite 60초, flash와 flash-thinking 120초, pro 300초(`GENERATE_TIMEOUTS`로 재정의 가능. 이미지 생성으로 추정되면 `GENERATE_TIMEOUT_IMAGE`, 기본 180초). 또한 타임아웃은 더 이상 3번 재시도하지 않습니다. 이 구간 내내 연결에는 **0바이트**가 흐른다는 점에 주의하세요. 즉 유휴 타임아웃이 아니라 **첫 바이트까지**의 타임아웃입니다: **pro 비스트리밍은 최대 300초를 무응답으로 기다리게 되어 흔한 앞단 프록시의 첫 바이트 한도를 넘깁니다**(EdgeOne 무료 버전 15초, 많은 리버스 프록시의 기본값 60초). 그러면 클라이언트가 받는 것은 이 서비스의 오류 본문이 아니라 프록시의 504입니다. 이런 상황에서는 스트리밍 요청을 권장합니다.
+6. **비스트리밍 타임아웃과 앞단 프록시**: 비스트리밍(`stream: false`) 요청의 타임아웃은 모델 패밀리 단위로 구분됩니다 —— flash-lite 60초, flash 120초, pro와 argon 300초(`GENERATE_TIMEOUTS`로 재정의 가능. 이미지 생성으로 추정되면 `GENERATE_TIMEOUT_IMAGE`, 기본 180초). 또한 타임아웃은 더 이상 3번 재시도하지 않습니다. 이 구간 내내 연결에는 **0바이트**가 흐른다는 점에 주의하세요. 즉 유휴 타임아웃이 아니라 **첫 바이트까지**의 타임아웃입니다: **pro 비스트리밍은 최대 300초를 무응답으로 기다리게 되어 흔한 앞단 프록시의 첫 바이트 한도를 넘깁니다**(EdgeOne 무료 버전 15초, 많은 리버스 프록시의 기본값 60초). 그러면 클라이언트가 받는 것은 이 서비스의 오류 본문이 아니라 프록시의 504입니다. 이런 상황에서는 스트리밍 요청을 권장합니다. 사고를 켠 요청은 몇 초 더 걸립니다(기본 `low`는 실측상 요청당 평균 약 5초 증가).
 
 ---
 

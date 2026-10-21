@@ -85,8 +85,35 @@
 - SSE 流式輸出（OpenAI / Claude）+ Chunked JSON（Gemini）
 - 函數呼叫（Function Calling）三種格式均支援
 - Deep Research 多步驟深度研究
-- **思考檔位分級**：`reasoning_effort` 的 `low` / `medium` / `high` 分別對應到不同的思考深度（`none` / `minimal` 歸 low，`xhigh` 歸 high）；不傳該參數時行為與舊版一致
+- **思考檔位**：`low` / `medium` / `high` 三檔對應網頁的低 / 中 / 高，客戶端不傳時預設 `low`（可設 `off` 換最快），依預設檔開的思考不回傳；詳見 [🧠 模型與思考檔位](#-模型與思考檔位)
 - **帶附件也走真流式**：帶圖片／檔案的請求不再等全文生成完才吐出第一個字（帶工具呼叫的仍為 buffered —— 工具參數必須是完整 JSON 才能解析）
+
+### 🧠 模型與思考檔位
+
+| 對外模型名 | 自動對應到網頁上的模型（目前實測） | 說明 |
+|------|------|------|
+| `gemini-pro` | 3.1 Pro | 品質最高、較慢 |
+| `gemini-flash` | 3.8 Flash | 快，建議作為預設 |
+| `gemini-flash-lite` | 3.5 Flash-Lite | 最輕最快，Pro/Flash 被限額時的備援 |
+| `gemini-argon` | 4 Argon | 面向複雜任務；**帳號真的有 Argon 時才會列出** |
+
+- **對應是自動的**：每個帳號的心跳會回報它目前真實可用的網頁模型，對外名字固定不變、內部自動對上網頁目前的那一代（Google 換代時不用改客戶端）。
+- **`gemini-flash-thinking` 已下線**：它只是「flash + 思考模式」的假模型，思考現在是每個模型都有的檔位（見下）。為相容舊客戶端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及內部名 `gemini-3-flash-thinking*` **仍然可以呼叫**（隱藏別名，等同 `gemini-flash`），只是不再出現在任何模型清單裡；想要思考內容請改傳檔位參數。
+- **思考三檔**：`low` / `medium` / `high`，對應網頁上的低 / 中 / 高三檔（實測 `high` 想得最深、也最慢；`low` 與 `medium` 的差別在實測裡分不太開）。
+- **預設檔 `low`**：客戶端**沒傳**思考參數時，使用「預設思考檔位」（環境變數 `DEFAULT_THINKING_LEVEL`，或面板「設定 → 思考」，儲存即時生效、無需重啟），出廠 `low`。
+  - ⚠️ **速度代價**：實測預設 `low` 比不思考**平均每個請求多約 5 秒**（flash 簡單題 6.5 / 8.8 秒 → 8.6 / 16.6 秒）。最重視速度就把預設檔設成 **`off`**（不思考、最快，與舊版不傳參數時送往上游的請求完全一樣）。前置代理有首位元組逾時的（如 EdgeOne 免費版 15 秒）尤其要留意非流式請求。
+  - 依預設檔替客戶端開的思考**只用於生成，絕不回傳**：回應裡不會多出 `reasoning_content` / `thinking` 區塊 / 思考 part，結構與不思考時逐欄位一致（嚴格校驗的客戶端不會因此報錯）。客戶端**明確傳了**檔位才回傳思考內容。
+- **總開關** `EXTENDED_THINKING_ENABLED=false`：一律不思考，連客戶端明確要求的思考也忽略（進階/相容項，一般不用碰；面板上只在它被關閉時才顯示）。
+- 面板「模型測試」頁改用**檔位選擇**（低 / 中 / 高，預設低）取代原本的「思考」勾選框，所選檔位以 `reasoning_effort` 送出，思考過程顯示在回答上方。
+
+各協議的檔位寫法（**不傳則一律使用預設檔、且不回傳思考**）：
+
+| 協議 | 參數 | 取值 → 檔位 |
+|------|------|------|
+| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`；`none` / `minimal` → low，`xhigh` → high；認不出的值 → high（不報錯） |
+| OpenAI `/v1/responses` | `reasoning.effort`（或頂層 `reasoning_effort`） | 同上 |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low，`2048–4095` → medium，`≥4096` → high；`{"type":"adaptive"}` 或 budget 無效 → high；`{"type":"disabled"}` → 不思考；認不出的 `type` 視同沒傳 |
+| Gemini 原生 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low，未指定 → high）；`thinkingBudget`：`0` → 不思考，`-1`（自動）→ high，`>0` 按 2048 / 4096 切點分檔；兩者都給時以 `thinkingLevel` 為準；`includeThoughts: true` 才在回應裡回傳思考（`"thought": true` 的 part） |
 
 ### 🔐 安全與認證
 
@@ -607,10 +634,11 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 單次圖片下載 HTTP 超時（秒） |
 | `FALLBACK_ENABLED` | ❌ | `false` | 啟用 Gemini→第三方兜底：任意 Gemini 模型（flash/pro/thinking）報錯或回傳空回應時，自動改用 API Key 池中的第三方模型「原生重試」 |
 | `FALLBACK_MODELS` | ❌ | — | 兜底模型（逗號分隔、按序嘗試）；留空＝自動選用池中所有「適合聊天」的第三方（按名稱排除 image/video/audio/embedding 等非聊天模型）並隨機輪詢、一個失敗（報錯/空）就換下一個 |
-| `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 原生 Gemini 擴充思考總開關（關閉後 `reasoning_effort` 對原生 Gemini 無效） |
+| `DEFAULT_THINKING_LEVEL` | ❌ | `low` | 客戶端沒指定思考參數時使用的檔位：`off` / `low` / `medium` / `high`。`low` 實測每請求平均多約 5 秒，`off` 最快；面板「設定 → 思考」可即時切換。依預設檔開的思考不回傳給客戶端 |
+| `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 思考總開關（進階/相容項）：`false` = 四個協議一律不思考，連客戶端明確要求的也忽略 |
 | `THIRDPARTY_FAILOVER_COOLDOWN` | ❌ | `180` | 第三方「同名多家」故障切換的壞家冷卻秒數（0 關閉） |
 | `BARD_ERROR_CODES` | ❌ | — | Gemini 在 **HTTP 200** 內文裡回傳的拒絕區塊的 code→語意對照表，形如 `1152=rate_limit,404=session_expired`，分類可取 `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**留空時所有拒絕區塊按未知處理（冷卻該帳號 + 換帳號重試），這是刻意的安全兜底**；設定之後各類才有專門處理（工作階段過期觸發 Cookie 自癒、上下文超長直接回 400 不重試、人機驗證讓出該帳號） |
-| `GENERATE_TIMEOUTS` | ❌ | — | 非流式生成超時按模型族覆寫，形如 `pro=300,flash=120`；留空用內建分層（flash-lite 60 / flash 120 / flash-thinking 120 / pro 300，認不出的族回落 60） |
+| `GENERATE_TIMEOUTS` | ❌ | — | 非流式生成超時按模型族覆寫，形如 `pro=300,flash=120`；留空用內建分層（flash-lite 60 / flash 120 / pro 300 / argon 300，認不出的族回落 60） |
 | `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 疑似生圖請求的非流式超時（秒）。與模型族檔位**取大**，只作用於非流式路徑 |
 | `TOKEN_PRICES` | ❌ | — | 存取金鑰用量的**美元估算**價格表，形如 `gemini-pro=2.0/12.0,gemini-flash=0.75/3.75`（公開模型名=輸入價/輸出價，單位 USD／百萬 token）。留空用內建預設值；寫錯的條目靜默忽略，配不到價格的模型面板顯示 `—`。**只統計、不參與任何限額判定**，且不是帳單（本服務走網頁版、本身不花錢） |
 
@@ -628,7 +656,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 
 5. **網路環境**：部署服務器需能直接存取 `gemini.google.com`，部分地區可能需要設定代理。
 
-6. **非流式超時與前置代理**：非流式（`stream: false`）請求的超時按模型族分層——flash-lite 60 秒、flash 與 flash-thinking 120 秒、pro 300 秒（可用 `GENERATE_TIMEOUTS` 覆寫；疑似生圖取 `GENERATE_TIMEOUT_IMAGE`，預設 180 秒），超時也不再重試三遍。注意這整段時間裡連線上是**零位元組輸出**，所以它是**首位元組**超時而不是閒置超時：**pro 非流式最長要乾等 300 秒，會超過常見前置代理的首位元組上限**（EdgeOne 免費版 15 秒，不少反向代理預設 60 秒），用戶端拿到的將是代理的 504 而不是本服務的錯誤內文。這類場景建議直接用流式請求。
+6. **非流式超時與前置代理**：非流式（`stream: false`）請求的超時按模型族分層——flash-lite 60 秒、flash 120 秒、pro 與 argon 300 秒（可用 `GENERATE_TIMEOUTS` 覆寫；疑似生圖取 `GENERATE_TIMEOUT_IMAGE`，預設 180 秒），超時也不再重試三遍。注意這整段時間裡連線上是**零位元組輸出**，所以它是**首位元組**超時而不是閒置超時：**pro 非流式最長要乾等 300 秒，會超過常見前置代理的首位元組上限**（EdgeOne 免費版 15 秒，不少反向代理預設 60 秒），用戶端拿到的將是代理的 504 而不是本服務的錯誤內文。這類場景建議直接用流式請求。 開了思考的請求還要再多幾秒（預設 `low` 實測平均每請求多約 5 秒）。
 
 ---
 

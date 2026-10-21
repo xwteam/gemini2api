@@ -63,6 +63,33 @@ v1.6.4부터 각 API는 두 가지 경로 형식을 지원합니다:
 > [!IMPORTANT]
 > 베어 `/v1/models`는 OpenAI 형식을 반환합니다(하나의 경로로 두 형식을 반환할 수 없음). Claude 형식 모델 목록이 필요하면 `/claude/v1/models`를 사용하세요.
 
+## 🧠 모델과 사고 수준
+
+| 공개 모델명 | 자동으로 매핑되는 웹 모델(현재 실측) | 설명 |
+|------|------|------|
+| `gemini-pro` | 3.1 Pro | 품질 최고, 다소 느림 |
+| `gemini-flash` | 3.8 Flash | 빠름, 기본값으로 권장 |
+| `gemini-flash-lite` | 3.5 Flash-Lite | 가장 가볍고 빠름. Pro/Flash가 사용량 제한에 걸렸을 때의 대안 |
+| `gemini-argon` | 4 Argon | 복잡한 작업용. **계정이 실제로 Argon을 가진 경우에만 목록에 표시** |
+
+- **매핑은 자동입니다**: 각 계정의 하트비트가 그 계정에서 지금 실제로 쓸 수 있는 웹 모델을 알려 줍니다. 공개 이름은 바뀌지 않고, 내부적으로 웹의 현재 세대에 자동으로 맞춰집니다(Google이 세대를 바꿔도 클라이언트를 고칠 필요 없음).
+- **`gemini-flash-thinking`은 폐지되었습니다**: "flash + 사고 모드"라는 가짜 모델이었을 뿐이며, 이제 사고는 모든 모델이 가진 수준입니다(아래 참고). 기존 클라이언트 호환을 위해 `gemini-flash-thinking`, `gemini-2.5-flash-thinking`, `gemini-2.0-flash-thinking`과 내부 이름 `gemini-3-flash-thinking*`은 **계속 호출할 수 있습니다**(`gemini-flash`의 숨은 별칭). 다만 어떤 모델 목록에도 나타나지 않습니다. 사고 내용이 필요하면 수준 파라미터를 지정하세요.
+- **사고는 3단계**: `low` / `medium` / `high`, 웹의 낮음 / 중간 / 높음에 대응합니다(실측상 `high`가 가장 깊고 가장 느림. `low`와 `medium`의 차이는 실측에서 구분되지 않았습니다).
+- **기본값 `low`**: 클라이언트가 사고 파라미터를 **보내지 않으면** "기본 사고 수준"(환경 변수 `DEFAULT_THINKING_LEVEL` 또는 패널의 "설정 → 사고", 저장 즉시 적용·재시작 불필요)을 사용합니다. 출고 기본값은 `low`.
+  - ⚠️ **속도 비용**: 실측상 기본 `low`는 사고하지 않을 때보다 **요청당 평균 약 5초 더 걸립니다**(flash 간단한 질문: 6.5 / 8.8초 → 8.6 / 16.6초). 속도가 가장 중요하면 기본값을 **`off`**로 설정하세요(사고 안 함·가장 빠름. 이전 버전에서 파라미터 없이 보낼 때와 업스트림 요청이 완전히 같음). 앞단 프록시에 첫 바이트 타임아웃이 있는 경우(EdgeOne 무료 15초 등) 비스트리밍 요청에 특히 주의하세요.
+  - 기본 수준으로 켠 사고는 **생성에만 쓰이고 절대 반환되지 않습니다**: `reasoning_content` / `thinking` 블록 / 사고 part가 추가되지 않으며 사고하지 않은 응답과 필드 단위로 동일합니다(엄격한 클라이언트도 오류가 나지 않음). 클라이언트가 **명시적으로** 수준을 지정했을 때만 사고 내용을 반환합니다.
+- **마스터 스위치** `EXTENDED_THINKING_ENABLED=false`: 클라이언트가 명시적으로 요청해도 항상 사고하지 않습니다(고급·호환용. 패널에서는 꺼져 있을 때만 표시).
+- 패널의 "모델 테스트" 페이지는 기존 "사고" 체크박스 대신 **수준 선택**(낮음 / 중간 / 높음, 기본 낮음)을 사용합니다. 선택한 수준은 `reasoning_effort`로 전송되고 사고 과정은 답변 위에 표시됩니다.
+
+프로토콜별 수준 지정(**보내지 않으면 항상 기본 수준을 쓰고 사고는 반환하지 않음**):
+
+| 프로토콜 | 파라미터 | 값 → 수준 |
+|------|------|------|
+| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`. `none` / `minimal` → low, `xhigh` → high. 인식할 수 없는 값 → high(오류 없음) |
+| OpenAI `/v1/responses` | `reasoning.effort`(또는 최상위 `reasoning_effort`) | 위와 같음 |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`: `N<2048` → low, `2048–4095` → medium, `≥4096` → high. `{"type":"adaptive"}` 또는 잘못된 budget → high. `{"type":"disabled"}` → 사고 안 함. 인식할 수 없는 `type`은 보내지 않은 것으로 처리 |
+| Gemini 네이티브 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`: `LOW` / `MEDIUM` / `HIGH`(`MINIMAL` → low, 미지정 → high). `thinkingBudget`: `0` → 사고 안 함, `-1`(자동) → high, `>0`은 2048 / 4096 기준으로 구분. 둘 다 주면 `thinkingLevel` 우선. `includeThoughts: true`일 때만 응답에서 사고를 반환(`"thought": true` part) |
+
 ## OpenAI 호환 API
 
 ### POST /openai/v1/chat/completions
@@ -209,13 +236,13 @@ curl http://localhost:5918/openai/v1/models \
       "owned_by": "google"
     },
     {
-      "id": "gemini-flash-thinking",
+      "id": "gemini-flash-lite",
       "object": "model",
       "created": 1234567890,
       "owned_by": "google"
     },
     {
-      "id": "gemini-flash-lite",
+      "id": "gemini-argon",
       "object": "model",
       "created": 1234567890,
       "owned_by": "google"
@@ -226,7 +253,7 @@ curl http://localhost:5918/openai/v1/models \
 
 > 💡 **모델 선택 가이드**: 네 가지 모델은 서로 다른 속도/품질 트레이드오프를 제공합니다.
 > - `gemini-flash`: 가장 빠름(응답 약 4-5초), **agent / 고빈도 / 고동시성** 시나리오에 적합, 기본 선택으로 권장.
-> - `gemini-flash-thinking`: 사고 과정 포함, 속도는 flash에 근접, 추론이 필요한 작업에 적합.
+> - `gemini-argon`: 4 Argon, 복잡한 작업용. 계정이 실제로 Argon을 가진 경우에만 목록에 표시됩니다.
 > - `gemini-flash-lite`: 가장 가볍고 빠른 등급(3.5 Flash-Lite), Pro/Flash가 사용량 제한에 걸렸을 때 사용 가능한 대체 옵션.
 > - `gemini-pro`: 최고 품질이지만 느림(응답 약 9-17초, 긴 컨텍스트에서 더 느림), 품질 중시하고 지연 시간을 신경 쓰지 않는 시나리오에 적합.
 >
@@ -469,15 +496,15 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 
 | 파라미터 | 타입 | 필수 | 설명 |
 |---------|------|------|------|
-| `thinking` | object | ❌ | 확장 사고를 켭니다. **이 파라미터를 보내지 않으면 동작은 이전과 완전히 동일합니다** |
+| `thinking` | object | ❌ | 사고 수준을 지정합니다. **보내지 않으면 업스트림은 "기본 사고 수준"(출고 기본값 `low`)으로 사고하지만, 응답에는 `thinking` 블록을 절대 넣지 않으며 이전과 완전히 동일합니다** |
 
 - `{"type":"enabled","budget_tokens":N}`: 켜기. `N`은 `<2048` / `2048–4095` / `>=4096` 기준으로 낮음／중간／높음 3단계에 대응합니다.
-- `{"type":"adaptive"}`: 켜기, 기본 단계(OpenAI 호환에서 `reasoning_effort`를 보내지 않을 때와 같은 단계).
-- `{"type":"disabled"}` / `{"type":"between_tools"}`: 사고하지 않음. 파라미터를 보내지 않은 것과 완전히 동일합니다.
+- `{"type":"adaptive"}`: 켜기, high 단계(이전과 동일. `budget_tokens`가 없거나 잘못된 경우도 같음).
+- `{"type":"disabled"}` / `{"type":"between_tools"}`: 사고하지 않음(명시적 끄기. 기본 수준이 적용되지 않음).
 
 사고 내용은 Anthropic 규격의 `thinking` 콘텐츠 블록으로, `text` / `tool_use` 블록**앞에** 반환됩니다. 스트리밍에서는 `content_block_start(thinking)` → `thinking_delta` → `content_block_stop` 순서입니다.
 
-⚠️ **`signature`는 포함하지 않습니다**(유효한 서명을 만들 수 없기 때문입니다. 빈 문자열이나 임의의 서명을 넣는 것이 더 위험합니다 — 클라이언트가 실제 API로 되돌려 보내면 400). **단계와 웹 측 사고 깊이의 대응 관계는 실제 계정에서 아직 검증되지 않았습니다.** `EXTENDED_THINKING_ENABLED=false`이면 `thinking`을 보내도 사고 경로를 사용하지 않습니다.
+⚠️ **`signature`는 포함하지 않습니다**(유효한 서명을 만들 수 없기 때문입니다. 빈 문자열이나 임의의 서명을 넣는 것이 더 위험합니다 — 클라이언트가 실제 API로 되돌려 보내면 400). 단계는 웹의 낮음 / 중간 / 높음에 대응합니다(실제 계정 측정에서 high가 가장 깊음. low와 medium은 구분되지 않았습니다). `EXTENDED_THINKING_ENABLED=false`이면 `thinking`을 보내도 사고 경로를 사용하지 않습니다.
 
 ⚠️ **본문이 시작된 뒤에 도착한 사고 증분은 버려집니다**(스트리밍): Anthropic 블록 순서상 `text` 블록 뒤에 `thinking` 블록을 열거나 이어 붙일 수 없습니다(잃어버린 문자 수는 WARNING으로 기록됩니다). 완전한 사고 체인이 필요하면 블록 순서 제약이 없는 OpenAI 프로토콜의 `reasoning_content`를 사용하세요. 본문은 항상 완전합니다. `thinking`이 객체가 아니면 **보내지 않은 것**으로 처리하고 200을 반환합니다.
 
@@ -1382,8 +1409,8 @@ console.log(data.choices[0].message.content);
 |------|------|
 | flash-lite | 60초 |
 | flash | 120초 |
-| flash-thinking | 120초 |
 | pro | 300초 |
+| argon | 300초 |
 | 인식되지 않는 패밀리 | 60초 |
 
 이미지 생성으로 추정되는 요청은 위 값과 `GENERATE_TIMEOUT_IMAGE`(기본 180초) 중 **더 큰 쪽**을 채택합니다. 타임아웃은 더 이상 3번 재시도하지 않습니다 —— 실패는 실패입니다.

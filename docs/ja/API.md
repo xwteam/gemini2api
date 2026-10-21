@@ -55,6 +55,33 @@ v1.6.4 以降、各 API は 2 種類のパスに対応しています。
 
 > **重要**: ベアパス `/v1/models` は OpenAI 形式を返します（1 つのパスで 2 つの形式は返せません）。Claude 形式のモデル一覧が必要な場合は `/claude/v1/models` を使用してください。
 
+## 🧠 モデルと思考レベル
+
+| 公開モデル名 | 自動でマッピングされる Web 版のモデル（現時点の実測） | 説明 |
+|------|------|------|
+| `gemini-pro` | 3.1 Pro | 最高品質、やや遅い |
+| `gemini-flash` | 3.8 Flash | 高速。既定としておすすめ |
+| `gemini-flash-lite` | 3.5 Flash-Lite | 最軽量・最速。Pro/Flash がレート制限されたときの代替 |
+| `gemini-argon` | 4 Argon | 複雑なタスク向け。**アカウントが実際に Argon を持つ場合のみ一覧に出ます** |
+
+- **マッピングは自動です**：各アカウントのハートビートが、そのアカウントで今実際に使える Web 版モデルを報告します。公開名は変わらず、内部では Web 版の現行世代に自動で追従します（Google が世代交代してもクライアントの変更は不要）。
+- **`gemini-flash-thinking` は廃止しました**：これは「flash + 思考モード」という見せかけのモデルにすぎず、思考は今やすべてのモデルが持つレベルになりました（下記）。旧クライアント互換のため、`gemini-flash-thinking`・`gemini-2.5-flash-thinking`・`gemini-2.0-flash-thinking` と内部名 `gemini-3-flash-thinking*` は**引き続き呼び出せます**（`gemini-flash` の隠しエイリアス）。ただしどのモデル一覧にも出ません。思考内容が必要な場合はレベルパラメータを指定してください。
+- **思考は 3 段階**：`low` / `medium` / `high`。Web 版の低 / 中 / 高に対応します（実測では `high` が最も深く最も遅い。`low` と `medium` の差は実測では見分けられませんでした）。
+- **既定は `low`**：クライアントが思考パラメータを**指定しない**場合は「既定の思考レベル」（環境変数 `DEFAULT_THINKING_LEVEL`、またはパネルの「設定 → 思考」。保存すると即時反映、再起動不要）を使います。出荷時は `low`。
+  - ⚠️ **速度のコスト**：実測では既定の `low` は思考なしより**1 リクエストあたり平均約 5 秒遅く**なります（flash の簡単な質問：6.5 / 8.8 秒 → 8.6 / 16.6 秒）。速度を最優先するなら既定を **`off`** にしてください（思考なし・最速。旧版でパラメータを付けなかったときと上流へのリクエストが完全に同じ）。前段プロキシに初回バイトのタイムアウトがある場合（EdgeOne 無料版の 15 秒など）は非ストリーミングリクエストに特に注意してください。
+  - 既定レベルで有効にした思考は**生成にのみ使い、決して返しません**：`reasoning_content` / `thinking` ブロック / 思考 part は追加されず、思考なしのレスポンスとフィールド単位で同一です（厳格なクライアントもエラーになりません）。クライアントが**明示的に**レベルを指定したときだけ思考内容を返します。
+- **マスタースイッチ** `EXTENDED_THINKING_ENABLED=false`：クライアントが明示的に要求しても常に思考しません（上級者向け・互換用。パネルではオフのときだけ表示）。
+- パネルの「モデルテスト」ページは、従来の「思考」チェックボックスの代わりに**レベル選択**（低 / 中 / 高、既定は低）になりました。選んだレベルは `reasoning_effort` として送られ、思考過程は回答の上に表示されます。
+
+プロトコルごとのレベル指定（**指定しなければ常に既定レベルを使い、思考は返しません**）：
+
+| プロトコル | パラメータ | 値 → レベル |
+|------|------|------|
+| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`。`none` / `minimal` → low、`xhigh` → high。認識できない値 → high（エラーにしません） |
+| OpenAI `/v1/responses` | `reasoning.effort`（またはトップレベルの `reasoning_effort`） | 同上 |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low、`2048–4095` → medium、`≥4096` → high。`{"type":"adaptive"}` または無効な budget → high。`{"type":"disabled"}` → 思考なし。認識できない `type` は未指定と同じ扱い |
+| Gemini ネイティブ `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low、未指定 → high）。`thinkingBudget`：`0` → 思考なし、`-1`（自動）→ high、`>0` は 2048 / 4096 を境に段階分け。両方指定した場合は `thinkingLevel` を優先。`includeThoughts: true` のときだけ思考をレスポンスで返します（`"thought": true` の part） |
+
 ## OpenAI 互換 API
 
 OpenAI SDK と互換性のあるエンドポイントです。
@@ -89,13 +116,13 @@ curl http://localhost:5918/openai/v1/models \
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash-thinking",
+      "id": "gemini-flash-lite",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash-lite",
+      "id": "gemini-argon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
@@ -106,7 +133,7 @@ curl http://localhost:5918/openai/v1/models \
 
 > 💡 **モデル選択ガイド**：4つのモデルは異なる速度/品質のトレードオフを提供します。
 > - `gemini-flash`：最速(応答約4-5秒)、**agent / 高頻度 / 高並行**シナリオに最適、デフォルト推奨。
-> - `gemini-flash-thinking`：思考プロセス付き、速度はflashに近く、推論が必要なタスクに適しています。
+> - `gemini-argon`：4 Argon。複雑なタスク向けで、アカウントが実際に Argon を持つ場合のみ一覧に出ます。
 > - `gemini-flash-lite`：最軽量・最速のティア（3.5 Flash-Lite）。Pro/Flash がレート制限に達したときの利用可能なフォールバック。
 > - `gemini-pro`：最高品質だが遅い(応答約9-17秒、長いコンテキストではさらに遅い)、品質重視でレイテンシを気にしないシナリオに適しています。
 >
@@ -476,15 +503,15 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|-----|------|------|
-| `thinking` | object | ❌ | 拡張思考を有効にします。**このパラメータを送らない場合の挙動は従来と完全に同一です** |
+| `thinking` | object | ❌ | 思考レベルを指定します。**送らない場合、上流は「既定の思考レベル」（出荷時 `low`）で思考しますが、レスポンスに `thinking` ブロックは決して含めず、従来と完全に同一です** |
 
 - `{"type":"enabled","budget_tokens":N}`：有効。`N` は `<2048` / `2048–4095` / `>=4096` で低／中／高の 3 段階に対応します。
-- `{"type":"adaptive"}`：有効、デフォルト段階（OpenAI 互換で `reasoning_effort` を送らない場合と同じ段階）。
-- `{"type":"disabled"}` / `{"type":"between_tools"}`：思考しません。パラメータを送らない場合と完全に同一です。
+- `{"type":"adaptive"}`：有効、high 段階（従来と同じ。`budget_tokens` がない／無効な場合も同様）。
+- `{"type":"disabled"}` / `{"type":"between_tools"}`：思考しません（明示的なオフ。既定レベルは適用されません）。
 
 思考内容は Anthropic 仕様の `thinking` コンテンツブロックとして、`text` / `tool_use` ブロックの**前に**返します。ストリーミングでは `content_block_start(thinking)` → `thinking_delta` → `content_block_stop` です。
 
-⚠️ **`signature` は付きません**（有効な署名を生成できないため。空文字や自作の署名を付けるのはより危険で、クライアントが本物の API に送り返すと 400 になります）。**段階と Web 側の思考の深さの対応は実機未検証です。** `EXTENDED_THINKING_ENABLED=false` の場合、`thinking` を送っても思考パスは使われません。
+⚠️ **`signature` は付きません**（有効な署名を生成できないため。空文字や自作の署名を付けるのはより危険で、クライアントが本物の API に送り返すと 400 になります）。段階は Web 版の低 / 中 / 高に対応します（実機計測で high が最も深い。low と medium は見分けられませんでした）。 `EXTENDED_THINKING_ENABLED=false` の場合、`thinking` を送っても思考パスは使われません。
 
 ⚠️ **本文が始まった後に届いた思考の増分は破棄されます**（ストリーミング）：Anthropic のブロック順序では `text` ブロックの後に `thinking` ブロックを開く／続けることができません（失われた文字数は WARNING に記録されます）。完全な思考チェーンが必要な場合は、ブロック順序の制約がない OpenAI プロトコルの `reasoning_content` を使ってください。本文は常に完全です。`thinking` がオブジェクト以外の場合は**未指定**として扱い、200 を返します。
 
@@ -1343,8 +1370,8 @@ X-RateLimit-Reset: 1715970060
 |------|------|
 | flash-lite | 60 秒 |
 | flash | 120 秒 |
-| flash-thinking | 120 秒 |
 | pro | 300 秒 |
+| argon | 300 秒 |
 | 認識できないファミリー | 60 秒 |
 
 画像生成と推定されるリクエストは、上記の値と `GENERATE_TIMEOUT_IMAGE`（デフォルト 180 秒）のうち**大きい方**を採用します。タイムアウトは 3 回リトライしなくなりました —— 失敗は失敗です。

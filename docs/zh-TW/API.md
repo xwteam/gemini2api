@@ -45,6 +45,33 @@ curl -H "x-api-key: sk-your-api-key" http://localhost:5918/...
 
 > **重要：** 裸 `/v1/models` 回傳 OpenAI 格式（同一路徑無法同時回傳兩種格式）；需要 Claude 格式的模型列表請用 `/claude/v1/models`。
 
+## 🧠 模型與思考檔位
+
+| 對外模型名 | 自動對應到網頁上的模型（目前實測） | 說明 |
+|------|------|------|
+| `gemini-pro` | 3.1 Pro | 品質最高、較慢 |
+| `gemini-flash` | 3.8 Flash | 快，建議作為預設 |
+| `gemini-flash-lite` | 3.5 Flash-Lite | 最輕最快，Pro/Flash 被限額時的備援 |
+| `gemini-argon` | 4 Argon | 面向複雜任務；**帳號真的有 Argon 時才會列出** |
+
+- **對應是自動的**：每個帳號的心跳會回報它目前真實可用的網頁模型，對外名字固定不變、內部自動對上網頁目前的那一代（Google 換代時不用改客戶端）。
+- **`gemini-flash-thinking` 已下線**：它只是「flash + 思考模式」的假模型，思考現在是每個模型都有的檔位（見下）。為相容舊客戶端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及內部名 `gemini-3-flash-thinking*` **仍然可以呼叫**（隱藏別名，等同 `gemini-flash`），只是不再出現在任何模型清單裡；想要思考內容請改傳檔位參數。
+- **思考三檔**：`low` / `medium` / `high`，對應網頁上的低 / 中 / 高三檔（實測 `high` 想得最深、也最慢；`low` 與 `medium` 的差別在實測裡分不太開）。
+- **預設檔 `low`**：客戶端**沒傳**思考參數時，使用「預設思考檔位」（環境變數 `DEFAULT_THINKING_LEVEL`，或面板「設定 → 思考」，儲存即時生效、無需重啟），出廠 `low`。
+  - ⚠️ **速度代價**：實測預設 `low` 比不思考**平均每個請求多約 5 秒**（flash 簡單題 6.5 / 8.8 秒 → 8.6 / 16.6 秒）。最重視速度就把預設檔設成 **`off`**（不思考、最快，與舊版不傳參數時送往上游的請求完全一樣）。前置代理有首位元組逾時的（如 EdgeOne 免費版 15 秒）尤其要留意非流式請求。
+  - 依預設檔替客戶端開的思考**只用於生成，絕不回傳**：回應裡不會多出 `reasoning_content` / `thinking` 區塊 / 思考 part，結構與不思考時逐欄位一致（嚴格校驗的客戶端不會因此報錯）。客戶端**明確傳了**檔位才回傳思考內容。
+- **總開關** `EXTENDED_THINKING_ENABLED=false`：一律不思考，連客戶端明確要求的思考也忽略（進階/相容項，一般不用碰；面板上只在它被關閉時才顯示）。
+- 面板「模型測試」頁改用**檔位選擇**（低 / 中 / 高，預設低）取代原本的「思考」勾選框，所選檔位以 `reasoning_effort` 送出，思考過程顯示在回答上方。
+
+各協議的檔位寫法（**不傳則一律使用預設檔、且不回傳思考**）：
+
+| 協議 | 參數 | 取值 → 檔位 |
+|------|------|------|
+| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`；`none` / `minimal` → low，`xhigh` → high；認不出的值 → high（不報錯） |
+| OpenAI `/v1/responses` | `reasoning.effort`（或頂層 `reasoning_effort`） | 同上 |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low，`2048–4095` → medium，`≥4096` → high；`{"type":"adaptive"}` 或 budget 無效 → high；`{"type":"disabled"}` → 不思考；認不出的 `type` 視同沒傳 |
+| Gemini 原生 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low，未指定 → high）；`thinkingBudget`：`0` → 不思考，`-1`（自動）→ high，`>0` 按 2048 / 4096 切點分檔；兩者都給時以 `thinkingLevel` 為準；`includeThoughts: true` 才在回應裡回傳思考（`"thought": true` 的 part） |
+
 ## OpenAI 相容 API（`/openai/v1`）
 
 ### GET /models
@@ -75,13 +102,13 @@ curl http://localhost:5918/openai/v1/models \
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash-thinking",
+      "id": "gemini-flash-lite",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash-lite",
+      "id": "gemini-argon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
@@ -92,7 +119,7 @@ curl http://localhost:5918/openai/v1/models \
 
 > 💡 **模型選擇建議**：四個模型對應不同的速度/品質權衡。
 > - `gemini-flash`：最快(回應約 4-5 秒),適合 **agent / 高頻 / 高並發**場景,推薦作為預設選擇。
-> - `gemini-flash-thinking`：帶思考過程,速度接近 flash,適合需要推理的任務。
+> - `gemini-argon`：4 Argon，面向複雜任務；只有帳號真的有 Argon 時才會出現在清單裡。
 > - `gemini-flash-lite`：最輕量最快的檔位（3.5 Flash-Lite），Pro/Flash 被限額時可作為可用兜底。
 > - `gemini-pro`：品質最高但較慢(回應約 9-17 秒,長上下文更慢),適合對品質要求高、不在意延遲的場景。
 >
@@ -437,15 +464,15 @@ curl http://localhost:5918/claude/v1/models/gemini-2.5-pro \
 
 | 參數 | 類型 | 必填 | 說明 |
 |------|------|------|------|
-| `thinking` | object | ❌ | 開啟擴展思考。**不傳該參數時行為與舊版逐字節一致** |
+| `thinking` | object | ❌ | 指定思考檔位。**不傳時上游依「預設思考檔位」（出廠 `low`）思考，但回應裡絕不出 `thinking` 區塊，回應結構與舊版逐字節一致** |
 
 - `{"type":"enabled","budget_tokens":N}`：開啟。`N` 按 `<2048` / `2048–4095` / `≥4096` 分成低／中／高三檔。
-- `{"type":"adaptive"}`：開啟，用預設檔。
-- `{"type":"disabled"}` / `{"type":"between_tools"}`：不思考，與完全不傳該參數**逐字節相同**。
+- `{"type":"adaptive"}`：開啟，用 high 檔（與舊版同檔；`budget_tokens` 缺失/無效時同此）。
+- `{"type":"disabled"}` / `{"type":"between_tools"}`：不思考（明確關閉，不受預設檔影響）。
 
 思考內容以 Anthropic 規範的 `thinking` 內容區塊回傳，排在 `text` / `tool_use` 區塊**之前**；流式下是 `content_block_start(thinking)` → `thinking_delta` → `content_block_stop`。
 
-⚠️ **不帶 `signature`**（本服務造不出合法簽名，發空串／自造串更糟：客戶端回傳給真 API 會 400）。**檔位與網頁端思考深度的對應關係尚未真機證實**。全域開關 `EXTENDED_THINKING_ENABLED=false` 時即使傳了也不走思考路徑。
+⚠️ **不帶 `signature`**（本服務造不出合法簽名，發空串／自造串更糟：客戶端回傳給真 API 會 400）。檔位對應網頁的低 / 中 / 高三檔（真機實測 high 想得最深；low 與 medium 分不太開）。全域開關 `EXTENDED_THINKING_ENABLED=false` 時即使傳了也不走思考路徑。
 
 ⚠️ **正文開始之後才到的思考增量會被丟掉**（流式）：Anthropic 的區塊順序不允許在 `text` 之後再開或再續 `thinking` 區塊（會打一條 WARNING 說明丟了多少字元）。需要完整思考鏈請用 OpenAI 協議的 `reasoning_content`。正文永遠完整。`thinking` 傳成非物件時按**沒傳**處理、照常回 200。
 
@@ -1212,8 +1239,8 @@ curl http://localhost:5918/health
 |------|------|
 | flash-lite | 60 秒 |
 | flash | 120 秒 |
-| flash-thinking | 120 秒 |
 | pro | 300 秒 |
+| argon | 300 秒 |
 | 認不出的族 | 60 秒 |
 
 疑似生圖的請求與 `GENERATE_TIMEOUT_IMAGE`（預設 180 秒）**取大**。超時不再重試三遍 —— 失敗就是失敗。
