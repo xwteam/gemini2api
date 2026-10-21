@@ -110,20 +110,21 @@ cat .env | grep API_KEY
 - **映射是自动的**：每个账号的心跳会报出它当前真实可用的网页模型，对外名字固定不变、内部自动对上网页当前的那一代（Google 换代时不用改客户端）。
 - **`gemini-flash-thinking` 已下线**：它只是"flash + 思考模式"的假模型，思考现在是每个模型都有的档位（见下）。为兼容老客户端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及内部名 `gemini-3-flash-thinking*` **仍然可以调**（隐藏别名，等同 `gemini-flash`），只是不再出现在任何模型列表里；想要思考内容请改传档位参数。 例外：访问密钥的「允许模型」里勾过 `gemini-flash-thinking` 的，这把密钥拉到的模型列表里仍会列出它（免得只勾了它的旧密钥拉到空列表），新签发的密钥请改勾 `gemini-flash`。⚠️ 行为变化：老客户端不传档位调用 `gemini-flash-thinking` 时，v1.6.42 会回传思考内容，现在不再回传（没请求的思考一律不回传）。
 - **思考三档**：`low` / `medium` / `high`，对应网页上的低 / 中 / 高三档（实测 `high` 想得最深、也最慢；`low` 与 `medium` 的差别在实测里分不太开）。
-- **默认档 `low`**：客户端**没传**思考参数时，用「默认思考档位」（环境变量 `DEFAULT_THINKING_LEVEL`，或面板「设置 → 思考」，保存即时生效、无需重启），出厂 `low`。
-  - ⚠️ **速度代价**：实测默认 `low` 比不思考**平均每个请求多约 5 秒**（flash 简单题 6.5 / 8.8 秒 → 8.6 / 16.6 秒）。最看重速度就把默认档设成 **`off`**（不思考、最快，与旧版不传参数时发给上游的请求完全一样）。前置代理有首字节超时的（如 EdgeOne 免费版 15 秒）尤其要留意非流式请求。流式请求也有代价：按默认档开的思考不回传，**正文要等思考做完才开始出**（期间只有保活帧，连接不会被代理掐断），pro 遇到需要推理的题 `low` 档实测总耗时 36～47 秒 —— 对首字延迟敏感就用 `off`。⚠️ `off` **只管没传思考参数的请求**：Claude Code、Codex、Cursor 这类客户端会主动传 `thinking` / `reasoning_effort`，`off` 管不到它们；要所有请求都不思考（真正最快），关掉下面的总闸。
-  - 按默认档替客户端开的思考**只用于生成，绝不回传**：响应里不会多出 `reasoning_content` / `thinking` 块 / 思考 part，结构与不思考时逐字段一致（严格校验的客户端不会因此报错）。客户端**明确传了**档位才回传思考内容。
-- **总闸** `EXTENDED_THINKING_ENABLED=false`：一律不思考，连客户端明确要求的思考也忽略，这才是**真正最快**的模式。面板「设置 → 思考 →「允许思考（总闸）」」里一直显示、保存即时生效；与「默认思考档位」的分工：默认档只管没传参的请求，总闸连主动传参的客户端也管。
+- **默认档 `low`**：客户端**没指定档位**时（没传思考参数的，和要了思考但没说几档的），用「默认思考档位」（环境变量 `DEFAULT_THINKING_LEVEL`，或面板「设置 → 思考」，保存即时生效、无需重启），出厂 `low`。
+  - ⚠️ **速度代价**：实测默认 `low` 比不思考**平均每个请求多约 5 秒**（flash 简单题 6.5 / 8.8 秒 → 8.6 / 16.6 秒）。最看重速度就把默认档设成 **`off`**（不思考、最快，与旧版不传参数时发给上游的请求完全一样）。前置代理有首字节超时的（如 EdgeOne 免费版 15 秒）尤其要留意非流式请求。流式请求也有代价：没提思考的请求按默认档开的思考不回传，**正文要等思考做完才开始出**（期间只有保活帧，连接不会被代理掐断），pro 遇到需要推理的题 `low` 档实测总耗时 36～47 秒 —— 对首字延迟敏感就用 `off`。⚠️ `off`（以及默认档本身）管的是**没指定档位**的请求：没传思考参数的，和要了思考但没说几档的（Claude Code 出厂请求就是这种，所以 Claude Code 默认也跟随默认档）。客户端**明确指定了档位**的（Codex / Cursor 选了 low/medium/high、Anthropic 给了 `budget_tokens`、Claude Code `/effort max` 等）默认档管不到；要所有请求都不思考（真正最快），关掉下面的总闸 `EXTENDED_THINKING_ENABLED=false`。
+  - 客户端**完全没提思考**时，按默认档替它开的思考**只用于生成，绝不回传**：响应里不会多出 `reasoning_content` / `thinking` 块 / 思考 part，结构与不思考时逐字段一致（严格校验的客户端不会因此报错）。客户端**要了思考**（不论给没给档位）才回传思考内容（Gemini 原生仍只看 `includeThoughts`）。默认档是 `off` 时，「要了思考但没给档位」的请求也不思考，自然没有思考可回传。
+- **Claude Code**（新版）：每个请求都带 `adaptive` + `effort: high`（high 是 Anthropic 的默认值），所以默认跟随这里的默认档（出厂 low，速度优先）；想让某个会话想得更深，在 Claude Code 里执行 `/effort max`（或 `xhigh`）→ high；`/effort low` / `medium` 也照档。
+- **总闸** `EXTENDED_THINKING_ENABLED=false`：一律不思考，连客户端明确要求的思考也忽略，这才是**真正最快**的模式。面板「设置 → 思考 →「允许思考（总闸）」」里一直显示、保存即时生效；与「默认思考档位」的分工：默认档管没指定档位的请求（含 Claude Code 出厂请求），总闸连明确指定了档位的也管。
 - 面板「模型测试」页用**档位选择**（低 / 中 / 高，默认低）代替原来的「思考」勾选框，所选档位以 `reasoning_effort` 发出，思考过程显示在回答上方。 另有「按默认档（不传参数）」一项：不带 `reasoning_effort`，与普通客户端走同一条路，可用来实测设置里「默认思考档位」（含 `off`）的真实速度（思考内容按规定不回传）。
 
-各协议的档位写法（**不传则一律用默认档、且不回传思考**）：
+各协议的档位写法（**没指定档位则用默认档**；完全没提思考的请求，思考不回传）：
 
 | 协议 | 参数 | 取值 → 档位 |
 |------|------|------|
-| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`；`none` / `minimal` → low，`xhigh` → high；认不出的值 → high（不报错） |
+| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`；`minimal` → low，`xhigh` → high；`none` → 不思考；认不出的值 → 跟随默认档（不报错） |
 | OpenAI `/v1/responses` | `reasoning.effort`（或顶层 `reasoning_effort`） | 同上 |
-| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low，`2048–4095` → medium，`≥4096` → high；`{"type":"adaptive"}` 或 budget 无效 → high；`{"type":"disabled"}` → 不思考；认不出的 `type` 按没传处理 |
-| Gemini 原生 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low，未指定 → high）；`thinkingBudget`：`0` → 不思考，`-1`（自动）→ high，`>0` 按 2048 / 4096 切点分档；两者都给时以 `thinkingLevel` 为准；`includeThoughts: true` 才在响应里回传思考（`"thought": true` 的 part） |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low，`2048–4095` → medium，`≥4096` → high；`{"type":"adaptive"}` 或 budget 无效 → 看 `output_config.effort`：`low` / `medium` 照档，`xhigh` / `max` → high，`high`（官方默认值，等于没传）或没给 → 跟随默认档；`{"type":"disabled"}` → 不思考；认不出的 `type` 按没传处理 |
+| Gemini 原生 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low，未指定 → 跟随默认档）；`thinkingBudget`：`0` → 不思考，`-1`（自动）→ 跟随默认档，`>0` 按 2048 / 4096 切点分档；两者都给时以 `thinkingLevel` 为准；只给 `includeThoughts: true` → 跟随默认档；`includeThoughts: true` 才在响应里回传思考（`"thought": true` 的 part） |
 
 ## OpenAI 兼容 API
 
@@ -582,12 +583,13 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `thinking` | object | 否 | 指定思考档位。支持三类官方写法（见下表）。**不传时上游按「默认思考档位」（出厂 `low`）思考，但响应里绝不出 `thinking` 块，响应结构与旧版逐字节一致** |
+| `output_config` | object | 否 | 只读其中的 `effort`，配合 `thinking` 定档位（用法见下表 `adaptive` 一行）。单独给 `output_config.effort`、没给 `thinking` 时不起作用（按没传思考参数处理）；形态不对（不是对象、`effort` 认不出）视同没给，不报错 |
 
 | 写法 | 效果 |
 |------|------|
-| `{"type":"enabled","budget_tokens":N}` | 开启。`N` 按 `<2048` / `2048–4095` / `≥4096` 分成低 / 中 / 高三档 —— 这三个切点取自本服务出站给第三方 Anthropic 时用的 `{low:1024, medium:2048, high:4096}` 的反函数，保证经本服务来回转换时档位一致 |
-| `{"type":"adaptive"}` | 开启，用 high 档（与旧版同档；`budget_tokens` 缺失/无效时同此） |
-| `{"type":"disabled"}` / `{"type":"between_tools"}` | 不思考（明确关闭，不受默认档影响） |
+| `{"type":"enabled","budget_tokens":N}` | 开启。`N` 按 `<2048` / `2048–4095` / `≥4096` 分成低 / 中 / 高三档 —— 这三个切点取自本服务出站给第三方 Anthropic 时用的 `{low:1024, medium:2048, high:4096}` 的反函数，保证经本服务来回转换时档位一致。`budget_tokens` 合法时以它为准，优先于 `output_config.effort` |
+| `{"type":"adaptive"}` | 开启，档位看 `output_config.effort`：`low` / `medium` 照档，`xhigh` / `max` → high，`high`（官方默认值）或没给 → 跟随默认思考档位；`budget_tokens` 缺失/无效时同此 |
+| `{"type":"disabled"}` / `{"type":"between_tools"}` | 不思考（明确关闭，不受默认档影响；`output_config.effort` 给什么都不管） |
 
 思考内容以 Anthropic 规范的 `thinking` 内容块回传，排在 `text` / `tool_use` 块**之前**；流式下是 `content_block_start(thinking)` → `thinking_delta` → `content_block_stop`。
 

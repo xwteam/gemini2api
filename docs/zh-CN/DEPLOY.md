@@ -169,7 +169,7 @@ FALLBACK_MODELS=
 # 分类可取 rate_limit / session_expired / context_too_long / captcha
 # 留空（默认）= 所有拒绝块按未知处理：冷却该账号 + 换号重试，这是刻意的安全兜底
 BARD_ERROR_CODES=
-# 可选：客户端没指定思考参数时的默认档位 off / low / medium / high（出厂 low）。
+# 可选：客户端没指定档位时的默认档位 off / low / medium / high（出厂 low）。
 # low 实测每请求平均多约 5 秒；最看重速度就设 off。面板「设置 → 思考」可即时切换
 DEFAULT_THINKING_LEVEL=low
 # 可选：非流式生成超时按模型族覆盖（秒），形如 pro=300,flash=120

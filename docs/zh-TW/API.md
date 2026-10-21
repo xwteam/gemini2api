@@ -57,20 +57,21 @@ curl -H "x-api-key: sk-your-api-key" http://localhost:5918/...
 - **對應是自動的**：每個帳號的心跳會回報它目前真實可用的網頁模型，對外名字固定不變、內部自動對上網頁目前的那一代（Google 換代時不用改客戶端）。
 - **`gemini-flash-thinking` 已下線**：它只是「flash + 思考模式」的假模型，思考現在是每個模型都有的檔位（見下）。為相容舊客戶端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及內部名 `gemini-3-flash-thinking*` **仍然可以呼叫**（隱藏別名，等同 `gemini-flash`），只是不再出現在任何模型清單裡；想要思考內容請改傳檔位參數。 例外：存取金鑰的「允許模型」裡勾過 `gemini-flash-thinking` 的，這把金鑰取得的模型清單裡仍會列出它（免得只勾了它的舊金鑰拿到空清單），新簽發的金鑰請改勾 `gemini-flash`。⚠️ 行為變化：舊客戶端不傳檔位呼叫 `gemini-flash-thinking` 時，v1.6.42 會回傳思考內容，現在不再回傳（未請求的思考一律不回傳）。
 - **思考三檔**：`low` / `medium` / `high`，對應網頁上的低 / 中 / 高三檔（實測 `high` 想得最深、也最慢；`low` 與 `medium` 的差別在實測裡分不太開）。
-- **預設檔 `low`**：客戶端**沒傳**思考參數時，使用「預設思考檔位」（環境變數 `DEFAULT_THINKING_LEVEL`，或面板「設定 → 思考」，儲存即時生效、無需重啟），出廠 `low`。
-  - ⚠️ **速度代價**：實測預設 `low` 比不思考**平均每個請求多約 5 秒**（flash 簡單題 6.5 / 8.8 秒 → 8.6 / 16.6 秒）。最重視速度就把預設檔設成 **`off`**（不思考、最快，與舊版不傳參數時送往上游的請求完全一樣）。前置代理有首位元組逾時的（如 EdgeOne 免費版 15 秒）尤其要留意非流式請求。串流請求也有代價：依預設檔位開啟的思考不回傳，**正文要等思考完成才開始輸出**（期間只有保活幀，連線不會被代理切斷），pro 遇到需要推理的題目 `low` 檔實測總耗時 36～47 秒 —— 對首字延遲敏感就用 `off`。⚠️ `off` **只管未傳思考參數的請求**：Claude Code、Codex、Cursor 這類客戶端會主動傳 `thinking` / `reasoning_effort`，`off` 管不到它們；要所有請求都不思考（真正最快），請關閉下方的總開關。
-  - 依預設檔替客戶端開的思考**只用於生成，絕不回傳**：回應裡不會多出 `reasoning_content` / `thinking` 區塊 / 思考 part，結構與不思考時逐欄位一致（嚴格校驗的客戶端不會因此報錯）。客戶端**明確傳了**檔位才回傳思考內容。
-- **總開關** `EXTENDED_THINKING_ENABLED=false`：一律不思考，連客戶端明確要求的思考也忽略，這才是**真正最快**的模式。面板「設定 → 思考 →「允許思考（總開關）」」裡一直顯示、儲存即時生效；與「預設思考檔位」的分工：預設檔位只管未傳參數的請求，總開關連主動傳參數的客戶端也管。
+- **預設檔 `low`**：客戶端**沒指定檔位**時（沒傳思考參數的，和要了思考但沒說幾檔的），使用「預設思考檔位」（環境變數 `DEFAULT_THINKING_LEVEL`，或面板「設定 → 思考」，儲存即時生效、無需重啟），出廠 `low`。
+  - ⚠️ **速度代價**：實測預設 `low` 比不思考**平均每個請求多約 5 秒**（flash 簡單題 6.5 / 8.8 秒 → 8.6 / 16.6 秒）。最重視速度就把預設檔設成 **`off`**（不思考、最快，與舊版不傳參數時送往上游的請求完全一樣）。前置代理有首位元組逾時的（如 EdgeOne 免費版 15 秒）尤其要留意非流式請求。串流請求也有代價：沒提思考的請求，依預設檔位開啟的思考不回傳，**正文要等思考完成才開始輸出**（期間只有保活幀，連線不會被代理切斷），pro 遇到需要推理的題目 `low` 檔實測總耗時 36～47 秒 —— 對首字延遲敏感就用 `off`。⚠️ `off`（以及預設檔本身）管的是**沒指定檔位**的請求：沒傳思考參數的，和要了思考但沒說幾檔的（Claude Code 出廠請求就是這種，所以 Claude Code 預設也跟隨預設檔）。客戶端**明確指定了檔位**的（Codex / Cursor 選了 low/medium/high、Anthropic 給了 `budget_tokens`、Claude Code `/effort max` 等）預設檔管不到；要所有請求都不思考（真正最快），請關閉下方的總開關 `EXTENDED_THINKING_ENABLED=false`。
+  - 客戶端**完全沒提思考**時，依預設檔替它開的思考**只用於生成，絕不回傳**：回應裡不會多出 `reasoning_content` / `thinking` 區塊 / 思考 part，結構與不思考時逐欄位一致（嚴格校驗的客戶端不會因此報錯）。客戶端**要了思考**（不論有沒有給檔位）才回傳思考內容（Gemini 原生仍只看 `includeThoughts`）。預設檔是 `off` 時，「要了思考但沒給檔位」的請求也不思考，自然沒有思考可回傳。
+- **Claude Code**（新版）：每個請求都帶 `adaptive` + `effort: high`（high 是 Anthropic 的預設值），所以預設跟隨這裡的預設檔（出廠 low，速度優先）；想讓某個會話想得更深，在 Claude Code 裡執行 `/effort max`（或 `xhigh`）→ high；`/effort low` / `medium` 也照檔。
+- **總開關** `EXTENDED_THINKING_ENABLED=false`：一律不思考，連客戶端明確要求的思考也忽略，這才是**真正最快**的模式。面板「設定 → 思考 →「允許思考（總開關）」」裡一直顯示、儲存即時生效；與「預設思考檔位」的分工：預設檔位管沒指定檔位的請求（含 Claude Code 出廠請求），總開關連明確指定了檔位的也管。
 - 面板「模型測試」頁改用**檔位選擇**（低 / 中 / 高，預設低）取代原本的「思考」勾選框，所選檔位以 `reasoning_effort` 送出，思考過程顯示在回答上方。 另有「依預設檔位（不傳參數）」一項：不帶 `reasoning_effort`，與一般客戶端走同一條路，可用來實測設定中「預設思考檔位」（含 `off`）的實際速度（思考內容依規定不回傳）。
 
-各協議的檔位寫法（**不傳則一律使用預設檔、且不回傳思考**）：
+各協議的檔位寫法（**沒指定檔位則使用預設檔**；完全沒提思考的請求，思考不回傳）：
 
 | 協議 | 參數 | 取值 → 檔位 |
 |------|------|------|
-| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`；`none` / `minimal` → low，`xhigh` → high；認不出的值 → high（不報錯） |
+| OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`；`minimal` → low，`xhigh` → high；`none` → 不思考；認不出的值 → 跟隨預設檔（不報錯） |
 | OpenAI `/v1/responses` | `reasoning.effort`（或頂層 `reasoning_effort`） | 同上 |
-| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low，`2048–4095` → medium，`≥4096` → high；`{"type":"adaptive"}` 或 budget 無效 → high；`{"type":"disabled"}` → 不思考；認不出的 `type` 視同沒傳 |
-| Gemini 原生 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low，未指定 → high）；`thinkingBudget`：`0` → 不思考，`-1`（自動）→ high，`>0` 按 2048 / 4096 切點分檔；兩者都給時以 `thinkingLevel` 為準；`includeThoughts: true` 才在回應裡回傳思考（`"thought": true` 的 part） |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low，`2048–4095` → medium，`≥4096` → high；`{"type":"adaptive"}` 或 budget 無效 → 看 `output_config.effort`：`low` / `medium` 照檔，`xhigh` / `max` → high，`high`（官方預設值，等於沒傳）或沒給 → 跟隨預設檔；`{"type":"disabled"}` → 不思考；認不出的 `type` 視同沒傳 |
+| Gemini 原生 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low，未指定 → 跟隨預設檔）；`thinkingBudget`：`0` → 不思考，`-1`（自動）→ 跟隨預設檔，`>0` 按 2048 / 4096 切點分檔；兩者都給時以 `thinkingLevel` 為準；只給 `includeThoughts: true` → 跟隨預設檔；`includeThoughts: true` 才在回應裡回傳思考（`"thought": true` 的 part） |
 
 ## OpenAI 相容 API（`/openai/v1`）
 
@@ -465,10 +466,11 @@ curl http://localhost:5918/claude/v1/models/gemini-2.5-pro \
 | 參數 | 類型 | 必填 | 說明 |
 |------|------|------|------|
 | `thinking` | object | ❌ | 指定思考檔位。**不傳時上游依「預設思考檔位」（出廠 `low`）思考，但回應裡絕不出 `thinking` 區塊，回應結構與舊版逐字節一致** |
+| `output_config` | object | ❌ | 只讀其中的 `effort`，配合 `thinking` 定檔位（用法見下方 `adaptive` 一行）。單獨給 `output_config.effort`、沒給 `thinking` 時不起作用（按沒傳思考參數處理）；形態不對（不是物件、`effort` 認不出）視同沒給，不報錯 |
 
-- `{"type":"enabled","budget_tokens":N}`：開啟。`N` 按 `<2048` / `2048–4095` / `≥4096` 分成低／中／高三檔。
-- `{"type":"adaptive"}`：開啟，用 high 檔（與舊版同檔；`budget_tokens` 缺失/無效時同此）。
-- `{"type":"disabled"}` / `{"type":"between_tools"}`：不思考（明確關閉，不受預設檔影響）。
+- `{"type":"enabled","budget_tokens":N}`：開啟。`N` 按 `<2048` / `2048–4095` / `≥4096` 分成低／中／高三檔。`budget_tokens` 合法時以它為準，優先於 `output_config.effort`。
+- `{"type":"adaptive"}`：開啟，檔位看 `output_config.effort`：`low` / `medium` 照檔，`xhigh` / `max` → high，`high`（官方預設值）或沒給 → 跟隨預設思考檔位；`budget_tokens` 缺失/無效時同此。
+- `{"type":"disabled"}` / `{"type":"between_tools"}`：不思考（明確關閉，不受預設檔影響；`output_config.effort` 給什麼都不管）。
 
 思考內容以 Anthropic 規範的 `thinking` 內容區塊回傳，排在 `text` / `tool_use` 區塊**之前**；流式下是 `content_block_start(thinking)` → `thinking_delta` → `content_block_stop`。
 

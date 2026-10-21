@@ -70,15 +70,16 @@ class Settings(BaseSettings):
     chat_cleanup_keep_hours: float = 24.0
     chat_cleanup_interval_hours: float = 6.0
     chat_cleanup_skip_pinned: bool = True
-    # 「允许思考」总闸。true = 允许思考；false = 一律不思考、连客户端明确要求的思考也忽略
+    # 「允许思考」总闸。true = 允许思考；false = 一律不思考、连客户端明确指定档位的思考也忽略
     # （四个协议都走"不思考"的旧路径，真正最快）。与下面的"默认思考档位"分工不同：默认档
-    # off 只管没传思考参数的请求，Claude Code / Codex 这类主动传参的客户端要靠这个总闸。
-    # 面板「设置 → 思考」里两个都显示。
+    # off 管不到明确指定了档位的请求（Codex 选 high、budget_tokens、Claude Code /effort max），
+    # 那些要靠这个总闸。面板「设置 → 思考」里两个都显示。
     extended_thinking_enabled: bool = True
-    # 默认思考档位：客户端**没指定**思考参数时用哪一档（off / low / medium / high）。
-    # 出厂 low。实测 low 比不思考平均每请求多约 5 秒；最看重速度就设 off（= 不思考旧路径）。
-    # 客户端明确传了档位（reasoning_effort / thinking / thinkingConfig）时按客户端的走。
-    # 按默认档替客户端开的思考只用于上游生成，**绝不**把思考内容回传给客户端。
+    # 默认思考档位：客户端**没指定档位**时用哪一档（off / low / medium / high）——没传思考
+    # 参数的，和要了思考但没说几档的（Claude Code 出厂的 adaptive + effort high、认不出的值，
+    # 见 gemini_client.resolve_thinking）。出厂 low。实测 low 比不思考平均每请求多约 5 秒；
+    # 最看重速度就设 off（= 不思考旧路径）。客户端明确指定了档位时按客户端的走。
+    # 客户端完全没提思考时，按默认档替它开的思考只用于上游生成，**绝不**回传给客户端。
     default_thinking_level: str = "low"
     # 管理面板/admin 路由的独立访问密钥。默认空 → 回退到 api_key（保持单 key 全功能的原行为，零回归）。
     # 设置非空后，/admin/* 改用该 key 校验，业务 API 仍用 api_key，实现权限分离。

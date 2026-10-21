@@ -97,16 +97,16 @@ def _get_grouped_settings() -> Dict[str, Dict[str, Any]]:
 def _thinking_group() -> Dict[str, Any]:
     """「思考」分组，两个控件，各管各的、一直都显示：
 
-    - default_thinking_level（off / low / medium / high）：客户端**没传**思考参数时用哪一档。
+    - default_thinking_level（off / low / medium / high）：客户端**没指定档位**时用哪一档
+      （没传思考参数的，和 Claude Code 出厂的 adaptive + effort high 这类要了思考没说几档的）。
     - extended_thinking_enabled（「允许思考」总闸）：关 = 四个协议一律不思考，**连客户端
-      明确要求的也忽略**。
+      明确指定档位的也忽略**。
 
-    这不是两个意思重叠的开关：默认档 off 只管"没传参"的请求；Claude Code / Codex /
-    Cursor 这类会主动传 thinking / reasoning_effort 的客户端，off 管不到，它们的请求照样
-    思考（adaptive / 大 budget 还会落到最慢的 high）。用户嫌慢时真正能"一键回到最快"
-    的是总闸。过去把总闸藏起来（只在它已经关着时才露出来），用户按提示把默认档改成 off
-    后仍然慢，又在面板上找不到能关的地方，只能改环境变量重启 —— 所以两个都摆出来，
-    在标签和提示里把分工写清楚。
+    这不是两个意思重叠的开关：默认档 off 管不到明确指定了档位的请求（Codex / Cursor 选了
+    high、Anthropic 给了大 budget_tokens、Claude Code /effort max），它们照样按自己的档思考。
+    用户嫌慢时真正能"一键回到最快"的是总闸。过去把总闸藏起来（只在它已经关着时才露出来），
+    用户按提示把默认档改成 off 后这类请求仍然慢，又在面板上找不到能关的地方，只能改环境
+    变量重启 —— 所以两个都摆出来，在标签和提示里把分工写清楚。
     """
     return {
         "default_thinking_level": settings.default_thinking_level,
