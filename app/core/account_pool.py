@@ -1055,10 +1055,21 @@ class AccountPool:
 
     @property
     def models(self) -> list[str]:
-        # 对外永远是固定的公开模型名（API 稳定契约），
+        # 4 个固定公开模型名（API 稳定契约）恒在最前、顺序不变，
         # 内部由 _resolve_model 按账号真实可用模型动态映射。
-        from app.core.gemini_client import PUBLIC_MODELS
-        return list(PUBLIC_MODELS)
+        # 之后追加「池里至少一个账号真的拿到了」的新 family 的公开名（如 Argon）：
+        # 心跳没发现它的部署看不到这个名字，不给用户一个调不通的选项。
+        from app.core.gemini_client import PUBLIC_MODELS, _BASE_FAMILIES, _FAMILY_PUBLIC
+        names = list(PUBLIC_MODELS)
+        for account in self._accounts:
+            family_model = getattr(account.client, "_family_model", None) or {}
+            for family, internal in family_model.items():
+                if family in _BASE_FAMILIES:
+                    continue
+                public = _FAMILY_PUBLIC.get(family) or internal
+                if public not in names:
+                    names.append(public)
+        return names
 
     @property
     def is_healthy(self) -> bool:

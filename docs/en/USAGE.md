@@ -342,6 +342,10 @@ Gemini2API provides 3 fixed stable model names that never change. These serve as
 | `gemini-flash` | Fast model with low latency, suitable for real-time applications |
 | `gemini-flash-thinking` | Thinking model supporting deep reasoning and analysis |
 | `gemini-flash-lite` | Lightest & fastest model (3.5 Flash-Lite), usable when Pro/Flash are rate-limited |
+| `gemini-argon` | 4 Argon, for complex tasks. Only listed when at least one account actually has it (aliases: `gemini-4-argon`) |
+
+**Account-driven model discovery**: beyond the fixed names above, the service reads the model list from the account heartbeat. A model the account really has but the built-in table does not know (4 Argon is exactly this case) is adopted automatically, validated first (16-hex model id, positive model number, parsable label, and a name that cannot shadow any existing public name); entries that fail validation are dropped and logged. The four contract names above never come from discovery, so a malformed heartbeat can never re-point them.
+
 
 **Internal Auto-Mapping**: The service automatically maps these fixed names to the actual available models based on your Google account subscription level (Advanced/Plus/Basic). Regardless of account tier changes, Google rollouts, or service restarts, clients always use these 3 fixed names without modification.
 

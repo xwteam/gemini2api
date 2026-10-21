@@ -157,22 +157,13 @@ def _parse_contents(contents):
 @router.get("/models")
 async def list_models():
     """List available Gemini models."""
+    # 这里过去写死三条 1.5 / 2.0 时代的名字（gemini-2.0-flash-exp 连 MODEL_ALIASES 里
+    # 都没有），一条都调不通：用官方 Gemini SDK 接我们的人，列表里看不到任何一个真能用
+    # 的模型名。改成和 /v1/models、/claude/v1/models 同一个来源（账号池的公开名），
+    # 新发现的模型（如 Argon）也就自动跟上。
     models = [
-        GeminiModelInfo(
-            name="models/gemini-2.0-flash-exp",
-            display_name="Gemini 2.0 Flash Experimental",
-            description="Fast and efficient model for general tasks",
-        ),
-        GeminiModelInfo(
-            name="models/gemini-1.5-pro",
-            display_name="Gemini 1.5 Pro",
-            description="Advanced model for complex reasoning",
-        ),
-        GeminiModelInfo(
-            name="models/gemini-1.5-flash",
-            display_name="Gemini 1.5 Flash",
-            description="Fast model for quick responses",
-        ),
+        GeminiModelInfo(name=f"models/{m}", display_name=m)
+        for m in gemini_client.models
     ]
     # MODEL_WHITELIST 过滤（为空则放行全部）；按裸模型名匹配 name 去掉 `models/` 前缀
     allowed = _whitelist_set()
