@@ -1,4 +1,4 @@
-<link rel="stylesheet" href="components/section-playground.css?v=7">
+<link rel="stylesheet" href="components/section-playground.css?v=8">
 <!-- 模型测试 Section -->
 <section id="playground" class="section" aria-labelledby="playground-title">
     <h2 id="playground-title"><i class="fas fa-flask"></i> <span data-i18n="playground.title">模型测试</span></h2>
@@ -14,11 +14,13 @@
                 </select>
             </div>
             <div class="form-group">
-                <label class="pg-thinking-toggle">
-                    <input type="checkbox" id="pg-thinking">
-                    <span data-i18n="playground.thinking">思考</span>
-                </label>
-                <span class="form-hint" data-i18n="playground.thinkingHint">开启后返回模型的思考过程（简单问题可能没有思考内容）</span>
+                <label class="form-label" for="pg-thinking-level" data-i18n="playground.thinking">思考档位</label>
+                <select id="pg-thinking-level" class="form-control">
+                    <option value="low" data-i18n="playground.thinkingLevel.low" selected>低</option>
+                    <option value="medium" data-i18n="playground.thinkingLevel.medium">中</option>
+                    <option value="high" data-i18n="playground.thinkingLevel.high">高</option>
+                </select>
+                <span class="form-hint" data-i18n="playground.thinkingHint">档位越高想得越深、也越慢；思考过程显示在回答上方（简单问题可能没有）</span>
             </div>
             <div class="form-group">
                 <label class="form-label" for="pg-message" data-i18n="playground.message">消息内容</label>

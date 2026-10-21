@@ -753,6 +753,29 @@ function _pgSetSendBusy(busy) {
     else pgSend.removeAttribute('aria-busy');
 }
 
+// 模型测试页的思考档位：只认 low / medium / high，其余（含空值）回出厂默认档 low。
+function _pgThinkingEffort(value) {
+    const levels = ['low', 'medium', 'high'];
+    const v = String(value ?? '').trim().toLowerCase();
+    return levels.includes(v) ? v : 'low';
+}
+
+// 模型测试页发给 /v1/chat/completions 的请求体。reasoning_effort **每次都显式带上**：
+// 服务端只有客户端明确要了思考才回传思考内容（按默认档替客户端开的思考不回传），
+// 不带的话测试页就看不到思考过程，也和下拉框里选的档位对不上。
+function _pgBuildChatRequest(model, messages, conversationId, thinkingLevel) {
+    const body = {
+        model: model || 'gemini-flash',
+        messages: [...messages],
+        stream: true
+    };
+    if (conversationId) {
+        body.conversation_id = conversationId;
+    }
+    body.reasoning_effort = _pgThinkingEffort(thinkingLevel);
+    return body;
+}
+
 async function sendPlaygroundRequest() {
     const pgSend = document.getElementById('pg-send');
     if (pgSend?.disabled) return;
@@ -813,17 +836,10 @@ async function sendPlaygroundRequest() {
     _pgSetSendBusy(true);
 
     const token = localStorage.getItem('gemini2api_token');
-    const reqBody = {
-        model: model || 'gemini-3-flash',
-        messages: [..._pgMessages],
-        stream: true
-    };
-    if (_pgConversationId) {
-        reqBody.conversation_id = _pgConversationId;
-    }
-    if (document.getElementById('pg-thinking')?.checked) {
-        reqBody.reasoning_effort = 'high';
-    }
+    const reqBody = _pgBuildChatRequest(
+        model, _pgMessages, _pgConversationId,
+        document.getElementById('pg-thinking-level')?.value
+    );
 
     try {
         const resp = await fetch('/openai/v1/chat/completions', {
