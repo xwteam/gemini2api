@@ -1055,7 +1055,7 @@ class AccountPool:
 
     @property
     def models(self) -> list[str]:
-        # 4 个固定公开模型名（API 稳定契约）恒在最前、顺序不变，
+        # 3 个固定公开模型名（pro / flash / flash-lite，API 稳定契约）恒在最前、顺序不变，
         # 内部由 _resolve_model 按账号真实可用模型动态映射。
         # 之后追加「池里至少一个账号真的拿到了」的新 family 的公开名（如 Argon）：
         # 心跳没发现它的部署看不到这个名字，不给用户一个调不通的选项。

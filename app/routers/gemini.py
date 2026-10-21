@@ -162,7 +162,6 @@ def _parse_contents(contents):
 _MODEL_DESCRIPTIONS = {
     "gemini-pro": "Most capable model, for complex reasoning and long tasks",
     "gemini-flash": "Fast model with low latency, for interactive use",
-    "gemini-flash-thinking": "Flash with extended reasoning enabled",
     "gemini-flash-lite": "Lightest and fastest model; still available when Pro/Flash are rate-limited",
     "gemini-argon": "4 Argon, for complex tasks; listed only when an account actually has it",
 }

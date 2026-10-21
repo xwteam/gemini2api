@@ -138,7 +138,9 @@ def test_argon_is_listed_as_a_public_model():
     c = adopted(argon_entry())
 
     names = c._public_model_names()
-    assert names[:4] == PUBLIC_MODELS, "4 个契约名必须恒在最前、顺序不变"
+    assert names[:len(PUBLIC_MODELS)] == PUBLIC_MODELS, "契约名必须恒在最前、顺序不变"
+    # 用户实测的真实账号：恰好 4 个对外 Gemini 模型，按这个顺序
+    assert names == ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"]
     assert ARGON_PUBLIC in names
     assert c._available_models == names
 
@@ -156,7 +158,7 @@ def test_account_pool_lists_argon_only_when_an_account_has_it():
     assert pool.models == PUBLIC_MODELS, "没有 Argon 的部署不该看到一个调不通的选项"
 
     pool._accounts = [_Acct(fresh_client()), _Acct(adopted(argon_entry()))]
-    assert pool.models[:4] == PUBLIC_MODELS
+    assert pool.models[:len(PUBLIC_MODELS)] == PUBLIC_MODELS
     assert ARGON_PUBLIC in pool.models
 
 
@@ -218,7 +220,10 @@ def test_malformed_entries_never_repoint_the_four_contract_names(label):
     assert c._family_model["pro"] == "gemini-3-pro-advanced"
     assert c._family_model["flash"] == "gemini-3-flash-advanced"
     assert c._family_model["flash-lite"] == "gemini-3-flash-lite-advanced"
-    assert c._family_model["flash-thinking"] == "gemini-3-flash-thinking-advanced"
+    assert "flash-thinking" not in c._family_model, "flash-thinking 已不是一个 family"
+    # 隐藏别名也不许被顶掉：它必须仍解析到本账号的 flash
+    assert gc._resolve_model("gemini-flash-thinking", c._family_model) \
+        == "gemini-3-flash-advanced"
     for name in PUBLIC_MODELS:
         assert gc._resolve_model(name, c._family_model) in GEMINI_MODELS
         assert GEMINI_MODELS[gc._resolve_model(name, c._family_model)]["family"] \
@@ -261,8 +266,8 @@ def test_capacity_backfill_never_invents_argon():
     assert "argon" not in c._family_model
     assert ARGON_PUBLIC not in c._public_model_names()
     assert c._available_models == PUBLIC_MODELS
-    assert c._family_model["flash-thinking"] == "gemini-3-flash-thinking-advanced", \
-        "4 个基础 family 的同档补全必须照旧"
+    assert set(c._family_model) == set(_BASE_FAMILIES), \
+        "基础 family 的映射必须照旧，且不再补出 flash-thinking"
 
 
 def test_an_account_without_argon_cannot_route_argon():
@@ -297,15 +302,16 @@ def test_argon_becomes_routable_only_after_this_account_discovered_it():
     assert ARGON_INTERNAL not in b._model_table()
 
 
-def test_the_four_contract_names_are_unchanged_without_a_heartbeat():
+def test_the_contract_names_are_unchanged_without_a_heartbeat():
     c = fresh_client()
 
-    assert PUBLIC_MODELS == ["gemini-pro", "gemini-flash",
-                             "gemini-flash-thinking", "gemini-flash-lite"]
+    # 用户要求：去掉 flash-thinking 这个假模型，契约名只剩 3 个（argon 发现到才列）
+    assert PUBLIC_MODELS == ["gemini-pro", "gemini-flash", "gemini-flash-lite"]
     assert c._public_model_names() == PUBLIC_MODELS
     assert gc._resolve_model("gemini-pro", c._family_model) == "gemini-3-pro"
     assert gc._resolve_model("gemini-flash", c._family_model) == "gemini-3-flash"
-    assert gc._resolve_model("gemini-flash-thinking", c._family_model) == "gemini-3-flash-thinking"
+    # 隐藏别名：仍能解析，落到 flash 的兜底行
+    assert gc._resolve_model("gemini-flash-thinking", c._family_model) == "gemini-3-flash"
     assert gc._resolve_model("gemini-flash-lite", c._family_model) == "gemini-3-flash-lite"
 
 
@@ -431,7 +437,7 @@ def test_discovered_models_cannot_grow_without_bound(caplog):
     assert len(c._available_models) <= len(PUBLIC_MODELS) + gc._DISCOVER_MAX_PER_ROUND
     assert any("discovery capped" in r.message for r in caplog.records)
     # 契约名仍在最前、顺序不变
-    assert c._available_models[:4] == PUBLIC_MODELS
+    assert c._available_models[:len(PUBLIC_MODELS)] == PUBLIC_MODELS
 
 
 def test_the_per_round_cap_counts_validated_candidates_not_raw_entries():

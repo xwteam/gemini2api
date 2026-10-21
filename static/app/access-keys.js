@@ -146,12 +146,17 @@ function findKey(id) {
 function renderChecklist(containerId, items, checked) {
     const box = document.getElementById(containerId);
     if (!box) return;
-    if (!items.length) {
+    const on = new Set((checked || []).map(String));
+    // 已保存、但已不在候选项里的值（例如已下线为隐藏别名的 gemini-flash-thinking）照样
+    // 渲染成已勾选。不渲染的话，打开再保存会把它静默丢掉；若它是唯一一项，列表变空、
+    // 限制被整个清掉，这把密钥反而变成不限模型。
+    const known = new Set(items.map(item => String(item.value)));
+    const all = items.concat([...on].filter(v => !known.has(v)).map(v => ({ value: v, label: v })));
+    if (!all.length) {
         box.innerHTML = `<span class="akk-checklist-empty">${escapeHtml(t('accessKeys.noOptions'))}</span>`;
         return;
     }
-    const on = new Set((checked || []).map(String));
-    box.innerHTML = items.map(item => {
+    box.innerHTML = all.map(item => {
         const value = escapeAttr(item.value);
         const mark = on.has(String(item.value)) ? ' checked' : '';
         return `<label><input type="checkbox" value="${value}"${mark}> ${escapeHtml(String(item.label))}</label>`;

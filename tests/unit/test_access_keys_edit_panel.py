@@ -271,3 +271,19 @@ def test_editing_prefills_the_bound_accounts_and_models(tmp_path):
     body = [r for r in out["requests"] if r["method"] == "PATCH"][0]["body"]
     assert body["bound_account_ids"] == ["account-1"]
     assert body["allowed_models"] == ["gemini-flash"]
+
+
+@_needs_node
+def test_a_retired_allowed_model_survives_a_no_op_save(tmp_path):
+    """gemini-flash-thinking 已从模型列表下线（仍是可调的隐藏别名）。一把只允许它的密钥，
+    管理员打开再保存时这一项不在候选项里：不渲染就会被静默丢掉，列表变空 → 走 clear，
+    限制被整个清掉，密钥反而变成不限模型。"""
+    key = _key(id=5, allowed_models=["gemini-flash-thinking"])
+    out = _run(tmp_path, keys=[key], edit_id=5,
+               options={"accounts": [], "models": ["gemini-pro", "gemini-flash"]})
+
+    assert out["checked"]["models"] == ["gemini-flash-thinking"]
+    patches = [r for r in out["requests"] if r["method"] == "PATCH"]
+    assert len(patches) == 1, out["requests"]
+    assert patches[0]["body"]["allowed_models"] == ["gemini-flash-thinking"]
+    assert "allowed_models" not in patches[0]["body"].get("clear", [])

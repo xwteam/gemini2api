@@ -10,7 +10,9 @@ def test_model_numbers():
     assert GEMINI_MODELS["gemini-3-pro"]["model_number"] == 3
     assert GEMINI_MODELS["gemini-3-flash"]["model_number"] == 1
     assert GEMINI_MODELS["gemini-3-flash-lite"]["model_number"] == 6
-    assert GEMINI_MODELS["gemini-3-flash-thinking"]["model_number"] == 1
+    # flash-thinking 的内部条目已删（只剩隐藏别名），别名解析到 flash，编号也随之是 flash 的
+    assert "gemini-3-flash-thinking" not in GEMINI_MODELS
+    assert _model_number("gemini-3-flash-thinking") == 1
 
 def test_model_number_helper_resolves_public_names():
     # public names resolve via _FAMILY_DEFAULT

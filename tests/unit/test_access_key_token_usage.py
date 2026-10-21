@@ -357,7 +357,9 @@ def test_a_zero_usage_row_is_not_reported_as_unpriced():
     ("gemini-pro", "gemini-pro"),                       # 公开名原样
     ("gemini-2.5-pro", "gemini-pro"),                   # 旧别名
     ("gemini-3-pro", "gemini-pro"),                     # 内部名（直接调也能通）
-    ("gemini-3-flash-thinking-advanced", "gemini-flash-thinking"),
+    # 已下线的 flash-thinking：历史用量里的公开名与内部名都归一到 gemini-flash（同价）
+    ("gemini-3-flash-thinking-advanced", "gemini-flash"),
+    ("gemini-flash-thinking", "gemini-flash"),
     ("gemini-4-argon", "gemini-argon"),                 # 非契约 family 也要归一
     ("vendor-x", "vendor-x"),                           # 认不出的原样留着
     ("", ""),

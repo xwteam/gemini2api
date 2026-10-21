@@ -17,8 +17,8 @@ token 与美元只统计、不拦人。
       gemini-4-argon   2026-12-01 起 输入 $2.00→$4.00、输出 $10.00→$20.00
       gemini-3.8-flash 2027-01-01 起 输入 $0.75→$1.50、输出 $3.75→$7.50
     这两个日期一到，内置默认值就会静默偏低，届时要么改这里、要么用 TOKEN_PRICES 覆盖。
-  - gemini-flash-thinking 是本仓自造的公开名，官方没有对应 SKU（thinking 是模式不是
-    模型），借用 flash 的价。
+  - 已下线的 gemini-flash-thinking（及 gemini-3-flash-thinking* 内部名）是隐藏别名，
+    经 MODEL_ALIASES 归一到 gemini-flash 计价（过去它本来就借用 flash 的价，金额不变）。
 """
 
 import logging
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOKEN_PRICES: dict[str, tuple[float, float]] = {
     "gemini-pro": (2.00, 12.00),            # 官方 SKU: gemini-3.1-pro-preview（≤200k 档）
     "gemini-flash": (0.75, 3.75),           # 官方 SKU: gemini-3.8-flash
-    "gemini-flash-thinking": (0.75, 3.75),  # 官方无对应 SKU，借用 flash 价
     "gemini-flash-lite": (0.30, 2.50),      # 官方 SKU: gemini-3.5-flash-lite
     "gemini-argon": (2.00, 10.00),          # 官方 SKU: gemini-4-argon
 }

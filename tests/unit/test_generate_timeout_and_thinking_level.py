@@ -31,7 +31,6 @@ _AUTH = {"Authorization": "Bearer sk-test-key"}
     [
         ("gemini-3-pro", 300),
         ("gemini-3-flash", 120),
-        ("gemini-3-flash-thinking", 120),
         ("gemini-3-flash-lite", 60),
         ("gemini-3-pro-advanced", 300),
         # Argon 的心跳描述是 "Complex tasks"、和 pro 同级：给兜底的 60s 等于一道复杂题

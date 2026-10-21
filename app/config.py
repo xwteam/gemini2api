@@ -104,7 +104,8 @@ class Settings(BaseSettings):
     # 避免一个系统性的未知拒绝把整池账号拖进冷却）。抓到样本后往这里配即可生效。
     bard_error_codes: str = ""
     # 非流式对话 POST 超时，按模型族分层（秒）。形如 "flash-lite=60,flash=120,pro=300"。
-    # 留空=用代码里的默认分层（flash-lite 60 / flash 120 / flash-thinking 120 / pro 300）。
+    # 留空=用代码里的默认分层（flash-lite 60 / flash 120 / pro 300 / argon 300）。
+    # 旧配置里的 flash-thinking=... 已无对应模型族（该模型已下线为 gemini-flash 的别名），被忽略、无害。
     # 同一道难题 flash-lite 几秒就回、pro 经常 80 秒以上，全族共用一个 60s 会让越强的模型
     # 越容易被我们自己掐断。认不出的模型族回落到 60s。
     generate_timeouts: str = ""

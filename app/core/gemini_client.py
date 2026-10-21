@@ -27,7 +27,7 @@ _IMAGE_DOWNLOAD_TIMEOUT = 25  # 单次 GET 超时（秒），避免 =s0 全分�
 _IMAGE_SIZE_DEFAULT = "=s2048"  # 2048px 边长足够预览，字节/耗时远小于 =s0
 _GENERATE_TIMEOUT_DEFAULT = 60  # 认不出模型族时的兜底
 _GENERATE_TIMEOUT_IMAGE = 180  # 生图 POST 超时（pro 常 >60s，flash 通常 <60s）
-# 非流式 POST 超时按模型族分层：同一道难题 flash-lite 几秒就回，pro / flash-thinking
+# 非流式 POST 超时按模型族分层：同一道难题 flash-lite 几秒就回，pro / 开了思考的 flash
 # 经常 80 秒以上（实测 87s）。过去全族共用 60s，于是"模型越强越容易被我们自己掐断"，
 # 而且掐断后还会被通用重试放大成 60→等1s→60→等2s→60，用户等 183 秒才看到失败。
 # 两个参考实现都比我们宽：refs/gemini-web-to-api 5 分钟（gemini_service.go:620 +
@@ -35,7 +35,6 @@ _GENERATE_TIMEOUT_IMAGE = 180  # 生图 POST 超时（pro 常 >60s，flash 通�
 _GENERATE_TIMEOUT_BY_FAMILY = {
     "flash-lite": 60,
     "flash": 120,
-    "flash-thinking": 120,
     "pro": 300,
     # Argon 的心跳描述是 "Complex tasks"，和 pro 同级，所以给 pro 档的时间。
     # 给兜底值（60s）的话，一道复杂题会在还在生成时被我们自己掐断。
@@ -521,15 +520,12 @@ MODEL_HEADER_KEY = "x-goog-ext-525001261-jspb"
 GEMINI_MODELS = {
     "gemini-3-pro": {"id": "9d8ca3786ebdfbea", "capacity": 1, "pro_only": False, "family": "pro", "model_number": 3},
     "gemini-3-flash": {"id": "fbb127bbb056c959", "capacity": 1, "pro_only": False, "family": "flash", "model_number": 1},
-    "gemini-3-flash-thinking": {"id": "5bf011840784117a", "capacity": 1, "pro_only": False, "family": "flash-thinking", "model_number": 1},
     "gemini-3-flash-lite": {"id": "cf41b0e0dd7d53e5", "capacity": 1, "pro_only": False, "family": "flash-lite", "model_number": 6},
     "gemini-3-pro-plus": {"id": "e6fa609c3fa255c0", "capacity": 4, "pro_only": True, "family": "pro", "model_number": 3},
     "gemini-3-flash-plus": {"id": "56fdd199312815e2", "capacity": 4, "pro_only": True, "family": "flash", "model_number": 1},
-    "gemini-3-flash-thinking-plus": {"id": "e051ce1aa80aa576", "capacity": 4, "pro_only": True, "family": "flash-thinking", "model_number": 1},
     "gemini-3-flash-lite-plus": {"id": "8c46e95b1a07cecc", "capacity": 4, "pro_only": True, "family": "flash-lite", "model_number": 6},
     "gemini-3-pro-advanced": {"id": "e6fa609c3fa255c0", "capacity": 2, "pro_only": True, "family": "pro", "model_number": 3},
     "gemini-3-flash-advanced": {"id": "56fdd199312815e2", "capacity": 2, "pro_only": True, "family": "flash", "model_number": 1},
-    "gemini-3-flash-thinking-advanced": {"id": "e051ce1aa80aa576", "capacity": 2, "pro_only": True, "family": "flash-thinking", "model_number": 1},
     "gemini-3-flash-lite-advanced": {"id": "8c46e95b1a07cecc", "capacity": 2, "pro_only": True, "family": "flash-lite", "model_number": 6},
     # 4 Argon（心跳条目 [11]="4 Argon" / [0]=95a4c0abcba24364 / [17]=8）。
     # 只登记真机实证过的那一个档位（capacity 2，真机 generate 已返回正常回答）：
@@ -540,26 +536,31 @@ GEMINI_MODELS = {
     "gemini-4-argon": {"id": "95a4c0abcba24364", "capacity": 2, "pro_only": True, "family": "argon", "model_number": 8},
 }
 
-# 对外暴露的稳定模型名（永不变，API 契约）。客户端只认这 4 个，
-# 内部按账号当前真实可用的模型动态映射，账号订阅等级/Google 灰度怎么变都不影响 API。
-PUBLIC_MODELS = ["gemini-pro", "gemini-flash", "gemini-flash-thinking", "gemini-flash-lite"]
-# 这 4 个 family 是上面那 4 个契约公开名的唯一来源。心跳自动发现（见
-# _describe_discovered_model）**绝不允许**往这 4 个 family 里写东西：一条被污染/异常的
+# 对外暴露的稳定模型名（永不变，API 契约）。这 3 个恒定列出，
+# 内部按账号当前真实可用的模型动态映射（心跳认出的网页模型：3.1 Pro / 3.8 Flash /
+# 3.5 Flash-Lite），账号订阅等级/Google 灰度怎么变都不影响 API。
+# 第 4 个对外名 gemini-argon 走"心跳发现到才列"（见 _public_model_names），没有 Argon
+# 的账号不列、不路由。
+# 过去还有第 5 个 gemini-flash-thinking：它只是"flash + 思考模式"的假模型。思考现在是
+# 每个模型都有的 low/medium/high 档位（见 THINKING_LEVEL_*），这个名字就不再列出，
+# 只作为隐藏别名指向 gemini-flash（见 MODEL_ALIASES），老客户端照样能调通。
+PUBLIC_MODELS = ["gemini-pro", "gemini-flash", "gemini-flash-lite"]
+# 这 3 个 family 是上面那 3 个契约公开名的唯一来源。心跳自动发现（见
+# _describe_discovered_model）**绝不允许**往这几个 family 里写东西：一条被污染/异常的
 # 心跳响应最大的危害不是多出一个模型，而是顶掉 gemini-pro 的映射、把用户请求路由到
-# 意外模型。把这 4 个名字的来源和"发现"彻底隔开，它就顶不掉。
-_BASE_FAMILIES = frozenset({"pro", "flash", "flash-thinking", "flash-lite"})
+# 意外模型。把这几个名字的来源和"发现"彻底隔开，它就顶不掉。
+_BASE_FAMILIES = frozenset({"pro", "flash", "flash-lite"})
 _PUBLIC_FAMILY = {
     "gemini-pro": "pro",
     "gemini-flash": "flash",
-    "gemini-flash-thinking": "flash-thinking",
     "gemini-flash-lite": "flash-lite",
-    # Argon 的公开名刻意不带版本号，和上面 4 个一个规矩：Google 下次改叫 4.1 就不用再
+    # Argon 的公开名刻意不带版本号，和上面 3 个一个规矩：Google 下次改叫 4.1 就不用再
     # 加一个对外名字（"gemini-4-argon" 作为内部名/别名仍然可用，见 GEMINI_MODELS）。
     "gemini-argon": "argon",
 }
 # 每个**契约** family 的默认内部模型（账号没拉到真实模型时的兜底，按基础版）。
 # ⚠️ 这张表的键必须恰好是 _BASE_FAMILIES，一个都不能多：它是"账号没有这个 family 时
-# 照样放行"的唯一来源。4 个契约 family 每个账号都有，退兜底是安全的；心跳发现来的
+# 照样放行"的唯一来源。3 个契约 family 每个账号都有，退兜底是安全的；心跳发现来的
 # family（argon 及将来的新 family）**只有发现到它的那个账号**有，给它配一个兜底行
 # 等于"任何账号都能路由 Argon"——混合池里 (N-1)/N 的请求会带着 Argon 的 model id
 # 发给一个没有 Argon 的账号，而那既可能是 4xx/空回复，也可能是 Google 按账号默认模型
@@ -567,7 +568,6 @@ _PUBLIC_FAMILY = {
 _FAMILY_DEFAULT = {
     "pro": "gemini-3-pro",
     "flash": "gemini-3-flash",
-    "flash-thinking": "gemini-3-flash-thinking",
     "flash-lite": "gemini-3-flash-lite",
 }
 assert set(_FAMILY_DEFAULT) == set(_BASE_FAMILIES)
@@ -579,16 +579,28 @@ MODEL_ALIASES = {
     # 旧版别名 → 公开名（再由公开名按账号动态解析），保留兼容
     "gemini-2.5-pro": "gemini-pro",
     "gemini-2.5-flash": "gemini-flash",
-    "gemini-2.5-flash-thinking": "gemini-flash-thinking",
     "gemini-2.5-pro-preview-05-06": "gemini-pro",
     "gemini-2.5-flash-preview-04-17": "gemini-flash",
     "gemini-2.5-flash-preview-05-20": "gemini-flash",
     "gemini-2.0-flash": "gemini-flash",
-    "gemini-2.0-flash-thinking": "gemini-flash-thinking",
     "gemini-2.0-flash-lite": "gemini-flash-lite",
     "gemini-1.5-pro": "gemini-pro",
     "gemini-1.5-flash": "gemini-flash",
+    # 已下线的假模型 flash-thinking（"flash + 思考模式"）：**不列出、但必须继续能调**，
+    # 已经有客户端在用这些名字，绝不能让它们突然 400。一律落到 gemini-flash，思考按
+    # 档位走（请求没带思考参数就用"默认思考档位"，同 gemini-flash）。
+    # 内部名也要收：过去 gemini-3-flash-thinking* 是 GEMINI_MODELS 的真条目、可以直接调
+    # （token_pricing 也按它们归一计价），删了条目不给别名，openai/responses 的闸门会把它们
+    # 当成第三方模型 → 400。
+    "gemini-flash-thinking": "gemini-flash",
+    "gemini-2.5-flash-thinking": "gemini-flash",
+    "gemini-2.0-flash-thinking": "gemini-flash",
+    "gemini-3-flash-thinking": "gemini-flash",
+    "gemini-3-flash-thinking-plus": "gemini-flash",
+    "gemini-3-flash-thinking-advanced": "gemini-flash",
 }
+# 已下线、但仍作隐藏别名可调的旧公开名。只用来派生 _DISCOVER_RESERVED_WORDS（见下）。
+_RETIRED_PUBLIC_MODELS = ("gemini-flash-thinking",)
 
 KNOWN_MODELS = list(GEMINI_MODELS.keys())
 
@@ -660,9 +672,13 @@ _DISCOVER_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 _DISCOVER_SLUG_SEP_RE = re.compile(r"[^a-z0-9.]+")
 _DISCOVER_FAMILY_RE = re.compile(r"^[a-z][a-z0-9.\-]{0,31}$")
 _DISCOVER_NAME_RE = re.compile(r"^gemini-[a-z0-9][a-z0-9.\-]{0,39}$")
-# 铸新公开名时不许出现的词：4 个契约公开名里的每一个成分。见 _describe_discovered_model。
+# 铸新公开名时不许出现的词：契约公开名（含已下线、仍作隐藏别名的旧公开名）里的每一个成分。
+# 见 _describe_discovered_model。旧公开名也算进来：PUBLIC_MODELS 去掉 flash-thinking 后，
+# "thinking" 若随之退出保留词，心跳就能铸出 gemini-thinking-xxx 这类"看着像官方思考模型"
+# 的公开名。
 _DISCOVER_RESERVED_WORDS = frozenset(
-    part for name in PUBLIC_MODELS for part in name.split("-") if part != "gemini"
+    part for name in (*PUBLIC_MODELS, *_RETIRED_PUBLIC_MODELS)
+    for part in name.split("-") if part != "gemini"
 )
 # 一轮心跳最多采纳几条。畸形/被污染的响应可能塞几百条进来，而每条都要进实例态字典。
 _DISCOVER_MAX_PER_ROUND = 8
@@ -704,6 +720,11 @@ def _describe_discovered_model(entry: list, capacity: int) -> dict | None:
         return None
     family = _discover_slug(category)
     if not _DISCOVER_FAMILY_RE.match(family) or family in _BASE_FAMILIES:
+        return None
+    # family 也不许含契约词：category="Flash Thinking" 会得到 family "flash-thinking" ——
+    # 那是已下线的旧 family，它的公开名已经是指向 gemini-flash 的隐藏别名，不该被心跳
+    # 重新"复活"成一个独立模型；同理 "Pro Max" 这类也不是一个新产品族。
+    if _DISCOVER_RESERVED_WORDS.intersection(family.split("-")):
         return None
 
     display = _entry_display_name(entry)
@@ -761,7 +782,7 @@ def _model_number(model_name: str, models: dict | None = None,
 def _resolve_model(model_name: str, family_model: dict[str, str] | None = None) -> str:
     """把用户请求的模型名解析为账号当前真实可用的内部模型名。
     1. 旧别名 → 公开名
-    2. 公开名（gemini-pro/flash/flash-thinking）→ 账号当前该 family 真实可用的内部模型
+    2. 公开名（gemini-pro/flash/flash-lite/argon）→ 账号当前该 family 真实可用的内部模型
        （family_model 为账号实例映射，缺省/未命中则用 family 默认）
     3. 已经是内部模型名（gemini-3-*）→ 原样
 
@@ -1928,10 +1949,10 @@ class GeminiWebClient:
                 "skipped": total_skipped, "failed": total_failed}
 
     def _public_model_names(self) -> list[str]:
-        """对外暴露的公开模型名：4 个契约名恒在最前且顺序不变，再追加本账号真实拿到的新 family。
+        """对外暴露的公开模型名：3 个契约名恒在最前且顺序不变，再追加本账号真实拿到的新 family。
 
         为什么不把新名字直接写进 PUBLIC_MODELS：那样"一把 Argon 都没有的部署"也会在
-        /v1/models 里看到一个调不通的选项。4 个老名字的存在性与顺序**不依赖任何运行时
+        /v1/models 里看到一个调不通的选项。3 个契约名的存在性与顺序**不依赖任何运行时
         状态**，契约不破。
         """
         names = list(PUBLIC_MODELS)
@@ -2029,7 +2050,7 @@ class GeminiWebClient:
                         mid = entry[0]
                         name = id_to_name.get(mid)
                         fam = GEMINI_MODELS.get(name or "", {}).get("family")
-                        # 只有 4 个**基础** family 走写死表这条老路（逐字节不变）。
+                        # 只有**基础** family 走写死表这条老路（逐字节不变）。
                         # 其余一律走自动发现：心跳带的 model_number / capacity 才是这个
                         # 账号此刻的真相，写死表那一行只是"心跳拿不到时"的兜底。
                         if name and fam in _BASE_FAMILIES:
@@ -2068,9 +2089,9 @@ class GeminiWebClient:
                             f"field4={_entry_field(entry, 4)!r}"
                         )
                     if family_model:
-                        # 账号拉到了 pro/flash，按同 capacity 等级补全 thinking
-                        # （thinking 变体在心跳里没有独立条目，只能按同档补）。
-                        # ⚠️ 只补这 4 个基础 family：不加这个限制的话，任何 capacity=2 的
+                        # 按同 capacity 等级补全本轮心跳里缺失的基础 family
+                        # （心跳没给到某个基础 family 的条目时，只能按同档补）。
+                        # ⚠️ 只补这几个基础 family：不加这个限制的话，任何 capacity=2 的
                         # 账号（真实账号正是 cap 2）都会被自动补上 family_model["argon"]，
                         # 哪怕它的心跳里根本没有 Argon 条目 —— 然后把 Argon 的 id 发给
                         # Google，症状是偶发空回复/4xx，且只在多账号池里出现。
@@ -2082,7 +2103,7 @@ class GeminiWebClient:
                         # 非契约 family 按"本轮发现到的"整体替换，不做累加：update 的话
                         # 账号失去的模型会永远留在 /v1/models 里、还继续可路由 —— 上一轮
                         # 发现了 Argon、这一轮 Google 收回，用户看到的就是一个"列表里有、
-                        # 调起来坏"的模型，直到进程重启。4 个契约 family 不参与清理：
+                        # 调起来坏"的模型，直到进程重启。契约 family 不参与清理：
                         # 它们的存在性与顺序不依赖任何运行时状态（见 _public_model_names）。
                         for fam in [f for f in self._family_model
                                     if f not in _BASE_FAMILIES and f not in family_model]:

@@ -50,7 +50,8 @@ def test_alias_2_0_flash_lite_maps_to_flash_lite():
 def test_regression_existing_public_models_unchanged():
     assert _resolve_model("gemini-pro") == "gemini-3-pro"
     assert _resolve_model("gemini-flash") == "gemini-3-flash"
-    assert _resolve_model("gemini-flash-thinking") == "gemini-3-flash-thinking"
+    # flash-thinking 已下线为隐藏别名（用户要求去掉这个假模型），落到 flash 的兜底行
+    assert _resolve_model("gemini-flash-thinking") == "gemini-3-flash"
 
 
 def test_parse_models_from_status_maps_flash_lite():
@@ -73,8 +74,7 @@ def test_v1_models_includes_flash_lite(client):
 
 def test_backfill_flash_lite_for_account_without_it():
     # Known-limitation path: an account exposing only a cap-1 flash model must
-    # still get a flash-lite name via capacity backfill (same mechanism as the
-    # existing synthetic flash-thinking).
+    # still get a flash-lite name via capacity backfill.
     from app.core.gemini_client import GEMINI_MODELS
     c = GeminiWebClient.__new__(GeminiWebClient)
     c._family_model = {}
