@@ -637,8 +637,12 @@ class AccessKeyStore:
                     activated_at=item.get("activated_at") or None,
                     request_limit=_coerce_positive_int(item.get("request_limit")),
                     request_count=int(item.get("request_count") or 0),
-                    input_tokens=int(item.get("input_tokens") or 0),
-                    output_tokens=int(item.get("output_tokens") or 0),
+                    # 夹掉负数：_coerce_token_map 对**每个模型**的明细已经拒负，
+                    # 合计这两格不夹的话，手改过/写坏的 access_keys.json 会让面板显示
+                    # 「↑-5,000,000」，而且 add_token_usage 会在这个负基数上继续累加，
+                    # 合计永远和明细对不上。
+                    input_tokens=max(0, int(item.get("input_tokens") or 0)),
+                    output_tokens=max(0, int(item.get("output_tokens") or 0)),
                     tokens_by_model=_coerce_token_map(item.get("tokens_by_model")),
                     bound_account_ids=_coerce_str_list(item.get("bound_account_ids")),
                     allowed_models=_coerce_str_list(item.get("allowed_models")),

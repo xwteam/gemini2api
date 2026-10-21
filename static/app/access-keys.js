@@ -59,13 +59,25 @@ function tokensText(key) {
 
 // 估算成本。恒带 "≈"，算不出来显示 "—"：价格表里没配那个模型时，绝不回落到某个
 // "差不多"的价，也绝不把「不知道」显示成 0（那会让人以为账是对的）。
+// 只算出一部分时再补一个 "+"：一个精确的 "≈ $14.00" 会掩盖掉某个没配价的模型
+// 贡献的 0 美元 —— 「算出来一半」不许冒充「算全了」。
 function costText(key) {
     const cost = key.estimated_cost_usd;
     if (cost === null || cost === undefined || !isFinite(Number(cost))) {
         return t('accessKeys.costUnpriced');
     }
     const n = Number(cost);
-    return `\u2248 $${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`;
+    const partial = key.estimated_cost_partial ? '+' : '';
+    return `\u2248 $${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}${partial}`;
+}
+
+// 成本单元格的悬浮说明：只算出一部分时把没配价的模型名列出来，不然那个 "+" 没法查。
+function costTitle(key) {
+    const base = t('accessKeys.costTooltip');
+    const models = Array.isArray(key.estimated_cost_unpriced_models)
+        ? key.estimated_cost_unpriced_models : [];
+    if (!models.length) return base;
+    return `${base}\n\n${t('accessKeys.costPartialHint').replace('{models}', models.join(', '))}`;
 }
 
 function boundText(key) {
@@ -106,7 +118,7 @@ function render() {
         html += `<td>${escapeHtml(validityText(k))}</td>`;
         html += `<td>${escapeHtml(usageText(k))}</td>`;
         html += `<td>${escapeHtml(tokensText(k))}</td>`;
-        html += `<td title="${escapeAttr(t('accessKeys.costTooltip'))}">${escapeHtml(costText(k))}</td>`;
+        html += `<td title="${escapeAttr(costTitle(k))}">${escapeHtml(costText(k))}</td>`;
         html += `<td>${escapeHtml(boundText(k))}</td>`;
         html += '<td class="akk-actions">'
             + `<button class="btn btn-sm btn-outline akk-edit-btn" data-id="${idEsc}" title="${escapeAttr(t('accessKeys.edit'))}"><i class="fas fa-pen"></i></button>`

@@ -270,3 +270,99 @@ def test_record_token_usage_is_idempotent_within_one_request(monkeypatch, tmp_pa
     contextvars.copy_context().run(_one_request)
     assert fresh.get(created.id).input_tokens == 200
     assert fresh.get(created.id).output_tokens == 400
+
+
+# ---------------------------------------------------------------------------
+# 价格表的键归一：四个协议喂给 record_token_usage 的名字管线不是同一条
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("module,path,body,expected", [
+    # 旧别名（gemini.py 把路径参数原样传进来，openai/responses 传 resolved_model）
+    ("app.routers.openai", "/v1/chat/completions",
+     {"model": "gemini-2.5-pro", "messages": [{"role": "user", "content": "hi"}]},
+     "gemini-pro"),
+    ("app.routers.gemini", "/v1beta/models/gemini-2.5-pro:generateContent",
+     {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+     "gemini-pro"),
+    ("app.routers.responses", "/v1/responses",
+     {"model": "gemini-2.5-flash", "input": "hi"},
+     "gemini-flash"),
+    ("app.routers.claude", "/v1/messages",
+     {"model": "gemini-2.5-flash", "max_tokens": 64,
+      "messages": [{"role": "user", "content": "hi"}]},
+     "gemini-flash"),
+    # 内部模型名直接调也能通（它在 GEMINI_MODELS 里），同样要归到公开名 —— 否则
+    # 这段用量会在面板上单开一行、而且因为"没配价"按 0 美元计进合计
+    ("app.routers.openai", "/v1/chat/completions",
+     {"model": "gemini-3-pro", "messages": [{"role": "user", "content": "hi"}]},
+     "gemini-pro"),
+    ("app.routers.gemini", "/v1beta/models/gemini-3-flash-lite:generateContent",
+     {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+     "gemini-flash-lite"),
+])
+def test_every_protocol_folds_the_model_name_into_a_priced_key(
+        gem_client, monkeypatch, issued, module, path, body, expected):
+    """四个协议的落账名字管线各不相同（gemini.py 传原始路径参数、openai/responses 传
+    resolved_model、responses 的流式路径又传 model），所以归一必须每条都验。
+    落在价格表外的键 = 那段用量按 0 美元计进一个看着精确的合计。"""
+    from app.core.token_pricing import DEFAULT_TOKEN_PRICES
+
+    store, kid, headers = issued
+    _patch(monkeypatch, module)
+
+    r = gem_client.post(path, headers=headers, json=body)
+
+    assert r.status_code == 200, r.text
+    assert list(store.get(kid).tokens_by_model) == [expected]
+    assert expected in DEFAULT_TOKEN_PRICES
+
+
+def test_a_third_party_model_name_is_left_alone(gem_client, monkeypatch, issued):
+    """零回归：认不出的名字（第三方中转的模型）原样留着，由面板显示成未计价 —— 
+    绝不往某个"差不多"的价上硬套。"""
+    store, kid, headers = issued
+    _patch(monkeypatch, "app.routers.openai")
+
+    gem_client.post("/v1/chat/completions", headers=headers, json={
+        "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}]})
+    store.add_token_usage(kid, "some-vendor-model", 1000, 1000)
+
+    body = gem_client.get("/admin/access-keys",
+                          headers={"Authorization": "Bearer sk-test-key"}).json()
+    row = body["keys"][0]
+
+    assert "some-vendor-model" in row["tokens_by_model"]
+    assert row["estimated_cost_unpriced_models"] == ["some-vendor-model"]
+    assert row["estimated_cost_partial"] is True
+
+
+def test_a_partial_total_is_flagged_instead_of_looking_exact(client, monkeypatch, tmp_path):
+    """只有一部分模型配了价时，合计仍然算得出来 —— 但界面必须看得出它是部分值。
+    不标的话，一把密钥用 gemini-pro 调一次、再用某个没配价的模型跑 1 亿 token，
+    面板会显示一个精确得不得了的 "≈ $14.00"，而那 1 亿 token 贡献了 0。"""
+    fresh = AccessKeyStore(file_path=str(tmp_path / "access_keys.json"))
+    monkeypatch.setattr(store_module, "access_key_store", fresh)
+    entry = fresh.create("k")
+    fresh.add_token_usage(entry.id, "gemini-pro", 1_000_000, 1_000_000)
+    fresh.add_token_usage(entry.id, "vendor-x", 50_000_000, 50_000_000)
+
+    row = client.get("/admin/access-keys",
+                     headers={"Authorization": "Bearer sk-test-key"}).json()["keys"][0]
+
+    assert row["estimated_cost_usd"] == pytest.approx(2.00 + 12.00)
+    assert row["estimated_cost_partial"] is True
+    assert row["estimated_cost_unpriced_models"] == ["vendor-x"]
+
+
+def test_a_fully_priced_total_is_not_flagged(client, monkeypatch, tmp_path):
+    fresh = AccessKeyStore(file_path=str(tmp_path / "access_keys.json"))
+    monkeypatch.setattr(store_module, "access_key_store", fresh)
+    entry = fresh.create("k")
+    fresh.add_token_usage(entry.id, "gemini-pro", 1_000_000, 0)
+    fresh.add_token_usage(entry.id, "gemini-flash", 1_000_000, 0)
+
+    row = client.get("/admin/access-keys",
+                     headers={"Authorization": "Bearer sk-test-key"}).json()["keys"][0]
+
+    assert row["estimated_cost_partial"] is False
+    assert row["estimated_cost_unpriced_models"] == []

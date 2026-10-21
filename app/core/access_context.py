@@ -64,10 +64,12 @@ def record_token_usage(model: str, input_tokens: int, output_tokens: int) -> Non
     _usage_recorded.set(True)
     try:
         from app.core.access_key_store import access_key_store
-        from app.core.gemini_client import MODEL_ALIASES
-        # 旧别名归一到公开名：价格表是按那几个稳定公开名配的，用 gemini-2.5-pro
-        # 调同一个模型不该在面板上单开一行、还因为"没配价"显示成 "—"。
-        name = MODEL_ALIASES.get(str(model or "").strip(), model)
+        from app.core.token_pricing import price_table_name
+        # 归一到价格表的键（公开名）：价格表是按那几个稳定公开名配的。用 gemini-2.5-pro
+        # （旧别名）或 gemini-3-pro（内部名，直接调也能通）调同一个模型，不该在面板上
+        # 单开一行、还因为"没配价"把那段用量算成 0 美元。认不出的名字（第三方中转的
+        # 模型）原样留着，由面板显示成未计价。
+        name = price_table_name(model) or model
         access_key_store.add_token_usage(entry.id, name, input_tokens, output_tokens)
     except Exception:          # 统计绝不能让一个已经成功的回答失败
         logger.debug("record_token_usage failed", exc_info=True)

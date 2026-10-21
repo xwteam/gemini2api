@@ -58,7 +58,7 @@ def _extract_const_object(source: str, name: str) -> str:
 
 
 _AK_FUNCS = ("escapeAttr", "statusBadge", "validityText", "usageText", "tokensText",
-             "costText", "boundText", "render")
+             "costText", "costTitle", "boundText", "render")
 
 
 def _harness() -> str:
@@ -121,6 +121,7 @@ def _harness() -> str:
                 usage: keysData.map(usageText),
                 tokens: keysData.map(tokensText),
                 cost: keysData.map(costText),
+                costTitle: keysData.map(costTitle),
                 scope: keysData.map(boundText),
                 consoleErrors: _consoleErrors,
             };
@@ -151,6 +152,7 @@ def _key(**kw) -> dict:
         "request_limit": None, "request_count": 0,
         "input_tokens": 0, "output_tokens": 0, "tokens_by_model": None,
         "estimated_cost_usd": None,
+        "estimated_cost_partial": False, "estimated_cost_unpriced_models": [],
         "bound_account_ids": None, "allowed_models": None, "last_used_at": None,
     }
     base.update(kw)
@@ -332,3 +334,27 @@ def test_the_cost_column_carries_the_estimate_disclaimer(tmp_path):
                   i18n={"accessKeys.costTooltip": tip})
 
     assert out["list"].count(tip) >= 2, "列头和单元格都要带悬浮说明"
+
+
+@_needs_node
+def test_a_partial_cost_is_marked_with_a_plus(tmp_path):
+    """只算出一部分时那个数必须看得出是部分值：不标的话，一个精确的 "≈ $14.00" 会
+    掩盖掉某个没配价的模型贡献的 0 美元 —— 正是 M2 红线里"看着精确其实不准"。"""
+    out = _render([_key(estimated_cost_usd=14.0, estimated_cost_partial=True,
+                        estimated_cost_unpriced_models=["vendor-x", "vendor-y"])],
+                  tmp_path, i18n={"accessKeys.costTooltip": "DISCLAIMER",
+                                  "accessKeys.costPartialHint": "unpriced: {models}"})
+
+    assert out["cost"] == ["≈ $14.00+"]
+    assert out["costTitle"] == ["DISCLAIMER\n\nunpriced: vendor-x, vendor-y"]
+
+
+@_needs_node
+def test_a_fully_priced_cost_has_no_plus_and_no_extra_hint(tmp_path):
+    """零回归：全都配了价时既不加 "+"，也不往提示里塞那一段。"""
+    out = _render([_key(estimated_cost_usd=14.0)], tmp_path,
+                  i18n={"accessKeys.costTooltip": "DISCLAIMER",
+                        "accessKeys.costPartialHint": "unpriced: {models}"})
+
+    assert out["cost"] == ["≈ $14.00"]
+    assert out["costTitle"] == ["DISCLAIMER"]

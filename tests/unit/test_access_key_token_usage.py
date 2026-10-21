@@ -16,7 +16,8 @@ import pytest
 from app.config import settings
 from app.core.access_key_store import AccessKeyStore
 from app.core.token_pricing import (
-    DEFAULT_TOKEN_PRICES, current_token_prices, estimate_cost_usd, parse_token_prices,
+    DEFAULT_TOKEN_PRICES, current_token_prices, estimate_cost_breakdown, estimate_cost_usd,
+    parse_token_prices, price_table_name,
 )
 
 
@@ -277,3 +278,101 @@ def test_the_builtin_defaults_cover_every_public_model():
     for name in list(PUBLIC_MODELS) + list(_PUBLIC_FAMILY):
         assert name in DEFAULT_TOKEN_PRICES, name
         assert DEFAULT_TOKEN_PRICES[name][0] > 0 and DEFAULT_TOKEN_PRICES[name][1] > 0
+
+
+def test_negative_token_totals_on_disk_are_clamped(tmp_path):
+    """_coerce_token_map 对**每个模型**的明细已经拒负，但合计那两格过去是裸 int()：
+    手改过/写坏的 access_keys.json 会让面板显示「↑-5,000,000」，而且 add_token_usage
+    会在这个负基数上继续累加，合计永远和明细对不上。"""
+    import json
+
+    path = tmp_path / "access_keys.json"
+    path.write_text(json.dumps({"next_id": 2, "keys": [{
+        "id": 1, "key": "sk-" + "a" * 32, "name": "k", "enabled": True,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "input_tokens": -5_000_000, "output_tokens": -7,
+        "tokens_by_model": {"gemini-pro": {"in": -1, "out": -1}},
+    }]}), encoding="utf-8")
+
+    store = AccessKeyStore(file_path=str(path))
+    entry = store.get(1)
+
+    assert entry.input_tokens == 0
+    assert entry.output_tokens == 0
+    assert not entry.tokens_by_model      # 明细那一侧本来就拒负
+
+    store.add_token_usage(1, "gemini-pro", 100, 200)
+    entry = store.get(1)
+    assert entry.input_tokens == 100 and entry.output_tokens == 200
+    assert entry.tokens_by_model == {"gemini-pro": {"in": 100, "out": 200}}
+
+
+# ---------------------------------------------------------------------------
+# 部分合计：算出来一半不许冒充算全了
+# ---------------------------------------------------------------------------
+
+def test_a_partial_total_reports_the_unpriced_models():
+    """只返回一个 float 的话，「有一部分模型没配价」和「全都配了价」长得一模一样：
+    面板会显示一个精确的 "≈ $14.00"，而其中某个模型的 1 亿 token 贡献了 0。"""
+    total, unpriced = estimate_cost_breakdown({
+        "gemini-pro": {"in": 1_000_000, "out": 1_000_000},
+        "vendor-x": {"in": 50_000_000, "out": 50_000_000},
+    })
+
+    assert total == pytest.approx(2.00 + 12.00)
+    assert unpriced == ["vendor-x"]
+    # 旧口径的 estimate_cost_usd 保持不变（部分合计），只是不再是唯一的出口
+    assert estimate_cost_usd({
+        "gemini-pro": {"in": 1_000_000, "out": 1_000_000},
+        "vendor-x": {"in": 50_000_000, "out": 50_000_000},
+    }) == pytest.approx(14.00)
+
+
+def test_a_fully_priced_total_reports_nothing_unpriced():
+    total, unpriced = estimate_cost_breakdown({"gemini-flash": {"in": 1_000_000, "out": 0}})
+
+    assert total == pytest.approx(0.75)
+    assert unpriced == []
+
+
+def test_nothing_priced_stays_none():
+    total, unpriced = estimate_cost_breakdown({"vendor-x": {"in": 1, "out": 1}})
+
+    assert total is None
+    assert unpriced == ["vendor-x"]
+
+
+def test_a_zero_usage_row_is_not_reported_as_unpriced():
+    """0 用量的行算不算未计价都不影响钱数，但报上去会让面板无端挂一个 "+"。"""
+    total, unpriced = estimate_cost_breakdown({
+        "gemini-pro": {"in": 1_000_000, "out": 0},
+        "vendor-x": {"in": 0, "out": 0},
+    })
+
+    assert total == pytest.approx(2.00)
+    assert unpriced == []
+
+
+@pytest.mark.parametrize("stored,expected", [
+    ("gemini-pro", "gemini-pro"),                       # 公开名原样
+    ("gemini-2.5-pro", "gemini-pro"),                   # 旧别名
+    ("gemini-3-pro", "gemini-pro"),                     # 内部名（直接调也能通）
+    ("gemini-3-flash-thinking-advanced", "gemini-flash-thinking"),
+    ("gemini-4-argon", "gemini-argon"),                 # 非契约 family 也要归一
+    ("vendor-x", "vendor-x"),                           # 认不出的原样留着
+    ("", ""),
+])
+def test_price_table_name_folds_internal_names_and_aliases(stored, expected):
+    """内部模型名是可以直接调的（它们在 GEMINI_MODELS 里，请求会正常成功）。不归一的话
+    那段用量会落在价格表外、按 0 美元计进一个看着精确的合计。"""
+    assert price_table_name(stored) == expected
+    if expected:
+        assert expected in DEFAULT_TOKEN_PRICES or expected == "vendor-x"
+
+
+def test_every_public_name_has_a_default_price():
+    """归一的终点必须都配了价，否则这层归一白做。"""
+    from app.core.gemini_client import _FAMILY_PUBLIC
+
+    for public in _FAMILY_PUBLIC.values():
+        assert public in DEFAULT_TOKEN_PRICES, public

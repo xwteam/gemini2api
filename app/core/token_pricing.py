@@ -76,27 +76,79 @@ def current_token_prices() -> dict[str, tuple[float, float]]:
     return configured or dict(DEFAULT_TOKEN_PRICES)
 
 
-def estimate_cost_usd(tokens_by_model: dict | None,
-                      prices: dict[str, tuple[float, float]] | None = None) -> float | None:
-    """按模型明细算出**估算**美元。一条都算不出来时返回 None（面板显示 "—"）。
+def price_table_name(model: str) -> str:
+    """把一个落账用的模型名归一到**价格表的键**（公开名）。
 
-    返回 None 而不是 0.0 是故意的：「这把密钥没花钱」和「我们不知道这个模型多少钱」
-    是两件完全不同的事，显示成同一个 0 会让人以为账是对的。
+    价格表只按那几个稳定公开名配，但内部模型名是可以直接调的（`gemini-3-pro` 在
+    GEMINI_MODELS 里，请求会正常成功），旧别名也还在。不做这层归一的话，一把密钥
+    用 gemini-pro 调一次、再用 gemini-3-pro 跑 1 亿 token，面板会显示一个精确得
+    不得了的 "≈ $14.00" —— 那 1 亿 token 贡献了 0 —— 正是 M2 红线要防的
+    "看着精确其实不准"。
+
+    归一链：原名命中价格表 → 旧别名 → 内部模型名的 family → 找不到就原样返回
+    （第三方中转的模型名就该原样留着、显示为未计价）。
+    """
+    name = str(model or "").strip()
+    if not name:
+        return name
+    # 延迟导入：这个模块只依赖 app.config，不该在导入期把 gemini_client 整条链拉进来。
+    try:
+        from app.core.gemini_client import GEMINI_MODELS, MODEL_ALIASES, _FAMILY_PUBLIC
+    except Exception:          # pragma: no cover - 只在导入环境异常时
+        return name
+    if name in MODEL_ALIASES:
+        return MODEL_ALIASES[name]
+    info = GEMINI_MODELS.get(name)
+    if info:
+        # _FAMILY_PUBLIC 已经是 family -> 公开名
+        return _FAMILY_PUBLIC.get(info.get("family")) or name
+    return name
+
+
+def estimate_cost_breakdown(tokens_by_model: dict | None,
+                            prices: dict[str, tuple[float, float]] | None = None
+                            ) -> tuple[float | None, list[str]]:
+    """返回 (估算美元, 算不出价的模型名列表)。
+
+    为什么要第二个返回值：只返回一个 float 的话，"有一部分模型没配价"和"全都配了价"
+    长得一模一样 —— 面板会显示一个精确的 "≈ $14.00"，而其中某个模型的 1 亿 token
+    贡献了 0。既然"算不出来显示 —"的全部用意就是不让「没花钱」和「不知道价」长得一样，
+    那"算出来一半"也不能冒充"算全了"。
     """
     if not isinstance(tokens_by_model, dict) or not tokens_by_model:
-        return None
+        return None, []
     table = prices if prices is not None else current_token_prices()
     total = 0.0
     priced = False
+    unpriced: list[str] = []
     for model, counts in tokens_by_model.items():
-        price = table.get(str(model))
-        if price is None or not isinstance(counts, dict):
+        if not isinstance(counts, dict):
             continue
         try:
             tokens_in = int(counts.get("in") or 0)
             tokens_out = int(counts.get("out") or 0)
         except (TypeError, ValueError):
             continue
+        if not tokens_in and not tokens_out:
+            continue
+        price = table.get(str(model)) or table.get(price_table_name(model))
+        if price is None:
+            if str(model) not in unpriced:
+                unpriced.append(str(model))
+            continue
         total += (tokens_in * price[0] + tokens_out * price[1]) / _PER_MILLION
         priced = True
-    return total if priced else None
+    return (total if priced else None), unpriced
+
+
+def estimate_cost_usd(tokens_by_model: dict | None,
+                      prices: dict[str, tuple[float, float]] | None = None) -> float | None:
+    """按模型明细算出**估算**美元。一条都算不出来时返回 None（面板显示 "—"）。
+
+    返回 None 而不是 0.0 是故意的：「这把密钥没花钱」和「我们不知道这个模型多少钱」
+    是两件完全不同的事，显示成同一个 0 会让人以为账是对的。
+
+    一部分模型算不出价时这里仍然返回部分合计 —— 调用方要用 estimate_cost_breakdown
+    拿到那张未计价清单并在界面上标出来（见 app/routers/access_keys.py）。
+    """
+    return estimate_cost_breakdown(tokens_by_model, prices)[0]
