@@ -568,6 +568,8 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 - **档位与网页端思考深度的对应关系尚未真机证实**。把 `budget_tokens` 从 1024 调到 31999 有可能看不出思考变深。
 - 思考 token 会计进 `usage.output_tokens`（与官方计费口径一致），但那仍然是估算值，见「访问密钥用量统计」一节。
 - 全局开关 `EXTENDED_THINKING_ENABLED=false` 时，即使传了 `thinking` 也不走思考路径。
+- **正文开始之后才到的思考增量会被丢掉**（流式）。Anthropic 的块顺序不允许在 `text` 块之后再开或再续 `thinking` 块，所以上游在正文开始后还在增长思考时，后面那段只能丢（会打一条 WARNING 说明丢了多少字符）。需要完整思考链时请用 OpenAI 协议的 `reasoning_content`，那条路径没有块顺序约束。正常顺序（思考先到）不受影响，正文永远完整。
+- `thinking` 传成非对象（字符串/数字/数组）时按**没传**处理、请求照常返回 200，不会变成 422。
 
 ### POST /claude/v1/messages/count_tokens
 

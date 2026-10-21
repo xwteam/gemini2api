@@ -382,3 +382,157 @@ def test_buffered_without_thinking_is_byte_for_byte_unchanged(gem_client, monkey
 
     assert starts == [(0, "text")]
     assert not any("thinking" in json.dumps(d) for _ev, d in events)
+
+
+# ---------------------------------------------------------------------------
+# 6. 非 dict 的 thinking 不许变成 FastAPI 原生 422
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("payload", ["enabled", 5, True, [], 1.5])
+def test_a_non_dict_thinking_behaves_like_not_passing_it(gem_client, monkeypatch, payload):
+    """这个字段加进来之前是被 pydantic extra="ignore" 静默吞掉、请求照常 200。
+    限成 `dict | None` 会把它变成 FastAPI 原生 422：既改了既有状态码，响应体
+    `{"detail":[...]}` 也不是 Anthropic 的 `{"type":"error","error":{...}}` 形状，
+    SDK 拿到它会报解析错误而不是一条可读的报错。parse_anthropic_thinking 本身对非 dict
+    是宽容的（返回 False），放开类型正是为了让那份宽容真的生效。"""
+    captured = []
+    _patch_generate(monkeypatch, captured=captured)
+
+    resp = _post(gem_client, thinking=payload)
+
+    assert resp.status_code == 200, resp.text
+    assert captured == [False], "非 dict 必须等价于「没传」，不许开思考"
+    assert not any(b.get("type") == "thinking" for b in resp.json()["content"])
+
+
+def test_a_non_dict_thinking_gives_the_same_body_as_omitting_it(gem_client, monkeypatch):
+    _patch_generate(monkeypatch)
+
+    weird = _post(gem_client, thinking="enabled").json()
+    without = _post(gem_client).json()
+
+    weird.pop("id"), without.pop("id")
+    assert weird == without
+
+
+# ---------------------------------------------------------------------------
+# 7. 非流式：开思考失败后退回非思考重试
+# ---------------------------------------------------------------------------
+
+def _patch_generate_failing_on_thinking(monkeypatch, exc, *, fail_all=False):
+    """开思考的那次调用抛 exc；退回非思考的那次按 fail_all 决定成功还是继续抛。"""
+    import app.routers.claude as cl
+
+    calls = []
+
+    async def _gen(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                   account_id=None, extended_thinking=False):
+        calls.append(extended_thinking)
+        if extended_thinking or fail_all:
+            raise exc
+        return _result(text="退回后的答案", thoughts="这段思考不该被吐出来")
+
+    monkeypatch.setattr(cl.gemini_client, "generate", _gen)
+    return calls
+
+
+def test_a_failed_thinking_request_retries_without_thinking(gem_client, monkeypatch):
+    """开思考 = 走另一套 payload + header，失败率和普通路径不同。不退回重试的话，
+    "勾了思考"会把整条请求搞挂（镜像 openai.py 既有做法）。"""
+    calls = _patch_generate_failing_on_thinking(monkeypatch, RuntimeError("thinking boom"))
+
+    resp = _post(gem_client, thinking={"type": "enabled", "budget_tokens": 4096})
+
+    assert resp.status_code == 200, resp.text
+    assert calls == [THINKING_LEVEL_HIGH, False], "必须先按档位试一次、再退回非思考试一次"
+    assert resp.json()["content"][-1]["text"] == "退回后的答案"
+
+
+def test_the_retry_turn_does_not_claim_it_was_thinking(gem_client, monkeypatch):
+    """退回成功时那一轮确实没有思考。底层 candidate[37] 的解析是无条件跑的，所以
+    不把 extended_thinking 关掉就会给一个"证明没思考过"的回答配上 thinking 块。"""
+    _patch_generate_failing_on_thinking(monkeypatch, RuntimeError("thinking boom"))
+
+    body = _post(gem_client, thinking={"type": "enabled", "budget_tokens": 4096}).json()
+
+    assert [b["type"] for b in body["content"]] == ["text"]
+    assert "这段思考不该被吐出来" not in json.dumps(body)
+
+
+def test_both_attempts_failing_still_returns_an_anthropic_error(gem_client, monkeypatch):
+    """零回归：退回那次也失败时，报的是第二次的错，信封仍是 Anthropic 形状。"""
+    calls = _patch_generate_failing_on_thinking(
+        monkeypatch, RuntimeError("Client not ready"), fail_all=True)
+
+    resp = _post(gem_client, thinking={"type": "enabled", "budget_tokens": 4096})
+
+    assert calls == [THINKING_LEVEL_HIGH, False]
+    assert resp.status_code != 200
+    body = resp.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] and "not ready" in body["error"]["message"]
+
+
+def test_without_thinking_a_failure_is_not_retried(gem_client, monkeypatch):
+    """零回归：不传 thinking 时**只调一次**，不许凭空多打一次上游。"""
+    calls = _patch_generate_failing_on_thinking(
+        monkeypatch, RuntimeError("Client not ready"), fail_all=True)
+
+    resp = _post(gem_client)
+
+    assert calls == [False]
+    assert resp.status_code != 200
+
+
+# ---------------------------------------------------------------------------
+# 8. 正文块开了之后迟到的思考增量：丢是规范要求的，但不许静默
+# ---------------------------------------------------------------------------
+
+_LATE_EVENTS = [
+    {"type": "delta", "text": "He"},
+    {"type": "thoughts", "text": "LATE"},
+    {"type": "delta", "text": "llo"},
+    {"type": "final", "text": "Hello", "thoughts": "LATE", "images": []},
+]
+
+
+def test_late_thinking_deltas_are_dropped_but_logged(gem_client, monkeypatch, caplog):
+    """思考与正文交错时（上游在正文开始后还在增长 candidate[37]），后到的思考增量
+    只能丢：Anthropic 的块顺序不允许在 text 之后再开/再续 thinking 块。但这是
+    reasoning 通道的丢内容 —— 同一次生成在 OpenAI 协议侧是完整的 —— 所以必须有
+    WARNING 说清丢了多少，而不是一行看不见的 debug。"""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="app.routers.claude")
+    _patch_stream(monkeypatch, _LATE_EVENTS)
+
+    events = _stream(gem_client, thinking={"type": "enabled", "budget_tokens": 4096})
+
+    # 正文完整（不是数据损坏），但一个 thinking 块都没有
+    text = "".join(d["delta"]["text"] for ev, d in events
+                   if ev == "content_block_delta" and d["delta"]["type"] == "text_delta")
+    assert text == "Hello"
+    assert not any("thinking" in json.dumps(d) for _ev, d in events)
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("late thinking delta" in m for m in messages), messages
+    assert any("short by 4 char(s)" in m for m in messages), messages
+
+
+def test_thinking_that_arrives_before_the_text_is_not_logged(gem_client, monkeypatch, caplog):
+    """零回归：正常顺序（思考先到）一个告警都不许打，否则日志天天在喊狼来了。"""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="app.routers.claude")
+    _patch_stream(monkeypatch, [
+        {"type": "thoughts", "text": "T1"},
+        {"type": "delta", "text": "答"},
+        {"type": "final", "text": "答", "thoughts": "T1", "images": []},
+    ])
+
+    events = _stream(gem_client, thinking={"type": "enabled", "budget_tokens": 4096})
+
+    starts = [(d["index"], d["content_block"]["type"])
+              for ev, d in events if ev == "content_block_start"]
+    assert starts == [(0, "thinking"), (1, "text")]
+    assert not [r for r in caplog.records if "thinking" in r.getMessage()]

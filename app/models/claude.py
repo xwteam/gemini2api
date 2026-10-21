@@ -21,12 +21,17 @@ class ClaudeRequest(BaseModel):
     stream: bool = False
     tools: list[ClaudeTool] | None = None
     tool_choice: dict | None = None
-    # Anthropic 的扩展思考入参。刻意用裸 dict 而不是严格子模型：官方这个对象的形态还在
-    # 变（enabled+budget_tokens / adaptive+display / disabled / between_tools），
-    # 用严格模型的话以后多一个字段就会被吞掉或直接 422。解析见
-    # gemini_client.parse_anthropic_thinking。
+    # Anthropic 的扩展思考入参。刻意用 Any 而不是严格子模型、甚至不限成 dict：官方这个
+    # 对象的形态还在变（enabled+budget_tokens / adaptive+display / disabled /
+    # between_tools），用严格模型的话以后多一个字段就会被吞掉或直接 422。
+    # 限成 `dict | None` 也不行：客户端（或中间层）把它传成字符串/数字/数组时会变成
+    # FastAPI 原生 422 `{"detail":[...]}` —— 既改了既有状态码（这个字段在加进来之前是被
+    # extra="ignore" 静默吞掉、请求照常 200），错误信封也不是 Anthropic 的
+    # `{"type":"error","error":{...}}` 形状，SDK 拿到它会报解析错误而不是一条可读的报错。
+    # parse_anthropic_thinking 本身对非 dict 是宽容的（返回 False = 和不传一样），
+    # 这里放开类型正是为了让那份宽容真的生效。
     # 不传（None）时整条路径与改动前逐字节一致 —— 这是本功能唯一的开关。
-    thinking: dict | None = None
+    thinking: Any | None = None
 
     @field_validator("system", mode="before")
     @classmethod

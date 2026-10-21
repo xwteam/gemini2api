@@ -479,6 +479,8 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 
 ⚠️ **`signature`는 포함하지 않습니다**(유효한 서명을 만들 수 없기 때문입니다. 빈 문자열이나 임의의 서명을 넣는 것이 더 위험합니다 — 클라이언트가 실제 API로 되돌려 보내면 400). **단계와 웹 측 사고 깊이의 대응 관계는 실제 계정에서 아직 검증되지 않았습니다.** `EXTENDED_THINKING_ENABLED=false`이면 `thinking`을 보내도 사고 경로를 사용하지 않습니다.
 
+⚠️ **본문이 시작된 뒤에 도착한 사고 증분은 버려집니다**(스트리밍): Anthropic 블록 순서상 `text` 블록 뒤에 `thinking` 블록을 열거나 이어 붙일 수 없습니다(잃어버린 문자 수는 WARNING으로 기록됩니다). 완전한 사고 체인이 필요하면 블록 순서 제약이 없는 OpenAI 프로토콜의 `reasoning_content`를 사용하세요. 본문은 항상 완전합니다. `thinking`이 객체가 아니면 **보내지 않은 것**으로 처리하고 200을 반환합니다.
+
 ### GET /claude/v1/models
 
 Claude 호환 모델 목록

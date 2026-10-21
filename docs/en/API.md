@@ -490,6 +490,8 @@ Thinking is returned as an Anthropic `thinking` content block, placed **before**
 - **The mapping from level to actual web-client thinking depth is not yet verified on a real account.** Raising `budget_tokens` from 1024 to 31999 may not visibly deepen the thinking.
 - Thinking tokens are counted into `usage.output_tokens` (matching the official billing convention), but that number is still an estimate — see the access-key usage section.
 - With `EXTENDED_THINKING_ENABLED=false`, the thinking path is skipped even when `thinking` is sent.
+- **Thinking deltas that arrive after the body started are dropped** (streaming). The Anthropic block order forbids opening or extending a `thinking` block after a `text` block, so when the upstream keeps growing its thinking after the body began, that remainder has to be dropped (a WARNING records how many characters were lost). If you need the complete chain, use `reasoning_content` on the OpenAI protocol, which has no block-order constraint. The normal order (thinking first) is unaffected, and the body is always complete.
+- A `thinking` value that is not an object (string / number / array) is treated as **not sent**: the request still returns 200 rather than a 422.
 
 ### POST /claude/v1/messages/count_tokens
 

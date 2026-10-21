@@ -347,6 +347,10 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
     text_open = False
     text_index = 0
     emitted_thoughts = ""
+    # 正文块开了之后才到的思考增量只能丢（见下面那条 WARNING）。记下丢了多少，
+    # 收尾时一次说清，别让 reasoning 通道静默少内容。
+    dropped_thoughts = 0
+    late_thinking_warned = False
 
     def _ensure_text_open() -> list[str]:
         """返回「把文本块开好」所需的帧（已开则为空）。"""
@@ -385,9 +389,19 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
                 if not t_delta:
                     continue
                 if text_open:
-                    # 文本块已经开了，按规范回不去 thinking 块前面。丢掉迟到的增量并留
-                    # 一行 debug，而不是在 text 之后插一个顺序违规的 thinking 块。
-                    logger.debug("Dropping late thinking delta after the text block opened")
+                    # 文本块已经开了，按规范回不去 thinking 块前面，也不能在 text 之后插
+                    # 一个顺序违规的 thinking 块（SDK 会按块顺序校验）。只能丢。
+                    # 但这是 reasoning 通道的**静默丢内容**：同一次生成在 OpenAI 协议侧
+                    # （openai.py 没有块顺序约束）是完整的。所以每条流最多打一次 WARNING
+                    # 把丢掉的字数说清楚，而不是一行看不见的 debug。
+                    dropped_thoughts += len(t_delta)
+                    if not late_thinking_warned:
+                        late_thinking_warned = True
+                        logger.warning(
+                            "Dropping late thinking delta(s) after the text block opened: "
+                            "the Anthropic content-block order forbids a thinking block "
+                            "after text (same generation is complete on the OpenAI protocol)"
+                        )
                     continue
                 if not thinking_open:
                     thinking_open = True
@@ -420,6 +434,16 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
                 # 收尾的完整思考链：按「已发前缀 diff」补发差量（同 openai.py 的口径，
                 # startswith 不成立时不重发整段、避免重复）。只有文本块还没开时才可能补 ——
                 # 开了就回不去 thinking 块前面了。
+                if extended_thinking and text_open:
+                    final_thoughts = evt.get("thoughts", "") or ""
+                    missing = len(final_thoughts) - len(emitted_thoughts)
+                    if missing > 0 or dropped_thoughts:
+                        logger.warning(
+                            "Anthropic thinking chain is short by %d char(s) "
+                            "(%d dropped as late deltas): the text block was already open, "
+                            "so the thinking block could no longer be extended",
+                            max(missing, dropped_thoughts), dropped_thoughts,
+                        )
                 if extended_thinking and not text_open:
                     final_thoughts = evt.get("thoughts", "") or ""
                     if final_thoughts != emitted_thoughts \

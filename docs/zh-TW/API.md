@@ -447,6 +447,8 @@ curl http://localhost:5918/claude/v1/models/gemini-2.5-pro \
 
 ⚠️ **不帶 `signature`**（本服務造不出合法簽名，發空串／自造串更糟：客戶端回傳給真 API 會 400）。**檔位與網頁端思考深度的對應關係尚未真機證實**。全域開關 `EXTENDED_THINKING_ENABLED=false` 時即使傳了也不走思考路徑。
 
+⚠️ **正文開始之後才到的思考增量會被丟掉**（流式）：Anthropic 的區塊順序不允許在 `text` 之後再開或再續 `thinking` 區塊（會打一條 WARNING 說明丟了多少字元）。需要完整思考鏈請用 OpenAI 協議的 `reasoning_content`。正文永遠完整。`thinking` 傳成非物件時按**沒傳**處理、照常回 200。
+
 ### POST /messages/count_tokens
 
 估算訊息的 token 數。

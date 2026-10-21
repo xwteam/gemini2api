@@ -486,6 +486,8 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 
 ⚠️ **`signature` は付きません**（有効な署名を生成できないため。空文字や自作の署名を付けるのはより危険で、クライアントが本物の API に送り返すと 400 になります）。**段階と Web 側の思考の深さの対応は実機未検証です。** `EXTENDED_THINKING_ENABLED=false` の場合、`thinking` を送っても思考パスは使われません。
 
+⚠️ **本文が始まった後に届いた思考の増分は破棄されます**（ストリーミング）：Anthropic のブロック順序では `text` ブロックの後に `thinking` ブロックを開く／続けることができません（失われた文字数は WARNING に記録されます）。完全な思考チェーンが必要な場合は、ブロック順序の制約がない OpenAI プロトコルの `reasoning_content` を使ってください。本文は常に完全です。`thinking` がオブジェクト以外の場合は**未指定**として扱い、200 を返します。
+
 ### POST /claude/v1/messages/count_tokens
 
 トークン数を推定します。
