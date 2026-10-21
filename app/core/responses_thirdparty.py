@@ -6,7 +6,7 @@ import json
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
-from app.core.api_forwarder import forward_to_provider, open_stream
+from app.core.api_forwarder import empty_upstream_error, forward_to_provider, open_stream, run_failover
 from app.core.fallback import openai_data_is_empty
 from app.models.openai import ChatRequest, ChatMessage, ToolDef, ToolFunction
 from app.core.responses_protocol import build_responses_object, new_response_id, ResponsesStreamEncoder
@@ -62,9 +62,8 @@ async def _dispatch_non_stream(request, resolved_model, messages_raw, tools_raw,
                           stream=False, tools=_to_tool_defs(tools_raw), tool_choice=tool_choice,
                           temperature=request_params.get("temperature"),
                           max_tokens=request_params.get("max_output_tokens"))
-    cooldown = settings.thirdparty_failover_cooldown
-    last_resp = None
-    for entry in entries:
+
+    async def attempt(entry):
         resp = await forward_to_provider(entry, messages_raw, chat_req)
         if isinstance(resp, JSONResponse) and getattr(resp, "status_code", 200) < 400:
             body = resp.body
@@ -75,12 +74,14 @@ async def _dispatch_non_stream(request, resolved_model, messages_raw, tools_raw,
             except Exception:
                 chat_body = None
             if chat_body is not None and not openai_data_is_empty(chat_body):
-                pool.update_last_used(entry.id)
                 obj = _chat_response_to_responses_object(chat_body, resolved_model, request_params)
-                return JSONResponse(content=obj)
-        last_resp = resp
-        pool.mark_unhealthy(entry.id, cooldown)
-    return last_resp  # 全部失败：把最后一个第三方错误响应原样返回
+                return JSONResponse(content=obj), None
+            return None, empty_upstream_error()
+        return None, resp
+
+    # 冷却与"全败回哪个错误"的规则与 /v1/chat/completions 共用（api_forwarder.run_failover）
+    ok, error = await run_failover(entries, attempt, pool, settings.thirdparty_failover_cooldown)
+    return ok if ok is not None else error
 
 
 async def dispatch_thirdparty_responses(request, resolved_model, messages_raw, tools_raw,
@@ -113,21 +114,15 @@ async def _dispatch_stream(request, resolved_model, messages_raw, tools_raw, too
     yield enc.created()
     yield enc.in_progress()
 
-    cooldown = settings.thirdparty_failover_cooldown
-    stream_resp = None
-    used_entry = None
-    for entry in entries:
-        resp, err = await open_stream(entry, messages_raw, chat_req)
-        if resp is not None:
-            stream_resp = resp
-            used_entry = entry
-            break
-        pool.mark_unhealthy(entry.id, cooldown)
+    async def attempt(entry):
+        return await open_stream(entry, messages_raw, chat_req)
 
+    stream_resp, error = await run_failover(entries, attempt, pool,
+                                            settings.thirdparty_failover_cooldown)
     if stream_resp is None:
-        yield enc.failed("all third-party candidates failed to open a stream")
+        status = getattr(error, "status_code", "?")
+        yield enc.failed(f"all third-party candidates failed to open a stream (best error: HTTP {status})")
         return
-    pool.update_last_used(used_entry.id)
 
     msg_id = f"msg_{new_response_id()}"
     started = False

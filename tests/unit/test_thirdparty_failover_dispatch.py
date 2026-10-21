@@ -183,3 +183,101 @@ def test_no_pool_returns_none():
 def test_thirdparty_ok_passthrough_non_jsonresponse():
     assert oai._thirdparty_ok(StreamingResponse(iter([b"x"]))) is True
     assert oai._thirdparty_ok("not-a-response") is True
+
+
+def test_a_key_rejected_while_another_succeeds_is_moved_to_the_back(tmp_path, monkeypatch):
+    """k1 配错（上游 404）、k2 正常：同一次分发里 k2 成功了，说明是 k1 自己的问题 → 冷却 k1，
+    下一个请求直接先打 k2，不再每次白跑一轮。"""
+    pool, ids = _pool_with(tmp_path, "deepseek", "deepseek")
+    calls = []
+
+    async def fake_forward(entry, messages, req):
+        calls.append(entry.id)
+        return _err_json(404) if entry.id == ids[0] else _ok_json("ok")
+    monkeypatch.setattr(oai, "forward_to_provider", fake_forward)
+
+    for _ in range(2):
+        resp = asyncio.run(oai._dispatch_thirdparty(_request_with_pool(pool), _req(), "deepseek"))
+        assert resp.status_code == 200
+    assert calls == [ids[0], ids[1], ids[1]]
+    assert set(pool._cooldowns) == {ids[0]}
+
+
+def test_an_empty_200_is_reported_as_an_upstream_failure(tmp_path, monkeypatch):
+    """全败时不能回 200 空答案（SDK 不会重试）：空响应按上游故障 502 报。"""
+    pool, ids = _pool_with(tmp_path, "deepseek", "deepseek")
+
+    async def fake_forward(entry, messages, req):
+        if entry.id == ids[0]:
+            return JSONResponse(content={"choices": [{"message": {"content": ""}}]})
+        return _err_json(429)
+    monkeypatch.setattr(oai, "forward_to_provider", fake_forward)
+
+    resp = asyncio.run(oai._dispatch_thirdparty(_request_with_pool(pool), _req(), "deepseek"))
+    assert resp.status_code == 502
+
+
+def test_a_gateway_config_error_never_masks_the_upstream_error(tmp_path, monkeypatch):
+    """条目 base_url 没配（网关自己生成的 400）不能盖住另一个 key 真实的 429；它是条目自己的
+    问题，照常冷却。"""
+    from app.core import api_forwarder as af
+    pool, ids = _pool_with(tmp_path, "deepseek", "deepseek")
+
+    async def fake_forward(entry, messages, req):
+        return af._bad_request("base_url is not configured") if entry.id == ids[0] else _err_json(429)
+    monkeypatch.setattr(oai, "forward_to_provider", fake_forward)
+
+    resp = asyncio.run(oai._dispatch_thirdparty(_request_with_pool(pool), _req(), "deepseek"))
+    assert resp.status_code == 429
+    assert set(pool._cooldowns) == set(ids)
+
+
+# ---- /v1/responses 的第三方分发与 chat 共用同一套规则 ----
+
+def _responses(pool, stream):
+    from app.core import responses_thirdparty as rt
+    return asyncio.run(rt.dispatch_thirdparty_responses(
+        _request_with_pool(pool), "deepseek", [{"role": "user", "content": "hi"}], None, None,
+        stream, {}))
+
+
+def test_responses_non_stream_reports_the_rejection_not_the_last_429(tmp_path, monkeypatch):
+    from app.core import responses_thirdparty as rt
+    pool, ids = _pool_with(tmp_path, *["deepseek"] * 5)
+
+    async def fake_forward(entry, messages, req):
+        return _err_json(429) if entry.id == ids[-1] else _err_json(400)
+    monkeypatch.setattr(rt, "forward_to_provider", fake_forward)
+
+    resp = _responses(pool, stream=False)
+    assert resp.status_code == 400
+    assert set(pool._cooldowns) == {ids[-1]}
+
+
+def test_responses_stream_failure_names_the_best_error_without_cooling_rejected_keys(tmp_path,
+                                                                                     monkeypatch):
+    from app.core import responses_thirdparty as rt
+    pool, ids = _pool_with(tmp_path, "deepseek", "deepseek")
+
+    async def fake_open_stream(entry, messages, req):
+        return None, _err_json(400)
+    monkeypatch.setattr(rt, "open_stream", fake_open_stream)
+
+    resp = _responses(pool, stream=True)
+
+    async def body():
+        return "".join([c if isinstance(c, str) else c.decode() async for c in resp.body_iterator])
+    text = asyncio.run(body())
+    assert "response.failed" in text and "HTTP 400" in text
+    assert not pool._cooldowns
+
+
+def test_a_non_openai_provider_error_is_not_committed_as_a_stream():
+    """gemini 存根（501）这类非 OpenAI 兼容 provider 的错误不能当成流直接提交——否则后面
+    正常的 key 一次都试不到。"""
+    from app.core import api_forwarder as af
+    from app.core.api_key_store import ApiKeyEntry
+    entry = ApiKeyEntry(id="g1", provider="gemini", model="m", api_key="k", base_url="",
+                        label=None, status="active", added_at="", last_used_at=None)
+    resp, err = asyncio.run(af.open_stream(entry, [{"role": "user", "content": "hi"}], _req(stream=True)))
+    assert resp is None and err.status_code == 501

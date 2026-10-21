@@ -11,6 +11,7 @@ from typing import AsyncGenerator
 import httpx
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.config import settings
 from app.core.api_key_store import ApiKeyEntry
 from app.models.openai import ChatRequest, ChatResponse, Choice, ChoiceMessage, UsageInfo, StreamChunk, StreamChoice, StreamDelta
 from app.utils.net_guard import assert_safe_url, UnsafeURLError
@@ -39,17 +40,17 @@ def _build_safe_target_url(entry: ApiKeyEntry, suffix: str) -> str:
     return url
 
 
+def _gateway_error(status: int, message: str, err_type: str) -> JSONResponse:
+    """网关自己生成的错误（条目配置不对 / 不支持），不是上游说的话。打上标记，故障切换挑
+    回给客户端的错误时把它排在最后，免得盖住真实的上游原因（见 run_failover）。"""
+    resp = JSONResponse(status_code=status, content={"error": {"message": message, "type": err_type}})
+    resp.gateway_error = True
+    return resp
+
+
 def _bad_request(message: str) -> JSONResponse:
     """统一的 400 错误响应（用于 base_url 缺失 / SSRF 拦截）。"""
-    return JSONResponse(
-        status_code=400,
-        content={
-            "error": {
-                "message": message,
-                "type": "invalid_request_error",
-            }
-        },
-    )
+    return _gateway_error(400, message, "invalid_request_error")
 
 
 def _make_async_client(timeout: float = 300.0) -> httpx.AsyncClient:
@@ -57,16 +58,17 @@ def _make_async_client(timeout: float = 300.0) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout)
 
 
-def _drop_none(message):
-    """消息里值为 None 的键不发出去。
+# 请求模型里的可选字段：没给时 model_dump 成 null，而按 OpenAI SDK 严格校验的上游（书生端砚的
+# deepseek / glm / kimi / qwen 等）收到 `"name": null` 一律 400「Input should be a valid string」。
+_OPTIONAL_MESSAGE_KEYS = ("name", "tool_calls", "tool_call_id")
 
-    请求模型的可选字段（name / tool_calls / tool_call_id ……）model_dump 后都是 null，而按
-    OpenAI SDK 严格校验的上游（书生端砚的 deepseek / glm / kimi / qwen 等）收到 `"name": null`
-    一律 400「Input should be a valid string」。只清消息第一层，内容原样不动。
-    """
+
+def _drop_none(message):
+    """去掉值为 None 的可选字段。content 原样不动：assistant 工具调用那一轮的 `content: null`
+    正是 SDK 自己发的形态，删掉反而偏离规范。"""
     if not isinstance(message, dict):
         return message
-    return {k: v for k, v in message.items() if v is not None}
+    return {k: v for k, v in message.items() if not (k in _OPTIONAL_MESSAGE_KEYS and v is None)}
 
 
 def entry_name(entry) -> str:
@@ -76,10 +78,24 @@ def entry_name(entry) -> str:
 
 
 def _upstream_reason(body, limit: int = 200) -> str:
-    """上游错误正文的简短摘要，只用于日志（排查时能看出是参数被拒还是额度用完）。"""
+    """上游错误的简短摘要，只进日志（排查时分得出是参数被拒还是额度用完）。
+
+    默认只记错误的 type / code：校验类错误的 message 会回显用户原文（pydantic 的
+    input_value），开了 LOG_BODIES_ENABLED 才带上 message 摘要，与请求正文日志同一个开关。
+    """
     if isinstance(body, (bytes, bytearray)):
         body = body.decode("utf-8", "replace")
-    return " ".join(str(body).split())[:limit]
+    err = {}
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
+            err = parsed["error"]
+    except (TypeError, ValueError):
+        pass
+    parts = [f"{k}={err[k]}" for k in ("type", "code") if err.get(k)]
+    if getattr(settings, "log_bodies_enabled", False):
+        parts.append(" ".join(str(err.get("message") or body).split())[:limit])
+    return " ".join(parts)
 
 
 def _build_openai_request(entry: ApiKeyEntry, messages: list[dict], req) -> tuple[str, dict, dict]:
@@ -136,15 +152,7 @@ async def forward_to_provider(
     elif provider == "gemini":
         return await _forward_gemini_api(entry, messages, req)
     else:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": {
-                    "message": f"Unsupported provider: {provider}",
-                    "type": "invalid_request_error"
-                }
-            }
-        )
+        return _gateway_error(400, f"Unsupported provider: {provider}", "invalid_request_error")
 
 
 async def _forward_openai_compatible(
@@ -305,7 +313,66 @@ async def open_stream(
     """供分发器使用的统一流式入口：openai 兼容走 pre-flight 故障切换；其余 provider 直接提交。"""
     if entry.provider.lower() in ("openai", "openrouter", "custom"):
         return await open_openai_stream(entry, messages, req)
-    return await forward_to_provider(entry, messages, req), None
+    resp = await forward_to_provider(entry, messages, req)
+    if isinstance(resp, JSONResponse) and resp.status_code >= 400:
+        return None, resp          # 错误别当成流提交，让分发器换下一个 key
+    return resp, None
+
+
+# ---------------------------------------------------------------------------
+# 故障切换（/v1/chat/completions 与 /v1/responses 的第三方分发共用）
+# ---------------------------------------------------------------------------
+# 上游说"这个请求本身不对"（参数 / 格式 / 模型名）。同一次分发里换别的 key 成功了，才说明是这个
+# key 自己的问题（条目配错、余额不足……）→ 冷却；全都被拒说明是请求的问题 → 谁也不冷却，免得一个
+# 格式不对的请求把所有好 key 都排到队尾。冷却只是"排到后面"，不是屏蔽（见 get_entries_for_model）。
+REQUEST_REJECTED = (400, 404, 413, 422)
+
+
+def empty_upstream_error() -> JSONResponse:
+    """上游 200 但没有任何内容：当成上游故障报给客户端，别回一个 200 空答案（SDK 不会重试）。"""
+    return JSONResponse(status_code=502, content={"error": {
+        "message": "Upstream returned an empty response", "type": "upstream_error"}})
+
+
+def _failure_rank(resp) -> int:
+    """全败时挑哪个错误回给客户端（越小越优先）：上游说的请求被拒（带原因）最有用，其次上游
+    5xx / 连不上 / 空响应，再次 429，然后 401 / 403 这类 key 自身问题，网关自己的配置错误最后。
+    过去固定回最后一个 key 的错误：线上前 4 个 key 400 参数被拒、第 5 个 key 恰好 429，客户端
+    只看到 429「quota exceeded」，被误导成额度问题。"""
+    if getattr(resp, "gateway_error", False):
+        return 4
+    status = getattr(resp, "status_code", 500)
+    if status in REQUEST_REJECTED:
+        return 0
+    if status >= 500:
+        return 1
+    if status == 429:
+        return 2
+    return 3
+
+
+async def run_failover(candidates, attempt, pool, cooldown):
+    """按序试候选。attempt(entry) → (成功值, None) 或 (None, 失败的 JSONResponse)。
+
+    返回 (成功值, None) 或 (None, 最有信息量的错误)。冷却规则见 REQUEST_REJECTED 上方说明。
+    """
+    rejected, failures = [], []
+    for entry in candidates:
+        ok, failure = await attempt(entry)
+        if ok is not None:
+            pool.update_last_used(entry.id)
+            for entry_id in rejected:
+                pool.mark_unhealthy(entry_id, cooldown)
+            return ok, None
+        status = getattr(failure, "status_code", None)
+        is_rejected = status in REQUEST_REJECTED and not getattr(failure, "gateway_error", False)
+        logger.warning(f"[thirdparty] {entry_name(entry)} 失败（HTTP {status}），换下一个")
+        failures.append(failure)
+        if is_rejected:
+            rejected.append(entry.id)
+        else:
+            pool.mark_unhealthy(entry.id, cooldown)
+    return None, (min(failures, key=_failure_rank) if failures else None)
 
 
 def _openai_tool_calls_to_anthropic_blocks(content, tool_calls: list) -> list[dict]:
@@ -688,12 +755,5 @@ async def _forward_gemini_api(
     req: ChatRequest
 ) -> StreamingResponse | JSONResponse:
     """Forward request to Gemini official API (stub)."""
-    return JSONResponse(
-        status_code=501,
-        content={
-            "error": {
-                "message": "Gemini official API forwarding not yet implemented",
-                "type": "not_implemented_error"
-            }
-        }
-    )
+    return _gateway_error(501, "Gemini official API forwarding not yet implemented",
+                          "not_implemented_error")

@@ -17,8 +17,9 @@ _ENTRY = ApiKeyEntry(id="k1", provider="custom", model="deepseek-v4-flash-0731",
 
 
 def _nulls(obj, path="$"):
+    """所有 null 的路径；assistant 工具调用那一轮的 content: null 是 SDK 的规范形态，不算。"""
     if obj is None:
-        return [path]
+        return [] if path.endswith(".content") else [path]
     if isinstance(obj, dict):
         return [p for k, v in obj.items() for p in _nulls(v, f"{path}.{k}")]
     if isinstance(obj, list):
@@ -53,7 +54,8 @@ def test_a_tool_round_trip_keeps_every_real_field():
     assert _nulls(payload) == [], _nulls(payload)
     user, assistant, tool = payload["messages"][1:]
     assert user == {"role": "user", "content": "天气？", "name": "alice"}
-    assert assistant["tool_calls"][0]["id"] == "call_1" and "content" not in assistant
+    assert assistant["tool_calls"][0]["id"] == "call_1"
+    assert "content" in assistant and assistant["content"] is None     # SDK 原样的形态，不删
     assert tool == {"role": "tool", "content": "晴", "tool_call_id": "call_1"}
     assert payload["tools"][0]["function"]["name"] == "get_weather"
 
@@ -63,3 +65,15 @@ def test_message_content_is_passed_through_untouched():
     parts = [{"type": "text", "text": "看图"}, {"type": "image_url", "image_url": {"url": "https://x/a.png"}}]
     req = ChatRequest(model="m", messages=[{"role": "user", "content": parts}])
     assert _payload(req)["messages"] == [{"role": "user", "content": parts}]
+
+
+def test_upstream_error_summaries_respect_the_body_logging_switch(monkeypatch):
+    """校验类错误的 message 会回显用户原文：默认只记 type / code，开了 LOG_BODIES_ENABLED 才带 message。"""
+    from app.config import settings
+    body = json.dumps({"error": {"type": "upstream_request_rejected", "code": "400",
+                                 "message": "input_value='我的私密问题'"}})
+    monkeypatch.setattr(settings, "log_bodies_enabled", False)
+    quiet = af._upstream_reason(body)
+    assert "upstream_request_rejected" in quiet and "私密" not in quiet
+    monkeypatch.setattr(settings, "log_bodies_enabled", True)
+    assert "私密" in af._upstream_reason(body)

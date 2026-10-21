@@ -15,7 +15,7 @@ from app.core.access_context import (
     with_retired_models_for_access_key,
     scoped_conversation_id,
 )
-from app.core.api_forwarder import entry_name, forward_to_provider, open_stream
+from app.core.api_forwarder import empty_upstream_error, forward_to_provider, open_stream, run_failover
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
 from app.core.gemini_client import (GEMINI_MODELS, MODEL_ALIASES, _resolve_model, HTTPStatusError,
@@ -207,29 +207,9 @@ def _thirdparty_ok(resp) -> bool:
     return not openai_data_is_empty(_json_body(resp))
 
 
-# 上游说"这个请求本身不对"（参数 / 格式 / 模型名）：换 key 多半一样被拒，不是这个 key 坏了，
-# 不该把它拉进冷却 —— 否则一个格式不对的请求就能把所有好 key 都冷却一遍。
-_REQUEST_REJECTED = (400, 404, 413, 422)
-
-
-def _thirdparty_error_rank(resp) -> int:
-    """全败时挑哪个错误回给客户端（越小越优先）：请求被拒（带上游原因）最有用，其次上游
-    5xx / 连不上 / 空响应，再次 429 额度或限流，最后 401 / 403 这类 key 自身的问题。
-    过去固定回最后一个 key 的错误：前 4 个 key 都是 400 参数被拒、第 5 个 key 恰好 429，
-    客户端就只看到 429「额度用完」，被误导成额度问题。"""
-    status = getattr(resp, "status_code", 500)
-    if status in _REQUEST_REJECTED:
-        return 0
-    if status >= 500 or status < 400:
-        return 1
-    if status == 429:
-        return 2
-    return 3
-
-
 async def _dispatch_thirdparty(request, req: ChatRequest, resolved_model: str):
-    """直连第三方故障切换：固定优先第一家，失败换下一家（请求被拒不冷却，其余失败冷却），
-    全败时回最有信息量的那个错误（见 _thirdparty_error_rank）。
+    """直连第三方故障切换：固定优先第一家，失败换下一家；冷却与"全败回哪个错误"的规则见
+    api_forwarder.run_failover（与 /v1/responses 共用）。
     返回 None 表示该 model 非第三方/无候选 —— 落回 Gemini 路径，零回归。"""
     pool = getattr(request.app.state, "api_key_pool", None)
     if not pool:
@@ -238,27 +218,19 @@ async def _dispatch_thirdparty(request, req: ChatRequest, resolved_model: str):
     if not candidates:
         return None
     messages_raw = [m.model_dump() for m in req.messages]
-    cooldown = settings.thirdparty_failover_cooldown
-    errors = []
-    for entry in candidates:
+
+    async def attempt(entry):
         if req.stream:
-            stream_resp, failure = await open_stream(entry, messages_raw, req)
-            if stream_resp is not None:
-                pool.update_last_used(entry.id)
-                return stream_resp
-        else:
-            failure = await forward_to_provider(entry, messages_raw, req)
-            if _thirdparty_ok(failure):
-                pool.update_last_used(entry.id)
-                return failure
-        status = getattr(failure, "status_code", None)
-        rejected = status in _REQUEST_REJECTED
-        logger.warning(f"[thirdparty] {entry_name(entry)} 失败（HTTP {status}），"
-                       f"{'请求被拒、不冷却' if rejected else '冷却'}，换下一个")
-        errors.append(failure)
-        if not rejected:
-            pool.mark_unhealthy(entry.id, cooldown)
-    return min(errors, key=_thirdparty_error_rank) if errors else None
+            return await open_stream(entry, messages_raw, req)
+        resp = await forward_to_provider(entry, messages_raw, req)
+        if _thirdparty_ok(resp):
+            return resp, None
+        if getattr(resp, "status_code", 500) < 400:
+            return None, empty_upstream_error()
+        return None, resp
+
+    ok, error = await run_failover(candidates, attempt, pool, settings.thirdparty_failover_cooldown)
+    return ok if ok is not None else error
 
 
 @router.get("/models")
