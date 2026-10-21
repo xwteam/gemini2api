@@ -4,6 +4,26 @@
 
 ---
 
+## [1.6.42] - 2026-10-21
+
+### Added
+
+- 🤖 **接上 4 Argon，并让模型发现变成账号驱动的**。账号心跳本来就会返回真实可用的模型清单，但此前只认代码里写死的表，认不出的**连日志都不打就丢掉** —— 这正是 Argon 一直用不了的原因（v1.6.41 加的日志已经在生产上把它指出来了：`model_id=95a4c0abcba24364 display_name='4 Argon' model_number=8`）。
+  - 现在心跳发现的模型可以被自动采纳，Google 换代不必再等改代码发版。
+  - **对外的稳定公开名契约不变**：`gemini-pro` / `gemini-flash` / `gemini-flash-thinking` / `gemini-flash-lite` 行为逐字节不变，Argon 以新的公开名 **`gemini-argon`** 并列加入（`gemini-4-argon` 作别名），`/v1/models` 里能列出来。
+  - ⚠️ **混合账号池注意**：模型只在「心跳里发现过它的账号」上可路由。若池里有的账号没有 Argon，请求落到那个账号会返回 400（暂不自动换号，下一版处理）。
+  - ⚠️ 自动采纳带校验：model id 形态、编号、档位逐项检查，不合格的条目仍然丢弃但**打日志**，避免异常响应把请求路由到意外模型。写死的表保留为兜底（心跳拿不到时照常工作）。
+- 💵 **每把访问密钥的 token 用量与美元估算**（只统计、**不限额**）。面板「访问密钥」页新增累计 input/output token 与估算金额，价格表用 `TOKEN_PRICES` 配置（每百万 token 的输入/输出美元价）。
+  - ⚠️ **这是估算，不是账单**，两重近似都已在界面标注：①本服务走网页版、**本身不花钱**，这个数字是「若走官方 API 大约要多少钱」的参考值；②token 数是按字符估的，不是真正的分词器。
+  - 额度限制仍然只用请求次数（`request_limit`），token 与金额不参与任何拒绝判定。
+
+### Fixed
+
+- 📋 `/v1beta/models` 不再列出写死的三条假模型（其中 `gemini-2.0-flash-exp` 根本调不通），改为与另外三个协议同源。旧名 `gemini-1.5-pro` / `gemini-1.5-flash` 仍可正常请求。
+- 📄 **Canvas 正文不再整段丢失**。Gemini 写较长代码/文档时会自动放进 Canvas 面板，正文只留一个 `googleusercontent.com/immersive_entry_chip/N` 占位链接。此前我们既不读真实内容也不剥这个链接，**客户端拿到的答案就是一条打不开的 URL**。现在会还原真实内容；取不到时至少剥掉死链并给出可读说明。
+- 🧼 **清理正文里的控制标记**：`<ctrl94>thought…<ctrl95>`（**思考内容泄漏进答案**，现在归入思考通道而不是丢弃）、`code_reference` / `code_stdout` 伪代码围栏、`card_content` 死链。清理带锚定，用户正文里恰好出现这些字样时不会被误删。
+- 🧠 **Anthropic 协议补上思考链**。`/v1/messages` 此前既不读 `thinking` 入参也不回 `thinking` 块，Claude Code 发的思考参数被静默丢弃 —— **Anthropic 协议的用户永远锁死在「不思考」**，而 OpenAI 协议用户可以用 `reasoning_effort` 选档，同一个后端两种协议表现相反。现在两边一致。不传 `thinking` 时响应结构逐字节不变。
+
 ## [1.6.41] - 2026-10-21
 
 > 两件事：**可分发的访问密钥**，以及对照两个开源同类实现（[gemini-web-to-api](https://github.com/ntthanh2603/gemini-web-to-api)、[gemini-web2api](https://github.com/Sophomoresty/gemini-web2api)）做的一轮稳定性与速度修复。后者治的是 [issue #11](https://github.com/xwteam/gemini2api/issues/11) 那类「跑一阵就死、面板还显示正常」的老毛病。

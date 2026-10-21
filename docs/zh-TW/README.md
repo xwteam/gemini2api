@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-v1.6.41-success?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.6.42-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -62,6 +62,7 @@
 
 | 日期 | 更新內容 |
 |------|----------|
+| 2026-10-21 04:30:00 | v1.6.42 - 🤖 **接上 4 Argon 並讓模型探索改由帳號驅動**：帳號心跳本來就回傳真實可用的模型清單，此前只認寫死的表、認不出的連日誌都不打就丟掉（這正是 Argon 用不了的原因），現在能自動採納、Google 換代不必再等改程式；穩定公開名契約不變，自動採納帶驗證、不合格條目仍丟棄但留日誌。💵 每把**存取金鑰的 token 用量與美元估算**（只統計不限額，介面已標註「估算」：本服務走網頁版本身不花錢，且 token 是按字元估的）。📄 **Canvas 正文不再整段遺失**（此前只留一條打不開的佔位連結）。🧼 清理 `<ctrl94>thought` 思考外洩等控制標記。🧠 **Anthropic 協定補上思考鏈**（此前 Claude Code 送的 thinking 參數被靜默丟棄、那邊使用者永遠「不思考」） |
 | 2026-10-21 00:58:00 | v1.6.41 - 🔑 新增**可分發的存取金鑰**：面板可簽發多把 key 分發給不同的人，每把獨立設定啟停／有效期／**延遲啟用**（對方首次使用才開始計時）／請求數上限／綁定帳號／限定模型；`.env` 的 API_KEY 仍全權有效，存取金鑰進不了 /admin。⚠️ `REFRESH_INTERVAL` 預設 5→30 分鐘（下限 10）：cookie 輪換迴圈此前**只在啟動失敗時才跑**，正常啟動的閘道從不輪換、幾小時後帳號必死（issue #11），現改為啟動就跑。認出 Gemini 用 **HTTP 200** 回傳的拒絕區塊（工作階段過期／限流／上下文超長／人機驗證此前被當成「空回覆」吞掉，既不標不健康也不觸發自癒）。非串流逾時按模型族分層且逾時不再重試三遍（此前 60 秒硬斷＋重試＝等 183 秒才失敗）。思考等級不再一律最高檔。帶附件恢復真串流 |
 | 2026-09-12 10:15:00 | v1.6.40 - 🔍 修復「模型測試頁把真實錯誤顯示成『無回應內容』」（issue #11 追加）：串流失敗只能以串流內 error 幀表達，而前端不認這個鍵，導致 503/529/500/400 全長一樣；現在顯示真實原因與狀態碼，已輸出的內容不會被抹掉。帳號卡片新增真實健康資訊（`is_healthy`／連續失敗數／最近成功時間／去敏後的最近錯誤）—— 此前綠色 ACTIVE 徽章讀的是池裡的狀態列舉而非用戶端健康位，cookie 失效的帳號照樣顯示綠色。空回應不再被當成功悄悄嚥下（連續 3 次才計入錯誤，單次絕不降級）。啟動日誌明說 cookie 輪換迴圈有沒有起來 |
 | 2026-09-01 16:20:00 | v1.6.39 - ⚙️ `LOG_BODIES_ENABLED` 接進管理面板「日誌」分組，點一下即時生效、無需改設定重啟（預設仍關）；⚠️ 行為變更：面板儲存過的設定項現在寫入 `data/settings-overrides.json` 並**優先於環境變數**（此前面板改完一重啟就被打回）；修復面板小數欄位被 `parseInt` 靜默截斷、拒絕 NaN/±Infinity 寫入、寫入失敗時三層（記憶體/覆寫檔/.env）全有或全無回復；補齊面板裡顯示成原始欄位名／寫死中文的標籤並加守衛測試 |
@@ -71,7 +72,6 @@
 | 2026-08-28 17:30:00 | v1.6.35 - 🛠️ 協定一致性與健壯性大修：修復生圖意圖誤判導致**客戶端工具被靜默丟棄**（四協定共用）、上游錯誤偽裝成正常回答、`HTTPStatusError` 逃逸成裸 500（池滿改 529+Retry-After）、`/v1/responses` 與 native Gemini buffered 分支缺失的串流保活、原生 Gemini 不認官方 SDK camelCase 報文、OpenAI `tool_calls` 被丟棄、第三方 Anthropic 轉發工具迴圈第二輪硬失敗，以及 Anthropic 回應結構對齊 |
 | 2026-08-28 15:10:00 | v1.6.34 - 🧹 Anthropic 協定細節打磨：回應補上規範的 `stop_sequence` 欄位並同步五語言 API 文件；工具呼叫區塊 name 為 null 時不再渲染成 None；斷線保活守衛補異常取回；並加固工具渲染格式與斷線取消的測試覆蓋 |
 | 2026-08-28 14:20:00 | v1.6.33 - 🔌 修復 Claude Code 無法接入（issue #10）：`system` 支援文字區塊陣列不再 422；`tool_use`/`tool_result` 區塊不再被丟棄（工具迴圈可用）；Anthropic 串流改為標準 event+data 兩行制；並為 Claude buffered 串流補保活、斷線及時歸還帳號槽位 |
-| 2026-08-14 22:50:00 | v1.6.32 - 🧠 思考內容逐幀串流：原生 Gemini 的思考過程在生成階段就作為 reasoning_content 逐幀增量流出（/v1/chat/completions），思考先於答案顯示、帶打字機效果，修復面板「答案早於思考」；收尾仍帶完整思考兜底，不開思考/一般對話零回歸 |
 
 ---
 
