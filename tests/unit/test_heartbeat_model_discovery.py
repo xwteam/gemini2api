@@ -265,13 +265,36 @@ def test_capacity_backfill_never_invents_argon():
         "4 个基础 family 的同档补全必须照旧"
 
 
-def test_without_any_heartbeat_the_hardcoded_table_still_serves_argon():
+def test_an_account_without_argon_cannot_route_argon():
+    """混合池红线：A 账号发现了 Argon，/v1/models 就会列出 gemini-argon（池是跨账号
+    聚合的），而选号是轮转的。没发现 Argon 的账号必须**干脆拒绝**，不能退到写死那一行
+    然后把 Argon 的 model id 发给 Google —— 那条路要么 4xx/空回复（还会污染账号健康
+    指标），要么 Google 按账号默认模型回答：HTTP 200、正文正常、客户端看不出被换了模型。
+    """
     c = fresh_client()   # 心跳一次都没跑
 
-    assert gc._resolve_model(ARGON_PUBLIC, c._family_model) == ARGON_INTERNAL
+    # 公开名解析不到任何内部模型 → 闸门（generate/_send_request 的 `resolved not in
+    # self._model_table()`）必然命中 → ValueError → 400
+    assert gc._resolve_model(ARGON_PUBLIC, c._family_model) == ARGON_PUBLIC
+    assert ARGON_PUBLIC not in c._model_table()
+    # 写死那一行仍在模块表里（id / model_number / 超时档位的口径兜底），但它**不可路由**
     assert ARGON_INTERNAL in GEMINI_MODELS
-    arr = json.loads(gc._build_model_header(ARGON_PUBLIC)[MODEL_HEADER_KEY])
+    assert ARGON_INTERNAL not in c._model_table()
+
+
+def test_argon_becomes_routable_only_after_this_account_discovered_it():
+    a = adopted(argon_entry())
+    b = adopted()            # 同一个池里的另一个账号，心跳里没有 Argon
+
+    assert gc._resolve_model(ARGON_PUBLIC, a._family_model) == ARGON_INTERNAL
+    assert ARGON_INTERNAL in a._model_table()
+    # 调用方传的是解析后的内部名（见 _send_request），所以这里也传它
+    arr = json.loads(gc._build_model_header(ARGON_INTERNAL, a._model_table())[MODEL_HEADER_KEY])
     assert arr[4] == ARGON_ID
+
+    assert gc._resolve_model(ARGON_PUBLIC, b._family_model) == ARGON_PUBLIC
+    assert ARGON_PUBLIC not in b._model_table()
+    assert ARGON_INTERNAL not in b._model_table()
 
 
 def test_the_four_contract_names_are_unchanged_without_a_heartbeat():
@@ -286,17 +309,25 @@ def test_the_four_contract_names_are_unchanged_without_a_heartbeat():
     assert gc._resolve_model("gemini-flash-lite", c._family_model) == "gemini-3-flash-lite"
 
 
-def test_public_family_and_family_default_keys_stay_in_sync():
-    """_resolve_model 里 _FAMILY_DEFAULT[family] 是裸下标：两张表不同步 = 500。"""
-    assert set(_PUBLIC_FAMILY.values()) == set(_FAMILY_DEFAULT)
+def test_family_default_holds_exactly_the_contract_families():
+    """_FAMILY_DEFAULT 是"账号没有这个 family 也放行"的唯一来源。多一个键就是多一个
+    "任何账号都能路由它"的 family —— 非契约 family 只有发现到它的账号才有。"""
+    assert set(_FAMILY_DEFAULT) == set(_BASE_FAMILIES)
     for family, name in _FAMILY_DEFAULT.items():
         assert GEMINI_MODELS[name]["family"] == family
-    assert _BASE_FAMILIES < set(_FAMILY_DEFAULT)
+    # 公开名→family 允许比它多（argon 就是），反过来不行
+    assert set(_FAMILY_DEFAULT) <= set(_PUBLIC_FAMILY.values())
 
 
-def test_model_table_falls_back_to_the_module_table():
+def test_model_table_falls_back_to_the_contract_rows_only():
     c = fresh_client()
-    assert c._model_table() is GEMINI_MODELS
+    assert c._model_table() is gc._BASE_MODELS
+    # 4 个契约 family 的写死行每个账号都能路由
+    for name in _FAMILY_DEFAULT.values():
+        assert name in c._model_table()
+    # 非契约 family 的写死行不在里面
+    assert ARGON_INTERNAL not in c._model_table()
+    assert all(info["family"] in _BASE_FAMILIES for info in gc._BASE_MODELS.values())
 
 
 def test_discovered_models_are_per_account():
@@ -337,6 +368,131 @@ def test_send_request_refuses_a_model_it_cannot_put_in_the_header():
     with pytest.raises(ValueError) as err:
         asyncio.run(c._send_request("hi", "gemini-does-not-exist"))
     assert "unavailable" in str(err.value)
+
+
+def test_an_account_without_argon_refuses_the_request_instead_of_sending_argons_id():
+    """混合池里 (N-1)/N 的 Argon 请求会落到没有 Argon 的账号上。那里必须抛 ValueError
+    （→ 400），而不是带着 Argon 的 model id 把请求发出去。"""
+    import asyncio
+
+    c = adopted()        # 心跳里只有 3 个基础模型，没有 Argon
+    c._healthy = True
+    c._session_token = "T"
+    c._push_id = ""
+    c._http = None
+
+    async def _noop(*a, **kw):
+        return None
+
+    c._ensure_session_current = _noop
+    c._clear_session_cookies = lambda: None
+    c._get_cookies = lambda: {}
+    c._get_headers = lambda *a, **kw: {}
+
+    for name in (ARGON_PUBLIC, ARGON_INTERNAL):
+        with pytest.raises(ValueError) as err:
+            asyncio.run(c._send_request("hi", name))
+        assert "unavailable" in str(err.value)
+
+
+# ---------------------------------------------------------------------------
+# 5. 发现结果只增不减 / 无界增长
+# ---------------------------------------------------------------------------
+
+def test_a_family_the_heartbeat_stopped_reporting_is_dropped():
+    """只增不减的话：上一轮发现了 Argon、这一轮 Google 收回，gemini-argon 仍列在
+    /v1/models 里、仍解析得到内部名 —— 用户看到一个"列表里有、调起来坏"的模型。"""
+    c = adopted(argon_entry())
+    assert ARGON_PUBLIC in c._public_model_names()
+
+    c._parse_models_from_status(status_raw(*THREE_BASE))   # 第二轮：没有 Argon 了
+
+    assert "argon" not in c._family_model
+    assert ARGON_PUBLIC not in c._public_model_names()
+    assert c._available_models == PUBLIC_MODELS
+    assert gc._resolve_model(ARGON_PUBLIC, c._family_model) == ARGON_PUBLIC
+    # 4 个契约 family 一个都不许被这轮清理碰到
+    assert c._family_model["pro"] == "gemini-3-pro-advanced"
+    assert set(PUBLIC_MODELS) <= set(c._available_models)
+
+
+def test_discovered_models_cannot_grow_without_bound(caplog):
+    """每轮上限只约束单轮。心跳一轮一轮地跑，只要每轮都给新的合法条目，
+    _discovered_models 和 /v1/models 就会一直长。"""
+    caplog.set_level(logging.WARNING, logger=gc.logger.name)
+    c = fresh_client()
+    for rnd in range(40):
+        entries = [argon_entry(f0=f"{rnd:02d}{idx:014d}", f11=f"R{rnd}X{idx} Zz",
+                               f1=f"Zz{rnd}x{idx}", f10=f"Zz{rnd}x{idx}")
+                   for idx in range(8)]
+        c._parse_models_from_status(status_raw(*THREE_BASE, *entries))
+
+    assert len(c._discovered_models) <= gc._DISCOVER_MAX_TOTAL
+    assert len(c._available_models) <= len(PUBLIC_MODELS) + gc._DISCOVER_MAX_PER_ROUND
+    assert any("discovery capped" in r.message for r in caplog.records)
+    # 契约名仍在最前、顺序不变
+    assert c._available_models[:4] == PUBLIC_MODELS
+
+
+def test_the_per_round_cap_counts_validated_candidates_not_raw_entries():
+    """上限切原始列表的话，Google 在 Argon 前排进 8 个我们不认识的条目（实验性模型、
+    缺字段的占位条目都算）就能把 Argon 的发现彻底饿死 —— 日志里看得到它被丢，
+    功能却静默失效。"""
+    # 连 model_number 都拿不到的条目（[17] 和兜底的 [9] 都空）：一条都不该占名额
+    junk = [argon_entry(f0=f"{idx:016d}", f1=f"Junk{idx}", f10=f"Junk{idx}",
+                        f11=f"{idx} Junk", f19=f"{idx} Junk", f17=None, f9=None)
+            for idx in range(8)]
+    assert all(gc._describe_discovered_model(e, 2) is None for e in junk)
+
+    c = adopted(*junk, argon_entry())
+
+    assert c._family_model.get("argon") == ARGON_INTERNAL
+    assert c._discovered_models[ARGON_INTERNAL]["id"] == ARGON_ID
+    assert ARGON_PUBLIC in c._available_models
+
+
+def test_the_per_round_cap_still_holds_for_valid_entries():
+    """零回归：合法条目一轮最多采纳 _DISCOVER_MAX_PER_ROUND 条。"""
+    many = [argon_entry(f0=f"{idx:016d}", f1=f"Zz{idx}", f10=f"Zz{idx}",
+                        f11=f"{idx} Zz", f19=f"{idx} Zz")
+            for idx in range(20)]
+
+    c = adopted(*many)
+
+    assert len(c._discovered_models) == gc._DISCOVER_MAX_PER_ROUND
+
+
+# ---------------------------------------------------------------------------
+# 6. 新公开名不许长得像契约名
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("display", ["Pro 4", "4 Flash", "Lite 9", "Thinking X"])
+def test_a_minted_public_name_may_not_borrow_a_contract_word(display):
+    """category="Argon" + display="Pro 4" 会铸出 gemini-pro-4：它不顶掉 gemini-pro，
+    但会和它一起列在 /v1/models 里，看着像官方名字、其实指向心跳给的任意 id。"""
+    c = adopted(argon_entry(f11=display, f19=display))
+
+    assert c._discovered_models == {}
+    assert c._available_models == PUBLIC_MODELS
+    assert c._family_model["pro"] == "gemini-3-pro-advanced"
+
+
+def test_a_brand_new_family_keeps_working():
+    """零回归：不含契约词的新 family 照旧采纳。"""
+    c = adopted(argon_entry(f1="Xenon", f10="Xenon", f11="5 Xenon", f19="5 Xenon"))
+
+    assert c._family_model["xenon"] == "gemini-5-xenon"
+    assert "gemini-5-xenon" in c._available_models
+
+
+def test_the_category_falls_back_to_field_10():
+    """Google 把 family 名只放在第 10 格时也要认（参考实现 geminiFirstString(fields,1,10)
+    就是为这个形态存在的）。窄到只读第 1 格 = 这类新模型永远被丢掉。"""
+    e = argon_entry(f1=None)
+    assert gc._entry_category(e) == "Argon"
+
+    c = adopted(e)
+    assert c._family_model["argon"] == ARGON_INTERNAL
 
 
 def test_v1beta_models_lists_real_public_names(client, monkeypatch):

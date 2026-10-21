@@ -68,17 +68,22 @@ def _parse_generate_timeouts(raw: str) -> dict:
     return out
 
 
-def _generate_timeout(resolved_model: str, prompt: str) -> float:
+def _generate_timeout(resolved_model: str, prompt: str, models: dict | None = None) -> float:
     """这一次非流式 POST 该等多久（秒）。
 
     先按模型族分层（族认不出时用兜底值），"疑似生图"再单独抬一档（_GENERATE_TIMEOUT_IMAGE）。
+
+    models 默认 None = 模块级写死表。**调用方必须传账号实例表**（_model_table()）：
+    心跳发现来的模型在写死表里没有行，查不到 family 就退到兜底值 60s，于是一个
+    "Complex tasks" 档的新模型（M1 的全部目的就是自动接上这种模型）会在还在生成时
+    被我们自己掐断 —— 正是这张分层表存在的理由。
     注意生图这一档是**取大**而不是覆盖：生图是整个产品里最慢的操作，让 pro 生一张图
     （180s）比 pro 答一道文字难题（300s）还短，等于把"模型越强给越久"这条分层用反了。
     何况这里的判定输入是拍平后的整段 prompt（含 system 与全部历史），多轮对话里任何一句
     含图像关键词的话都会命中（`maybe_image_generation_intent("想做个图像识别的方案")`
     就是 True）—— 一个关键词猜测只被允许"加时"，绝不允许"减时"。
     """
-    info = GEMINI_MODELS.get(resolved_model)
+    info = (models or GEMINI_MODELS).get(resolved_model)
     family = str(info["family"]) if info else ""
     overrides = _parse_generate_timeouts(getattr(settings, "generate_timeouts", "") or "")
     value = overrides.get(family) or _GENERATE_TIMEOUT_BY_FAMILY.get(family)
@@ -552,14 +557,20 @@ _PUBLIC_FAMILY = {
     # 加一个对外名字（"gemini-4-argon" 作为内部名/别名仍然可用，见 GEMINI_MODELS）。
     "gemini-argon": "argon",
 }
-# 每个 family 的默认内部模型（账号没拉到真实模型时的兜底，按基础版）
+# 每个**契约** family 的默认内部模型（账号没拉到真实模型时的兜底，按基础版）。
+# ⚠️ 这张表的键必须恰好是 _BASE_FAMILIES，一个都不能多：它是"账号没有这个 family 时
+# 照样放行"的唯一来源。4 个契约 family 每个账号都有，退兜底是安全的；心跳发现来的
+# family（argon 及将来的新 family）**只有发现到它的那个账号**有，给它配一个兜底行
+# 等于"任何账号都能路由 Argon"——混合池里 (N-1)/N 的请求会带着 Argon 的 model id
+# 发给一个没有 Argon 的账号，而那既可能是 4xx/空回复，也可能是 Google 按账号默认模型
+# 回答（HTTP 200、正文正常、客户端看不出被换了模型，见 _model_table 的 docstring）。
 _FAMILY_DEFAULT = {
     "pro": "gemini-3-pro",
     "flash": "gemini-3-flash",
     "flash-thinking": "gemini-3-flash-thinking",
     "flash-lite": "gemini-3-flash-lite",
-    "argon": "gemini-4-argon",
 }
+assert set(_FAMILY_DEFAULT) == set(_BASE_FAMILIES)
 # family → 对外公开名（_PUBLIC_FAMILY 的反向表）。心跳发现到的 family 若在这里有登记，
 # 就用这个稳定名字对外暴露；没登记的（将来某个全新 family）用发现到的名字本身。
 _FAMILY_PUBLIC = {fam: name for name, fam in _PUBLIC_FAMILY.items()}
@@ -580,6 +591,13 @@ MODEL_ALIASES = {
 }
 
 KNOWN_MODELS = list(GEMINI_MODELS.keys())
+
+# 写死表里**契约 family** 的那些行。它们在每个账号上都存在，所以可以无条件路由。
+# 非契约 family 的写死行（当前只有 gemini-4-argon）刻意不在这里：那一行的作用是
+# "id / model_number / 超时档位的口径兜底"，不是"任何账号都能调它"。要调它，必须由
+# 该账号自己的心跳发现过（见 GeminiClient._model_table）。
+_BASE_MODELS = {name: info for name, info in GEMINI_MODELS.items()
+                if info["family"] in _BASE_FAMILIES}
 
 
 def _build_id_alias_map() -> dict[str, str]:
@@ -642,8 +660,16 @@ _DISCOVER_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 _DISCOVER_SLUG_SEP_RE = re.compile(r"[^a-z0-9.]+")
 _DISCOVER_FAMILY_RE = re.compile(r"^[a-z][a-z0-9.\-]{0,31}$")
 _DISCOVER_NAME_RE = re.compile(r"^gemini-[a-z0-9][a-z0-9.\-]{0,39}$")
+# 铸新公开名时不许出现的词：4 个契约公开名里的每一个成分。见 _describe_discovered_model。
+_DISCOVER_RESERVED_WORDS = frozenset(
+    part for name in PUBLIC_MODELS for part in name.split("-") if part != "gemini"
+)
 # 一轮心跳最多采纳几条。畸形/被污染的响应可能塞几百条进来，而每条都要进实例态字典。
 _DISCOVER_MAX_PER_ROUND = 8
+# _discovered_models 的**累计**上限。上面那条只约束单轮，而心跳按 MIN_REFRESH_INTERVAL_MINUTES
+# 一轮一轮地跑：只要上游（或被污染的响应）每轮给出新的合法条目，这张实例态字典就会一直长。
+# 真实账号一共 4 个模型，32 已经是真相的 8 倍，到这个数只能说明解析口径出了问题。
+_DISCOVER_MAX_TOTAL = 32
 
 
 def _discover_slug(value: str) -> str:
@@ -689,6 +715,11 @@ def _describe_discovered_model(entry: list, capacity: int) -> dict | None:
         return None
     # 名字空间隔离：不许顶掉契约公开名、公开名→family 映射、或任何老别名。
     if name in PUBLIC_MODELS or name in _PUBLIC_FAMILY or name in MODEL_ALIASES:
+        return None
+    # 也不许铸出"长得像契约名"的新公开名：category="Argon" + display="Pro 4" 会铸出
+    # gemini-pro-4 —— 它不顶掉 gemini-pro，但会和它一起列在 /v1/models 里，看着像个
+    # 官方 Gemini 名字、其实指向心跳给的任意 id。新 family 的名字不该含契约 family 的词。
+    if _DISCOVER_RESERVED_WORDS.intersection(name.split("-")):
         return None
     # 与写死表同名只有一种情况是安全的：它就是同一个 family 的兜底行（Argon 正是如此），
     # 此时采纳等于用账号实测值刷新那一行。family 不一致说明解析口径已经和表对不上了。
@@ -741,7 +772,11 @@ def _resolve_model(model_name: str, family_model: dict[str, str] | None = None) 
     if name in _PUBLIC_FAMILY:
         family = _PUBLIC_FAMILY[name]
         fm = family_model or {}
-        return fm.get(family) or _FAMILY_DEFAULT[family]
+        # 账号没有这个 family 时只有契约 family 退兜底行（见 _FAMILY_DEFAULT）。
+        # 非契约 family 原样返回公开名，它不在任何账号的 _model_table() 里，
+        # 于是 generate/generate_stream/_send_request 的闸门会抛 ValueError → 干净的 400，
+        # 而不是静默把请求发成另一个模型。
+        return fm.get(family) or _FAMILY_DEFAULT.get(family) or name
     return name
 
 
@@ -750,6 +785,12 @@ def _build_model_header(model_name: str, models: dict | None = None) -> dict[str
     resolved = _resolve_model(model_name)
     model_info = (models or GEMINI_MODELS).get(resolved)
     if not model_info:
+        # 调用方必须先过 `resolved not in self._model_table()` 那道闸门，所以生产路径
+        # 走不到这里。真走到了就是最隐蔽的事故形态：调用点的 `if model_headers:` 跳过
+        # → 请求不带模型头发出 → Google 用账号默认模型回答、HTTP 200、客户端看不出。
+        # 宁可留一条 WARNING 也不要静默。
+        logger.warning("No model header for %r (resolved=%r): the request would go out "
+                       "without a model id", model_name, resolved)
         return {}
     return {
         MODEL_HEADER_KEY: f'[1,null,null,null,"{model_info["id"]}",null,null,0,[4],null,null,{model_info["capacity"]}]',
@@ -1353,17 +1394,24 @@ class GeminiWebClient:
         return self._healthy
 
     def _model_table(self) -> dict:
-        """本账号当前的模型表：写死表兜底 + 心跳发现到的覆盖在上面。
+        """**本账号**当前可路由的模型表：契约 family 的写死行 + 本账号心跳发现到的。
 
         header / payload 构造必须用这个而不是模块级 GEMINI_MODELS，否则发现到的模型
         会在 _build_model_header 里查不到 → 返回 {} → 调用点的 `if model_headers:`
         跳过 → 请求**不带模型头**发出 → Google 用账号默认模型回答，HTTP 200、正文正常、
         客户端完全看不出被换了模型。这是整条链路上最隐蔽的事故形态。
+
+        为什么不是整张 GEMINI_MODELS：非契约 family 的写死行（gemini-4-argon）是口径
+        兜底，不代表"这个账号有这个模型"。混合池里 account_pool.models 是跨账号聚合的，
+        一个账号发现了 Argon，/v1/models 就会列出 gemini-argon，而选号是轮转的 —— 把
+        写死那一行也算进"可路由"，(N-1)/N 的 Argon 请求就会带着 Argon 的 model id 发给
+        一个没有 Argon 的账号，一个错都不报。所以这张表只收"该账号真的有"的行：契约
+        family（每个账号都有）+ 这个账号自己心跳发现到的。
         """
         discovered = self.__dict__.get("_discovered_models") or {}
         if not discovered:
-            return GEMINI_MODELS
-        return {**GEMINI_MODELS, **discovered}
+            return _BASE_MODELS
+        return {**_BASE_MODELS, **discovered}
 
     @property
     def models(self) -> list[str]:
@@ -1887,13 +1935,24 @@ class GeminiWebClient:
         capacity = next(iter(caps))
         table = self.__dict__.setdefault("_discovered_models", {})
         out: dict[str, str] = {}
-        for entry in entries[:_DISCOVER_MAX_PER_ROUND]:
+        # 上限按"**通过校验的**条数"计，不是对原始列表切片：切片的话，Google 在 Argon
+        # 前面排进 8 个我们不认识的条目（实验性模型、缺字段的占位条目都算）就能把 Argon
+        # 的发现彻底饿死 —— 日志里还看得到它被丢，功能却静默失效。
+        for entry in entries:
+            if len(out) >= _DISCOVER_MAX_PER_ROUND:
+                break
             desc = _describe_discovered_model(entry, capacity)
             if desc is None:
                 continue
             name, family = desc["name"], desc["family"]
             if family in out:
                 continue
+            if name not in table and len(table) >= _DISCOVER_MAX_TOTAL:
+                logger.warning(
+                    "Heartbeat model discovery capped: already holding %d models, "
+                    "refusing to adopt %r (model_id=%s)", len(table), name, desc["info"]["id"],
+                )
+                break
             table[name] = desc["info"]
             out[family] = name
             logger.info(
@@ -2000,6 +2059,18 @@ class GeminiWebClient:
                                 continue
                             if info["capacity"] in caps:
                                 family_model.setdefault(info["family"], name)
+                        # 非契约 family 按"本轮发现到的"整体替换，不做累加：update 的话
+                        # 账号失去的模型会永远留在 /v1/models 里、还继续可路由 —— 上一轮
+                        # 发现了 Argon、这一轮 Google 收回，用户看到的就是一个"列表里有、
+                        # 调起来坏"的模型，直到进程重启。4 个契约 family 不参与清理：
+                        # 它们的存在性与顺序不依赖任何运行时状态（见 _public_model_names）。
+                        for fam in [f for f in self._family_model
+                                    if f not in _BASE_FAMILIES and f not in family_model]:
+                            removed = self._family_model.pop(fam)
+                            logger.info(
+                                "Heartbeat no longer reports family %s (was %s); "
+                                "dropping it from the public model list", fam, removed,
+                            )
                         self._family_model.update(family_model)
                         self._available_models = self._public_model_names()
                         logger.info(
@@ -2448,7 +2519,7 @@ class GeminiWebClient:
         if extended_thinking:
             headers["x-goog-ext-525005358-jspb"] = f'["{uuid_val}",1]'
 
-        gen_timeout = _generate_timeout(resolved, prompt)
+        gen_timeout = _generate_timeout(resolved, prompt, self._model_table())
         started = time.monotonic()
         try:
             resp = await self._http.post(

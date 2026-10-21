@@ -34,11 +34,25 @@ _AUTH = {"Authorization": "Bearer sk-test-key"}
         ("gemini-3-flash-thinking", 120),
         ("gemini-3-flash-lite", 60),
         ("gemini-3-pro-advanced", 300),
+        # Argon 的心跳描述是 "Complex tasks"、和 pro 同级：给兜底的 60s 等于一道复杂题
+        # 还在生成就被我们自己掐断。
+        ("gemini-4-argon", 300),
         ("totally-unknown-model", 60),  # 认不出的族回落到兜底值
     ],
 )
 def test_timeout_is_tiered_by_family(model, expected):
     assert gc._generate_timeout(model, "写一段排序算法") == expected
+
+
+def test_timeout_sees_heartbeat_discovered_models():
+    """心跳发现来的模型在写死表里**没有行**。只读模块表的话它一律退到 60s 兜底，
+    于是 M1 要自动接上的那种"Complex tasks"新模型会在还在生成时被我们自己掐断。"""
+    discovered = {"gemini-5-xenon": {"id": "a" * 16, "capacity": 2, "pro_only": True,
+                                     "family": "pro", "model_number": 9}}
+
+    assert gc._generate_timeout("gemini-5-xenon", "难题") == 60, "只读写死表时退兜底"
+    assert gc._generate_timeout("gemini-5-xenon", "难题", discovered) == 300, \
+        "传了账号实例表就该按发现到的 family 分层"
 
 
 def test_pro_gets_more_time_than_flash_lite():
@@ -394,3 +408,32 @@ def test_responses_forwards_the_level(gem_client, monkeypatch, effort, expected)
     assert r.status_code == 200
     assert captured["ext"] == expected
     assert captured["ext"] is not True
+
+
+def test_send_request_hands_the_account_table_to_the_timeout_tiering(monkeypatch):
+    """call-site 回归：_send_request 必须把账号实例表传进 _generate_timeout。
+    只传 (resolved, prompt) 的话，心跳发现来的模型查不到 family → 退到 60s 兜底。"""
+    seen = {}
+
+    client = _send_request_client(
+        monkeypatch, budget=5.0, delay=0.0,
+        exc=RequestsError("Connection reset", 56),
+    )
+    client._discovered_models = {
+        "gemini-5-xenon": {"id": "b" * 16, "capacity": 2, "pro_only": True,
+                           "family": "pro", "model_number": 9},
+    }
+
+    def _spy(resolved, prompt, models=None):
+        seen["resolved"] = resolved
+        seen["models"] = models
+        return 5.0
+
+    monkeypatch.setattr(gc, "_generate_timeout", _spy)
+
+    with pytest.raises(RequestsError):
+        asyncio.run(client._send_request("hi", "gemini-5-xenon"))
+
+    assert seen["resolved"] == "gemini-5-xenon"
+    assert seen["models"] is not None, "没传账号表 = 发现来的模型一律 60s"
+    assert "gemini-5-xenon" in seen["models"]
