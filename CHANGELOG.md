@@ -4,6 +4,33 @@
 
 ---
 
+## [1.6.43] - 2026-10-21
+
+### Changed
+
+- 🧠 **思考改为 `low` / `medium` / `high` 三档，对齐网页上的低 / 中 / 高**（此前只有「开 / 关」，开就是写死的一档）。
+  - **默认档 `low`**：新增设置 `DEFAULT_THINKING_LEVEL` = `off` / `low` / `medium` / `high`（环境变量，或面板「设置 → 思考」，保存即时生效、无需重启）。客户端**没指定档位**时用它。
+  - ⚠️ **速度代价**：实测默认 `low` 比不思考平均每个请求多约 5 秒，流式请求的正文要等思考做完才开始出（期间照发保活帧，连接不会被前置代理按空闲超时掐断）。最看重速度就设成 `off`：走不思考旧路径，发给上游的请求与旧版不传参数时逐字节一致。
+  - 四个协议的档位参数都接上了：OpenAI `reasoning_effort`、Responses `reasoning.effort`、Anthropic `thinking` + `output_config.effort`、Gemini 原生 `generationConfig.thinkingConfig`（`thinkingLevel` / `thinkingBudget` / `includeThoughts`，此前被静默丢弃）。
+  - **协议合规**：客户端完全没提思考、按默认档替它开的思考**只用于生成，绝不回传**——不出 `reasoning_content`、`reasoning` 项、`thinking` 块、`thought` part，响应结构与不思考时逐字段一致；客户端要了思考才回传。
+  - **要了思考但没说几档的请求跟随默认档**（此前写死最深的 `high`）：Anthropic `{"type":"adaptive"}`、budget 无效、认不出的 effort、Gemini 未指定档位 / `thinkingBudget: -1` / 只给 `includeThoughts`。**Claude Code 每个请求都带 `adaptive` + `effort: high`**（2.1.296 抓包实测；`high` 是 Claude Code 的出厂值，不换档时每个请求都是它），所以过去 Claude Code 的每个请求都固定跑最深的一档，现在跟随你设的默认档；默认档设成 `off` 时这类请求同样不思考。
+  - **Claude Code 的 `/effort` 生效了**：读取 Anthropic `output_config.effort`（此前被丢弃），`/effort low` / `medium` 照档，`xhigh` / `max` → `high`。
+  - `reasoning_effort: "none"` → **不思考**（OpenAI 官方语义「不推理」，此前被当成 `low`）；`minimal` → low，`xhigh` → high。
+  - 总闸 `EXTENDED_THINKING_ENABLED=false` = 一律不思考（连客户端明确指定档位的也忽略），是真正最快的模式；面板「设置 → 思考」里与默认档并排一直显示。
+- 🤖 **对外模型收口为四个**：`gemini-pro` / `gemini-flash` / `gemini-flash-lite` / `gemini-argon`，各自按账号心跳自动映射到网页当前那一代（3.1 Pro / 3.8 Flash / 3.5 Flash-Lite / 4 Argon；`gemini-argon` 在账号上发现到才列出），Google 换代不用改客户端。
+  - `gemini-flash-thinking` 这个「flash + 思考」的假模型下线：思考现在是每个模型都有的档位。`gemini-flash-thinking`、`gemini-2.5/2.0-flash-thinking`、`gemini-3-flash-thinking*` 仍可调用（隐藏别名，等同 `gemini-flash`，计价不变），只是不再出现在模型列表里；只勾了它的旧访问密钥仍会列出它。
+  - ⚠️ 行为变化：不传档位调用 `gemini-flash-thinking` 时，v1.6.42 会回传思考内容，现在不再回传（没请求的思考一律不回传），想要思考内容请改传档位参数。
+- 🧪 面板「模型测试」页的「思考」勾选框换成**档位选择**（低 / 中 / 高，默认低），另有「按默认档（不传参数）」一项，可实测默认档（含 `off`）的真实速度。
+
+### Fixed
+
+- 🔌 **「API 管理」第三方转发修复（书生端砚等）**：转发时把消息里的可选字段（`name` / `tool_calls` / `tool_call_id`）以 `null` 原样发出，按 OpenAI SDK 严格校验的上游（书生端砚的 deepseek / glm / kimi / minimax / qwen）一律 400「Input should be a valid string」，这几个模型经网关**全部不可用**。现在转发前去掉 `null` 字段（非流式、流式、兜底、Responses 转发都走同一处）。
+  - 全部 key 都失败时不再固定回最后一个 key 的错误：此前前几个 key 是「参数被拒」、最后一个恰好额度用完，客户端只看到 429「quota exceeded」，**被误导成额度问题**。现在优先回能说明原因的那个（参数被拒 > 上游故障 > 额度 > 鉴权）。
+  - 请求本身被拒（400 / 404 / 413 / 422）时，只有同一次请求里别的 key 成功了才把被拒的 key 排到后面，全都被拒就谁也不冷却（此前一个格式不对的请求就能把所有好 key 冷却一遍）；上游 200 空内容按 502 报；网关自己的配置错误（如 base_url 没配）不再盖住真实的上游错误。`/v1/responses` 的第三方转发同样适用。
+  - 日志带 key 标签、模型、上游状态码与错误类型（开了 `LOG_BODIES_ENABLED` 才带错误正文，校验类错误会回显用户原文）。
+- Anthropic `budget_tokens` 的整数值浮点（`1024.0`）照整数认，与 Gemini 原生同口径。
+- ⚡ **真流式的思考路径失败时也会退回不思考重试一次**（此前只有非流式会）：只在还没发出正文时退回，重试期间照发保活帧；顺带修掉 OpenAI 续接会话重试拿到的正文从未发给客户端的旧缺陷。
+
 ## [1.6.42] - 2026-10-21
 
 ### Added
