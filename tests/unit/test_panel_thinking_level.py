@@ -117,17 +117,42 @@ def test_missing_or_unknown_level_falls_back_to_low(tmp_path, level):
     assert sent[0]["body"]["reasoning_effort"] == "low"
 
 
+def test_default_option_sends_no_reasoning_effort(tmp_path):
+    """「按默认档（不传参数）」：与普通不传参的客户端走同一条路，测的是设置页默认档
+    （含 off）在生产上的真实速度。带了 reasoning_effort 就成了"明确请求"，永远测不到。"""
+    sent = _node(tmp_path, _send_harness(), {"model": "gemini-flash", "level": "default"})
+    assert len(sent) == 1
+    assert "reasoning_effort" not in sent[0]["body"]
+    assert sent[0]["body"]["model"] == "gemini-flash"
+    assert sent[0]["body"]["stream"] is True
+
+
+def test_every_select_option_sends_what_it_says(tmp_path):
+    """下拉框里的每个 value 都要被 _pgThinkingEffort 认出来，不能有静默回落成 low 的选项。"""
+    _, options = _pg_options()
+    for value, _attrs in options:
+        body = _node(tmp_path, _send_harness(), {"model": "gemini-pro", "level": value})[0]["body"]
+        if value == "default":
+            assert "reasoning_effort" not in body
+        else:
+            assert body["reasoning_effort"] == value
+
+
 def test_empty_model_falls_back_to_a_public_name(tmp_path):
     sent = _node(tmp_path, _send_harness(), {"model": "", "level": "low"})
     assert sent[0]["body"]["model"] == "gemini-flash"
 
 
-def test_the_level_select_defaults_to_low_with_three_levels():
+def _pg_options():
     html = _PG_HTML.read_text(encoding="utf-8")
     m = re.search(r'<select id="pg-thinking-level"[^>]*>(.*?)</select>', html, re.S)
     assert m, "模型测试页没有思考档位选择框"
-    options = re.findall(r'<option value="([^"]*)"([^>]*)>', m.group(1))
-    assert [v for v, _ in options] == ["low", "medium", "high"]
+    return html, re.findall(r'<option value="([^"]*)"([^>]*)>', m.group(1))
+
+
+def test_the_level_select_defaults_to_low_with_three_levels_and_a_default_option():
+    html, options = _pg_options()
+    assert [v for v, _ in options] == ["low", "medium", "high", "default"]
     assert [v for v, attrs in options if "selected" in attrs] == ["low"]
     assert 'id="pg-thinking"' not in html, "旧的思考勾选框应当被档位选择取代"
 
@@ -189,6 +214,8 @@ def test_thinking_option_labels_exist_in_every_language():
     blocks = re.split(r"^ {4}'[A-Za-z-]+': \{$", i18n, flags=re.M)[1:]
     assert len(blocks) == 5
     for block in blocks:
-        for key in keys + ["playground.thinkingLevel.low", "playground.thinkingLevel.medium",
-                           "playground.thinkingLevel.high"]:
+        pg_keys = re.findall(r'data-i18n="(playground\.thinkingLevel\.[a-z]+)"',
+                             _PG_HTML.read_text(encoding="utf-8"))
+        assert len(pg_keys) == 4
+        for key in keys + pg_keys:
             assert f"'{key}':" in block, key

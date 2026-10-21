@@ -142,3 +142,20 @@ def filter_models_for_access_key(models) -> list:
     if allowed is None:
         return list(models)
     return [m for m in models if _strip_models_prefix(str(m)) in allowed]
+
+
+def with_retired_models_for_access_key(models) -> list:
+    """Gemini 模型列表 + 当前访问密钥**明确勾选过**的已下线公开名（如 gemini-flash-thinking）。
+
+    gemini-flash-thinking 下线后作为隐藏别名照常能调，但不再出现在任何列表里。对一把
+    allowed_models 里只有它的旧密钥来说，三个协议的模型列表会一下子变成空的 —— 客户端
+    （Cherry Studio / Open WebUI 这类"先拉列表再选"的）就会显示"无可用模型"，用户以为
+    密钥坏了。所以：密钥自己勾过的已下线名照旧列给这把密钥（与 v1.6.42 一致），没勾过的
+    密钥、以及不限模型 / 没有访问密钥的请求，列表一个字都不变。
+    """
+    models = list(models)
+    allowed = current_allowed_models()
+    if allowed is None:
+        return models
+    from app.core.gemini_client import _RETIRED_PUBLIC_MODELS   # 延迟导入，避免循环依赖
+    return models + [m for m in _RETIRED_PUBLIC_MODELS if m in allowed and m not in models]

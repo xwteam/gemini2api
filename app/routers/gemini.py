@@ -10,10 +10,13 @@ from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import (
     ensure_model_allowed, filter_models_for_access_key, record_token_usage,
+    with_retired_models_for_access_key,
 )
 from app.core.gemini_client import (HTTPStatusError, classify_error,
                                     generate_with_thinking_fallback,
-                                    parse_gemini_thinking_config, resolve_thinking)
+                                    parse_gemini_thinking_config, resolve_thinking,
+                                    should_retry_without_thinking)
+from app.core.thinking_stream import HiddenThoughts, drop_thought_events
 from app.core.stream import split_into_chunks, iter_with_keepalive, sse_keepalive_during
 from app.models.gemini import (
     GeminiRequest,
@@ -166,6 +169,8 @@ _MODEL_DESCRIPTIONS = {
     "gemini-flash": "Fast model with low latency, for interactive use",
     "gemini-flash-lite": "Lightest and fastest model; still available when Pro/Flash are rate-limited",
     "gemini-argon": "4 Argon, for complex tasks; listed only when an account actually has it",
+    # 已下线的旧名，只会列给明确勾选过它的访问密钥（见 with_retired_models_for_access_key）
+    "gemini-flash-thinking": "Retired name, now an alias of gemini-flash; pass a thinking level instead",
 }
 _DISCOVERED_DESCRIPTION = "Discovered from the account model list"
 
@@ -204,7 +209,7 @@ async def list_models():
     # 都没改**：这些旧名字照旧能调，只是不再被列出来（与另外三个协议的列表口径一致）。
     models = [
         GeminiModelInfo(name=f"models/{m}", display_name=m, description=_describe(m))
-        for m in gemini_client.models
+        for m in with_retired_models_for_access_key(gemini_client.models)
     ]
     # MODEL_WHITELIST 过滤（为空则放行全部）；按裸模型名匹配 name 去掉 `models/` 前缀
     allowed = _whitelist_set()
@@ -469,11 +474,19 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                 yield _chunk(chunk)
         else:
             # === 真流式路径（纯文本）===
+            # 不回传的思考在 iter_with_keepalive 之前滤掉：思考期间对保活计时器就是静默，
+            # 到点照发空行。否则上游每隔几秒一个 thoughts 事件，保活一个都不发，这条 NDJSON
+            # 流在整段思考期间（pro 实测 36～65 秒）连首字节都没有（见 app/core/thinking_stream.py）。
+            hidden = HiddenThoughts()
+            upstream = gemini_client.generate_stream(prompt, model, "", attachments,
+                                                     gem_id=gem_id, account_id=gem_account_id,
+                                                     extended_thinking=plan.upstream)
+            if not plan.show:
+                upstream = drop_thought_events(upstream, hidden)
+            streamed_text = False
+            failure = None
             try:
-                async for _kind, evt in iter_with_keepalive(
-                    gemini_client.generate_stream(prompt, model, "", attachments,
-                                                  gem_id=gem_id, account_id=gem_account_id,
-                                                  extended_thinking=plan.upstream)):
+                async for _kind, evt in iter_with_keepalive(upstream):
                     if _kind == "ping":
                         # NDJSON blank-line keepalive (SSE ": ping" comment is invalid on this application/json stream)
                         yield "\n"
@@ -483,11 +496,12 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                         delta = evt.get("text", "")
                         response_text += delta
                         if delta:
+                            streamed_text = True
                             yield _chunk(delta)
                     elif evt.get("type") == "thoughts":
+                        # 只有 includeThoughts=true 才会到这里（不回传的已在上游一侧被滤掉）
                         t_delta = evt.get("text", "")
                         stream_thoughts += t_delta
-                        # 只有 includeThoughts=true 才回传；否则只进内部记账
                         if plan.show and t_delta:
                             emitted_thoughts += t_delta
                             yield _thought_chunk(t_delta)
@@ -507,13 +521,46 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                             tail = final_text[len(response_text):]
                             response_text = final_text
                             if tail:
+                                streamed_text = True
                                 yield _chunk(tail)
                         else:
                             response_text = final_text
             except Exception as e:
                 # generate_stream 在 HTTP>=400 时抛 HTTPStatusError（非 RuntimeError/ValueError 子类），
                 # 故这里捕获 Exception，与 openai/claude 真流式路径一致，避免击穿生成器
-                yield json.dumps({"error": {"message": str(e), "type": "api_error"}}) + "\n"
+                failure = e
+            if not stream_thoughts:
+                stream_thoughts = hidden.text
+
+            if failure is not None and not streamed_text \
+                    and should_retry_without_thinking(failure, plan.upstream):
+                # 思考路径失败、还没发出任何正文：原样退回不思考、非流式重试一次（与非流式 /
+                # buffered 的 generate_with_thinking_fallback、Responses 真流式同口径）。
+                # 重试期间同样用空行保活。
+                logger.warning(f"extended-thinking stream failed, retrying normal: {failure}")
+                retry_task = asyncio.create_task(gemini_client.generate(
+                    prompt, model, "", attachments,
+                    gem_id=gem_id, account_id=gem_account_id, extended_thinking=False))
+                try:
+                    async for _ping in sse_keepalive_during(retry_task):
+                        yield "\n"
+                except BaseException:          # GeneratorExit / CancelledError on client disconnect
+                    retry_task.cancel()
+                    if retry_task.done() and not retry_task.cancelled():
+                        retry_task.exception()
+                    raise
+                try:
+                    result = retry_task.result()
+                except Exception as e2:
+                    failure = e2
+                else:
+                    failure = None
+                    response_text = result.get("text", "") or ""
+                    if response_text:
+                        yield _chunk(response_text)
+
+            if failure is not None:
+                yield json.dumps({"error": {"message": str(failure), "type": "api_error"}}) + "\n"
                 return
 
         completion_tokens = estimate_tokens(response_text)

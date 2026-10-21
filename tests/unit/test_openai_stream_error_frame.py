@@ -44,6 +44,12 @@ def test_realstream_error_before_any_delta_emits_error_frame_not_fake_success(ge
         yield  # pragma: no cover — 让函数保持 async generator 形态
 
     monkeypatch.setattr(oai.gemini_client, "generate_stream", boom_generate_stream)
+    # 默认思考档（出厂 low）开着时，真流式失败会先退回不思考的非流式重试一次；
+    # 上游整体故障时那一次也同样失败，这里让 generate 抛同一个错误。
+    async def _same_failure(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(oai.gemini_client, "generate", _same_failure)
     with gem_client.stream("POST", "/v1/chat/completions", json={
         "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}], "stream": True,
     }, headers=_AUTH) as r:
@@ -98,6 +104,12 @@ def test_realstream_pool_exhausted_maps_to_overloaded_error_type(gem_client, mon
         yield  # pragma: no cover
 
     monkeypatch.setattr(oai.gemini_client, "generate_stream", boom_generate_stream)
+    # 默认思考档（出厂 low）开着时，真流式失败会先退回不思考的非流式重试一次；
+    # 上游整体故障时那一次也同样失败，这里让 generate 抛同一个错误。
+    async def _same_failure(*a, **k):
+        raise RuntimeError("No available accounts")
+
+    monkeypatch.setattr(oai.gemini_client, "generate", _same_failure)
     with gem_client.stream("POST", "/v1/chat/completions", json={
         "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}], "stream": True,
     }, headers=_AUTH) as r:
@@ -120,6 +132,12 @@ def test_realstream_http_status_error_matches_nonstream_type(gem_client, monkeyp
         yield  # pragma: no cover
 
     monkeypatch.setattr(oai.gemini_client, "generate_stream", boom_generate_stream)
+    # 默认思考档（出厂 low）开着时，真流式失败会先退回不思考的非流式重试一次；
+    # 上游整体故障时那一次也同样失败，这里让 generate 抛同一个错误。
+    async def _same_failure(*a, **k):
+        raise HTTPStatusError(429, "rate limited")
+
+    monkeypatch.setattr(oai.gemini_client, "generate", _same_failure)
     with gem_client.stream("POST", "/v1/chat/completions", json={
         "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}], "stream": True,
     }, headers=_AUTH) as r:

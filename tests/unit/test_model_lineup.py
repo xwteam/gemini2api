@@ -193,20 +193,26 @@ def test_flash_thinking_is_no_longer_a_family():
     assert "flash-thinking" not in _real_account_client()._family_model
 
 
-def _fake_generate(captured):
-    async def gen(prompt, model, conversation_id="", attachments=None, gem_id=None,
-                  account_id=None, extended_thinking=False):
+def _fake_wire(acct, monkeypatch, captured):
+    """只把账号客户端的网络层（_send_request）换成假的。
+
+    别名解析和 "resolved not in _model_table()" 闸门都在 GeminiWebClient.generate 里，
+    在 _send_request **之前**。过去这里把账号池的 generate 整个 mock 掉，闸门压根没跑，
+    别名全删了这几条照样绿 —— 现在请求要真的穿过 路由 → 账号池 → 账号 generate 的闸门。
+    """
+    async def send(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                   extended_thinking=False):
         captured.append(model)
         return {"text": "ok", "images": [], "conversation_id": "", "thoughts": ""}
-    return gen
+
+    monkeypatch.setattr(acct.client, "_send_request", send)
 
 
 @pytest.mark.parametrize("name", HIDDEN)
 def test_hidden_alias_still_succeeds_on_chat_completions(gem_client, real_pool, monkeypatch, name):
-    """openai/responses 有一道"不是 Gemini 模型就当第三方"的闸门：别名漏掉的话这里是 400。"""
-    import app.routers.openai as oai
+    """别名漏掉的话：openai 闸门把它当第三方 → 400，或账号 generate 抛 "unavailable"。"""
     captured = []
-    monkeypatch.setattr(oai.gemini_client, "generate", _fake_generate(captured))
+    _fake_wire(real_pool, monkeypatch, captured)
     r = gem_client.post("/v1/chat/completions", json={
         "model": name, "messages": [{"role": "user", "content": "hi"}]}, headers=_AUTH)
     assert r.status_code == 200, r.text
@@ -216,27 +222,28 @@ def test_hidden_alias_still_succeeds_on_chat_completions(gem_client, real_pool, 
 
 @pytest.mark.parametrize("name", HIDDEN)
 def test_hidden_alias_still_succeeds_on_responses(gem_client, real_pool, monkeypatch, name):
-    import app.routers.responses as rp
     captured = []
-    monkeypatch.setattr(rp.gemini_client, "generate", _fake_generate(captured))
+    _fake_wire(real_pool, monkeypatch, captured)
     r = gem_client.post("/v1/responses", json={"model": name, "input": "hi"}, headers=_AUTH)
     assert r.status_code == 200, r.text
     assert captured == [name]
 
 
-def test_hidden_alias_still_succeeds_on_messages_and_native(gem_client, real_pool, monkeypatch):
-    import app.routers.claude as cl
-    import app.routers.gemini as ge
+@pytest.mark.parametrize("name", HIDDEN)
+def test_hidden_alias_still_succeeds_on_messages_and_native(gem_client, real_pool, monkeypatch,
+                                                            name):
     captured = []
-    monkeypatch.setattr(cl.gemini_client, "generate", _fake_generate(captured))
-    monkeypatch.setattr(ge.gemini_client, "generate", _fake_generate(captured))
+    _fake_wire(real_pool, monkeypatch, captured)
     r1 = gem_client.post("/v1/messages", json={
-        "model": "gemini-flash-thinking", "max_tokens": 64,
+        "model": name, "max_tokens": 64,
         "messages": [{"role": "user", "content": "hi"}]}, headers=_AUTH)
-    r2 = gem_client.post("/v1beta/models/gemini-flash-thinking:generateContent", json={
+    r2 = gem_client.post(f"/v1beta/models/{name}:generateContent", json={
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, headers=_AUTH)
     assert r1.status_code == 200, r1.text
     assert r2.status_code == 200, r2.text
+    assert r1.json()["content"][-1]["text"] == "ok"
+    assert r2.json()["candidates"][0]["content"]["parts"][-1]["text"] == "ok"
+    assert captured == [name, name]
 
 
 def test_historical_usage_under_the_old_name_is_priced_as_flash():

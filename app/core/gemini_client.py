@@ -344,7 +344,11 @@ def parse_anthropic_thinking(thinking) -> int | bool | None:
 #   thinkingLevel:   enum  —— MINIMAL / LOW / MEDIUM / HIGH（另有 THINKING_LEVEL_UNSPECIFIED）
 # 本仓只有三档，MINIMAL 夹到 low。budget 沿用 Anthropic 那张切点表（2048 / 4096），
 # 不另起一套阈值 —— 官方没给各模型的 budget 范围，单独定切点也只是另一种猜测。
-# 两个都传时 level 优先、宽容处理，不 400（官方是否对此报 400 本仓未能查证）。
+# 两个都传时：官方会回 400（ai.google.dev/gemini-api/docs/gemini-3 原文 "You cannot use both
+# thinking_level and the legacy thinking_budget parameter in the same request. Doing so will
+# return a 400 error."）。本仓**刻意宽容**、不 400：v1.6.42 根本不读 thinkingConfig，这类请求
+# 一直是 200，现在改成 400 会让能用的客户端突然报错。取 level 为准（新字段，官方推荐）——
+# 包括 thinkingBudget:0 + thinkingLevel:HIGH 这种自相矛盾的组合也按 level 走。
 _GEMINI_THINKING_LEVELS = {
     "minimal": THINKING_LEVEL_LOW,
     "low": THINKING_LEVEL_LOW,
@@ -374,6 +378,11 @@ def parse_gemini_thinking_config(config) -> tuple[int | bool | None, bool]:
             key = key[len("thinking_level_"):]
         return _GEMINI_THINKING_LEVELS.get(key, THINKING_LEVEL_DEFAULT), show
     budget = _pick(config, "thinkingBudget", "thinking_budget")
+    # 有的 SDK / 语言把数字统一序列化成浮点（JSON 里的 0.0、1024.0）。整数值的浮点照整数认，
+    # 否则 0.0（= 关闭）会掉进"没传"、被默认档开成思考。带小数的预算不是合法 token 数，
+    # 仍按"没给出可认的预算"处理。
+    if isinstance(budget, float) and budget.is_integer():
+        budget = int(budget)
     if isinstance(budget, int) and not isinstance(budget, bool):
         if budget == 0:
             return False, False
@@ -383,6 +392,11 @@ def parse_gemini_thinking_config(config) -> tuple[int | bool | None, bool]:
     if show:
         return THINKING_LEVEL_DEFAULT, True
     return None, False
+
+
+def should_retry_without_thinking(exc: BaseException, extended_thinking) -> bool:
+    """这次失败是否该退回不思考重试：走了思考路径，且是 THINKING_RETRYABLE_ERRORS。"""
+    return bool(extended_thinking) and isinstance(exc, THINKING_RETRYABLE_ERRORS)
 
 
 async def generate_with_thinking_fallback(client, prompt, model, *args,
@@ -396,8 +410,8 @@ async def generate_with_thinking_fallback(client, prompt, model, *args,
     try:
         return await client.generate(prompt, model, *args,
                                      extended_thinking=extended_thinking, **kwargs)
-    except (RuntimeError, ValueError, HTTPStatusError) as e:
-        if not extended_thinking:
+    except THINKING_RETRYABLE_ERRORS as e:
+        if not should_retry_without_thinking(e, extended_thinking):
             raise
         logger.warning(f"extended-thinking request failed, retrying normal: {e}")
         return await client.generate(prompt, model, *args, extended_thinking=False, **kwargs)
@@ -429,6 +443,12 @@ class HTTPStatusError(Exception):
     def __init__(self, status_code: int, text: str = ""):
         self.status_code = status_code
         super().__init__(f"HTTP {status_code}: {text[:200]}")
+
+
+# 思考路径失败后值得"原样退回不思考再试一次"的异常（非流式 / buffered / 真流式共用一份）。
+# 超时（GenerationTimedOut 等 TimeoutError）刻意不在里面：生成期超时已经吃掉了整个 POST
+# 预算，再打一次只会把用户的等待时间翻倍。
+THINKING_RETRYABLE_ERRORS = (RuntimeError, ValueError, HTTPStatusError)
 
 
 class RotationResult(Enum):

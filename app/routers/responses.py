@@ -16,6 +16,7 @@ from app.core.gemini_client import (GEMINI_MODELS, _resolve_model, parse_effort_
 from app.core.responses_protocol import (
     parse_responses_input, build_responses_object, new_response_id, ResponsesStreamEncoder,
 )
+from app.core.thinking_stream import HiddenThoughts, drop_thought_events
 from app.core.stream import iter_with_keepalive, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.routers.openai import _images_to_markdown
 from app.utils.tools import build_tool_prompt, parse_tool_response_with_retry, estimate_tokens
@@ -301,11 +302,16 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
     final_images = []
     thoughts = ""
     streamed_any = False
+    # 这条路径不逐帧转发思考（只在收尾的 reasoning 项里给出 final.thoughts），所以 thoughts
+    # 事件一律在 iter_with_keepalive 之前滤掉：思考期间对保活计时器就是静默，到点照发保活帧。
+    # 否则上游每隔几秒一个 thoughts 事件，整段思考期间一个保活帧都不发（见 thinking_stream）。
+    upstream = drop_thought_events(
+        gemini_client.generate_stream(prompt, model, "", attachments,
+                                      gem_id=gem_id, account_id=gem_account_id,
+                                      extended_thinking=extended_thinking),
+        HiddenThoughts())
     try:
-        async for _kind, evt in iter_with_keepalive(
-            gemini_client.generate_stream(prompt, model, "", attachments,
-                                          gem_id=gem_id, account_id=gem_account_id,
-                                          extended_thinking=extended_thinking)):
+        async for _kind, evt in iter_with_keepalive(upstream):
             if _kind == "ping":
                 yield SSE_KEEPALIVE_FRAME
                 continue
@@ -328,10 +334,20 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
         # 扩展思维链路径失败且尚未流出任何内容：退回非流式非思维链重试一次
         if extended_thinking and not streamed_any:
             logger.warning(f"extended-thinking stream failed, retrying normal: {e}")
+            # 重试是一整轮非流式生成：用 task + keepalive 续心跳，别制造一段死寂
+            retry_task = asyncio.create_task(gemini_client.generate(
+                prompt, model, "", attachments,
+                gem_id=gem_id, account_id=gem_account_id, extended_thinking=False))
             try:
-                result = await gemini_client.generate(prompt, model, "", attachments,
-                                                      gem_id=gem_id, account_id=gem_account_id,
-                                                      extended_thinking=False)
+                async for ping in sse_keepalive_during(retry_task):
+                    yield ping
+            except BaseException:          # GeneratorExit / CancelledError on client disconnect
+                retry_task.cancel()
+                if retry_task.done() and not retry_task.cancelled():
+                    retry_task.exception()
+                raise
+            try:
+                result = retry_task.result()
             except Exception as e2:
                 yield enc.failed(str(e2))
                 return

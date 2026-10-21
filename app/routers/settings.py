@@ -95,17 +95,23 @@ def _get_grouped_settings() -> Dict[str, Dict[str, Any]]:
 
 
 def _thinking_group() -> Dict[str, Any]:
-    """「思考」分组。平时只露一个控件：默认思考档位（off / low / medium / high）。
+    """「思考」分组，两个控件，各管各的、一直都显示：
 
-    extended_thinking_enabled（总闸：关 = 一律不思考，连客户端明确要求的也忽略）只在
-    它**被关掉时**才显示。两个开关同时摆出来，"off" 与"总闸关"在大多数请求上效果相同，
-    用户分不清该点哪个；但把总闸彻底藏起来，之前关过它的人就再也看不到、改不回来，
-    而默认档位怎么切都不生效 —— 那更困惑。所以：开着时藏，关着时露出来供他打开。
+    - default_thinking_level（off / low / medium / high）：客户端**没传**思考参数时用哪一档。
+    - extended_thinking_enabled（「允许思考」总闸）：关 = 四个协议一律不思考，**连客户端
+      明确要求的也忽略**。
+
+    这不是两个意思重叠的开关：默认档 off 只管"没传参"的请求；Claude Code / Codex /
+    Cursor 这类会主动传 thinking / reasoning_effort 的客户端，off 管不到，它们的请求照样
+    思考（adaptive / 大 budget 还会落到最慢的 high）。用户嫌慢时真正能"一键回到最快"
+    的是总闸。过去把总闸藏起来（只在它已经关着时才露出来），用户按提示把默认档改成 off
+    后仍然慢，又在面板上找不到能关的地方，只能改环境变量重启 —— 所以两个都摆出来，
+    在标签和提示里把分工写清楚。
     """
-    group: Dict[str, Any] = {"default_thinking_level": settings.default_thinking_level}
-    if not settings.extended_thinking_enabled:
-        group["extended_thinking_enabled"] = False
-    return group
+    return {
+        "default_thinking_level": settings.default_thinking_level,
+        "extended_thinking_enabled": settings.extended_thinking_enabled,
+    }
 
 
 # .env 的位置。刻意保持相对路径（在使用时才由 OS 相对 CWD 解析），只是把字面量收成

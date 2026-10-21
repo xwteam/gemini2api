@@ -12,10 +12,12 @@ from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import (
     ensure_model_allowed, filter_models_for_access_key, record_token_usage,
+    with_retired_models_for_access_key,
 )
 from app.core.gemini_client import (HTTPStatusError, classify_error,
                                     generate_with_thinking_fallback, parse_anthropic_thinking,
-                                    resolve_thinking)
+                                    resolve_thinking, should_retry_without_thinking)
+from app.core.thinking_stream import HiddenThoughts, drop_thought_events
 from app.core.stream import split_into_chunks, iter_with_keepalive, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.claude import (
     ClaudeRequest, ClaudeResponse, ContentBlock, ClaudeUsage,
@@ -120,7 +122,8 @@ models_router = APIRouter(tags=["Claude"])
 
 @models_router.get("/models")
 async def list_models():
-    models = filter_models_for_access_key(_apply_model_whitelist(list(gemini_client.models)))
+    models = filter_models_for_access_key(_apply_model_whitelist(
+        with_retired_models_for_access_key(gemini_client.models)))
     data = [
         ClaudeModelInfo(
             id=m,
@@ -135,7 +138,8 @@ async def list_models():
 @models_router.get("/models/{model_id:path}")
 async def get_model(model_id: str):
     # 与 /models 列表保持一致：被白名单挡掉的模型也视为 not found
-    if model_id not in filter_models_for_access_key(_apply_model_whitelist(list(gemini_client.models))):
+    if model_id not in filter_models_for_access_key(_apply_model_whitelist(
+        with_retired_models_for_access_key(gemini_client.models))):
         return JSONResponse(
             status_code=404,
             content={"type": "error", "error": {"type": "not_found", "message": f"Model {model_id} not found"}},
@@ -353,7 +357,8 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
     text_index = 0
     emitted_thoughts = ""
     # 不回传时思考只进内部记账（官方口径：思考 token 按 output 计费），一个字都不进 SSE。
-    hidden_thoughts = ""
+    # 过滤放在 iter_with_keepalive 之前，思考期间照发保活帧（见 app/core/thinking_stream.py）。
+    hidden = HiddenThoughts()
     # 正文块开了之后才到的思考增量只能丢（见下面那条 WARNING）。记下丢了多少，
     # 收尾时一次说清，别让 reasoning 通道静默少内容。
     dropped_thoughts = 0
@@ -379,20 +384,21 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
 
     full_text = ""
     final_images = []
+    streamed_text = False   # 是否已经发出过正文增量（决定失败时还能不能退回重试）
+    upstream = gemini_client.generate_stream(prompt, model, "", attachments,
+                                             gem_id=gem_id, account_id=account_id,
+                                             extended_thinking=extended_thinking)
+    if not show_thinking:
+        upstream = drop_thought_events(upstream, hidden)
     try:
-        async for _kind, evt in iter_with_keepalive(
-            gemini_client.generate_stream(prompt, model, "", attachments,
-                                          gem_id=gem_id, account_id=account_id,
-                                          extended_thinking=extended_thinking)):
+        async for _kind, evt in iter_with_keepalive(upstream):
             if _kind == "ping":
                 yield SSE_KEEPALIVE_FRAME
                 continue
             if evt.get("type") == "thoughts":
                 # 这一支过去根本不存在：{"type":"thoughts"} 事件被 if/elif 整个漏掉，
                 # 于是 Anthropic 协议用户永远拿不到思考链。
-                if not show_thinking:
-                    hidden_thoughts += evt.get("text", "")
-                    continue
+                # 只有 show_thinking 时才会到这里（不回传的已在上游一侧被滤掉）。
                 t_delta = evt.get("text", "")
                 if not t_delta:
                     continue
@@ -431,6 +437,7 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
                 if delta:
                     for frame in _ensure_text_open():
                         yield frame
+                    streamed_text = True
                     yield _claude_sse({
                         "type": "content_block_delta",
                         "index": text_index,
@@ -443,7 +450,7 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
                 # startswith 不成立时不重发整段、避免重复）。只有文本块还没开时才可能补 ——
                 # 开了就回不去 thinking 块前面了。
                 if not show_thinking:
-                    hidden_thoughts = (evt.get("thoughts", "") or "") or hidden_thoughts
+                    hidden.text = (evt.get("thoughts", "") or "") or hidden.text
                 if show_thinking and text_open:
                     final_thoughts = evt.get("thoughts", "") or ""
                     missing = len(final_thoughts) - len(emitted_thoughts)
@@ -480,6 +487,7 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
                     if tail:
                         for frame in _ensure_text_open():
                             yield frame
+                        streamed_text = True
                         yield _claude_sse({
                             "type": "content_block_delta",
                             "index": text_index,
@@ -489,6 +497,47 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
                     full_text = final_text
                 final_images = evt.get("images") or []
     except Exception as e:
+        failure = e
+    else:
+        failure = None
+
+    if failure is not None and not streamed_text \
+            and should_retry_without_thinking(failure, extended_thinking):
+        # 思考路径失败、还没发出任何正文：原样退回不思考、非流式重试一次（与非流式 /
+        # buffered 的 generate_with_thinking_fallback、Responses 真流式同口径）。默认档上线后
+        # 几乎每个请求都走思考路径，没有这一退回，上游拒收思考 payload 时 v1.6.42 能答的
+        # 不传参流式请求会变成硬失败。重试期间用 task + keepalive 续心跳。
+        logger.warning(f"extended-thinking stream failed, retrying normal: {failure}")
+        retry_task = asyncio.create_task(gemini_client.generate(
+            prompt, model, "", attachments,
+            gem_id=gem_id, account_id=account_id, extended_thinking=False))
+        try:
+            async for ping in sse_keepalive_during(retry_task):
+                yield ping
+        except BaseException:          # GeneratorExit / CancelledError on client disconnect
+            retry_task.cancel()
+            if retry_task.done() and not retry_task.cancelled():
+                retry_task.exception()
+            raise
+        try:
+            result = retry_task.result()
+        except Exception as e2:
+            failure = e2
+        else:
+            failure = None
+            full_text = result.get("text", "") or ""
+            final_images = result.get("images") or []
+            if full_text:
+                for frame in _ensure_text_open():
+                    yield frame
+                yield _claude_sse({
+                    "type": "content_block_delta",
+                    "index": text_index,
+                    "delta": {"type": "text_delta", "text": full_text},
+                })
+
+    if failure is not None:
+        e = failure
         # 真实上游失败绝不能伪装成正常回答：不能落回下面的
         # content_block_stop/message_delta(stop_reason=end_turn)/message_stop 正常收尾——
         # 否则官方 SDK 会看到 stop_reason='end_turn' 且没有异常，client 的重试/故障转移/退避
@@ -539,7 +588,7 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
         })
 
     _record_usage(model, prompt, full_text,
-                  {"thoughts": emitted_thoughts if show_thinking else hidden_thoughts})
+                  {"thoughts": emitted_thoughts if show_thinking else hidden.text})
 
     yield _claude_sse({"type": "content_block_stop", "index": text_index})
     yield _claude_sse({

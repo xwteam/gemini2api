@@ -753,16 +753,20 @@ function _pgSetSendBusy(busy) {
     else pgSend.removeAttribute('aria-busy');
 }
 
-// 模型测试页的思考档位：只认 low / medium / high，其余（含空值）回出厂默认档 low。
+// 模型测试页的思考档位：low / medium / high 原样发出；'default' = 不传档位参数（返回 null），
+// 其余（含空值）回出厂默认档 low。
 function _pgThinkingEffort(value) {
     const levels = ['low', 'medium', 'high'];
     const v = String(value ?? '').trim().toLowerCase();
+    if (v === 'default') return null;
     return levels.includes(v) ? v : 'low';
 }
 
-// 模型测试页发给 /v1/chat/completions 的请求体。reasoning_effort **每次都显式带上**：
+// 模型测试页发给 /v1/chat/completions 的请求体。选了低 / 中 / 高时 reasoning_effort 显式带上：
 // 服务端只有客户端明确要了思考才回传思考内容（按默认档替客户端开的思考不回传），
 // 不带的话测试页就看不到思考过程，也和下拉框里选的档位对不上。
+// 选「按默认档」时**不带** reasoning_effort：与普通不传参的客户端走同一条路，测出的就是
+// 设置页「默认思考档位」（含 off）在生产上的真实速度，思考内容按规定不回传。
 function _pgBuildChatRequest(model, messages, conversationId, thinkingLevel) {
     const body = {
         model: model || 'gemini-flash',
@@ -772,7 +776,10 @@ function _pgBuildChatRequest(model, messages, conversationId, thinkingLevel) {
     if (conversationId) {
         body.conversation_id = conversationId;
     }
-    body.reasoning_effort = _pgThinkingEffort(thinkingLevel);
+    const effort = _pgThinkingEffort(thinkingLevel);
+    if (effort) {
+        body.reasoning_effort = effort;
+    }
     return body;
 }
 

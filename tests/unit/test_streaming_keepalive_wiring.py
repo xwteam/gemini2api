@@ -127,6 +127,12 @@ def test_chat_realstream_exception_before_any_delta_does_not_500(gem_client, mon
         yield  # pragma: no cover — 让函数保持 async generator 形态，不会被执行到
 
     monkeypatch.setattr(oai.gemini_client, "generate_stream", boom_generate_stream)
+    # 默认思考档（出厂 low）开着时，真流式失败会先退回不思考的非流式重试一次；
+    # 上游整体故障时那一次也同样失败，这里让 generate 抛同一个错误。
+    async def _same_failure(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(oai.gemini_client, "generate", _same_failure)
     with gem_client.stream("POST", "/v1/chat/completions", json={
         "model": "gemini-flash", "messages": [{"role": "user", "content": "1+3+9*9"}], "stream": True,
     }, headers=_AUTH) as r:

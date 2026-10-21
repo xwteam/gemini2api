@@ -77,6 +77,31 @@ def _post(client, path, body, stream=False):
     return r.text
 
 
+def _json_strings(body: str) -> list:
+    """把 JSON / SSE / NDJSON 响应里每个 JSON 对象的字符串叶子按顺序取出来（解掉 \\u 转义）。"""
+    out = []
+
+    def walk(v):
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+
+    for line in body.splitlines() or [body]:
+        line = line.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        try:
+            walk(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
 # 每个协议 × 流式/非流式 × 有无工具，都是"客户端没提思考"的请求
 _CHAT = {"model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}]}
 _CLAUDE = {"model": "gemini-flash", "max_tokens": 64,
@@ -209,7 +234,7 @@ def test_openai_effort_maps_to_a_level(gem_client, monkeypatch, effort, expected
 @pytest.mark.parametrize("reasoning,expected", [
     (None, THINKING_LEVEL_LOW),
     ({"effort": "low"}, 1), ({"effort": "medium"}, 4), ({"effort": "high"}, 2),
-    ({"effort": "minimal"}, 1), ({"effort": "xhigh"}, 2),
+    ({"effort": "none"}, 1), ({"effort": "minimal"}, 1), ({"effort": "xhigh"}, 2),
     ({"effort": 7}, THINKING_LEVEL_DEFAULT),       # 非字符串也不 500
     ({}, THINKING_LEVEL_LOW),
 ])
@@ -317,6 +342,14 @@ def test_each_setting_value_maps_to_a_level(monkeypatch, value, level):
     assert plan.upstream == (level or False) and plan.show is False
 
 
+@pytest.mark.parametrize("raw", ["garbage", "", None, "xhigh"])
+def test_an_unrecognised_setting_value_falls_back_to_low_not_off(monkeypatch, raw):
+    """绕过校验直接写进 settings 的坏值（正常走不到：环境变量由 validator 归一、面板由
+    check_domain 拦）也只能回到出厂 low，不能悄悄变成 off 或别的档。"""
+    monkeypatch.setattr(settings, "default_thinking_level", raw)
+    assert default_thinking_level() == THINKING_LEVEL_LOW
+
+
 def test_the_allowed_values_agree_between_the_setting_and_the_resolver():
     assert so.THINKING_DEFAULT_LEVELS == set(gc._DEFAULT_THINKING_CHOICES)
     assert "default_thinking_level" in so.EDITABLE_FIELDS
@@ -380,17 +413,31 @@ def test_a_hand_broken_overrides_file_is_ignored_on_replay(tmp_path):
     assert so.apply_overrides(target, path) == {"default_thinking_level": "medium"}
 
 
-def test_settings_page_shows_one_thinking_control_unless_the_master_switch_is_off(
-        gem_client, monkeypatch):
-    """平时只露"默认思考档位"一个控件；总闸被关掉时才露出来（否则关过它的人改不回来，
-    而默认档位怎么切都不生效）。"""
+def test_settings_page_always_shows_both_thinking_controls(gem_client, monkeypatch):
+    """默认档 off 只管"没传思考参数"的请求；Claude Code / Codex 这类主动传参的客户端只有
+    总闸管得到。总闸若藏起来（旧做法：只在它已关时才露出），用户按提示把默认档改成 off
+    后照样慢，面板上又找不到能关的地方 —— 所以两个控件始终都在「思考」分组里。"""
     group = gem_client.get("/admin/settings", headers=_AUTH).json()["thinking"]
-    assert group == {"default_thinking_level": "low"}
+    assert group == {"default_thinking_level": "low", "extended_thinking_enabled": True}
     monkeypatch.setattr(settings, "extended_thinking_enabled", False)
+    monkeypatch.setattr(settings, "default_thinking_level", "off")
     group = gem_client.get("/admin/settings", headers=_AUTH).json()["thinking"]
-    assert group == {"default_thinking_level": "low", "extended_thinking_enabled": False}
+    assert group == {"default_thinking_level": "off", "extended_thinking_enabled": False}
     chat_cleanup = gem_client.get("/admin/settings", headers=_AUTH).json()["chat_cleanup"]
     assert "extended_thinking_enabled" not in chat_cleanup
+
+
+def test_master_switch_can_be_turned_off_from_the_panel_and_wins_immediately(
+        gem_client, monkeypatch, isolated_persistence):
+    """面板上关总闸 → 即时生效：连客户端明确要的 high 也不思考（真正的"一键最快"）。"""
+    import app.routers.openai as oai
+    captured = _install(monkeypatch, oai)
+    monkeypatch.setattr(settings, "extended_thinking_enabled", True)   # 测完由 monkeypatch 复原
+    r = gem_client.post("/admin/settings",
+                        json={"settings": {"extended_thinking_enabled": False}}, headers=_AUTH)
+    assert r.status_code == 200, r.text
+    _post(gem_client, "/v1/chat/completions", {**_CHAT, "reasoning_effort": "high"})
+    assert captured == [False]
 
 
 # ---------------------------------------------------------------------------
@@ -427,20 +474,39 @@ def _wire_client(monkeypatch):
     return c, sent
 
 
-def test_default_off_sends_exactly_what_v1_6_42_sent_without_parameters(monkeypatch):
+# v1.6.42（b4bbe63）上**不传思考参数**时真正发出去的 POST（用上面同一个 _wire_client 假网络，
+# 在 b4bbe63 的检出上跑出来、原样存档）。与 HEAD 自己比自己没有意义 —— _send_request 的
+# 不思考分支哪天被改了，两边一起变、照样相等。这里钉死的是"旧版本的字节"。
+_V1_6_42_NO_THINKING_WIRE = {
+    "gemini-flash": ("gemini-3-flash", "fbb127bbb056c959"),
+    "gemini-pro": ("gemini-3-pro", "9d8ca3786ebdfbea"),
+    "gemini-flash-lite": ("gemini-3-flash-lite", "cf41b0e0dd7d53e5"),
+}
+
+
+def _v1_6_42_golden(public: str) -> dict:
+    internal, model_id = _V1_6_42_NO_THINKING_WIRE[public]
+    return {
+        "data": {"at": "AT", "f.req": json.dumps([None, json.dumps([["hi"], None, None, internal])])},
+        "headers": {
+            "x-base": "1",
+            "x-goog-ext-525001261-jspb": f'[1,null,null,null,"{model_id}",null,null,0,[4],null,null,1]',
+            "x-goog-ext-73010989-jspb": "[0]",
+            "x-goog-ext-73010990-jspb": "[0]",
+        },
+    }
+
+
+@pytest.mark.parametrize("public", sorted(_V1_6_42_NO_THINKING_WIRE))
+def test_default_off_sends_exactly_what_v1_6_42_sent_without_parameters(monkeypatch, public):
     import asyncio
     c, sent = _wire_client(monkeypatch)
-
-    # v1.6.42：不传思考参数的请求在路由层恒为 extended_thinking=False
-    asyncio.run(c._send_request("hi", "gemini-flash", extended_thinking=False))
-    # 现在：默认档 off + 不传参数，经同一套决策得到的上游参数
     monkeypatch.setattr(settings, "default_thinking_level", "off")
     plan = resolve_thinking(parse_effort_request(None))
     assert plan.upstream is False
-    asyncio.run(c._send_request("hi", "gemini-flash", extended_thinking=plan.upstream))
+    asyncio.run(c._send_request("hi", public, extended_thinking=plan.upstream))
 
-    assert sent[0] == sent[1]
-    assert "x-goog-ext-525005358-jspb" not in sent[1]["headers"]
+    assert sent == [_v1_6_42_golden(public)]
 
 
 def test_default_low_really_switches_the_wire_request_to_thinking(monkeypatch):
@@ -477,8 +543,8 @@ def test_default_level_failures_fall_back_to_no_thinking(gem_client, monkeypatch
     for mod in _routers():
         monkeypatch.setattr(mod.gemini_client, "generate", gen)
     out = _post(gem_client, path, body, stream)
-    assert calls[:2] == [THINKING_LEVEL_LOW, False]
-    assert "退回后的答案" in out or "\\u9000" in out
+    assert calls == [THINKING_LEVEL_LOW, False]          # 恰好退回一次，不多打上游
+    assert "退回后的答案" in "".join(_json_strings(out))
     assert "exploded" not in out
 
 
@@ -496,7 +562,14 @@ def test_anthropic_realstream_error_frames_match_the_no_thinking_path(gem_client
         raise RuntimeError("upstream died before the first token")
         yield  # pragma: no cover
 
+    # 默认档开着时，真流式失败会先退回不思考的非流式重试一次；让那次也失败，
+    # 这里比的是"最终仍失败"时的错误帧序列。
+    async def boom_generate(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                            account_id=None, extended_thinking=False):
+        raise RuntimeError("upstream died before the first token")
+
     monkeypatch.setattr(cl.gemini_client, "generate_stream", boom)
+    monkeypatch.setattr(cl.gemini_client, "generate", boom_generate)
     body = {**_CLAUDE, "stream": True}
     monkeypatch.setattr(settings, "default_thinking_level", "low")
     with_low = _post(gem_client, "/v1/messages", body, stream=True)

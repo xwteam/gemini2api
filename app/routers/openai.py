@@ -12,6 +12,7 @@ from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import (
     ensure_model_allowed, filter_models_for_access_key, record_token_usage,
+    with_retired_models_for_access_key,
     scoped_conversation_id,
 )
 from app.core.api_forwarder import forward_to_provider, open_stream
@@ -19,7 +20,9 @@ from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_en
 from app.core.conversation_store import conversation_store
 from app.core.gemini_client import (GEMINI_MODELS, MODEL_ALIASES, _resolve_model, HTTPStatusError,
                                     classify_error, generate_with_thinking_fallback,
-                                    parse_effort_request, resolve_thinking)
+                                    parse_effort_request, resolve_thinking,
+                                    should_retry_without_thinking)
+from app.core.thinking_stream import HiddenThoughts, drop_thought_events
 from app.core.stream import split_into_chunks, format_sse, iter_with_keepalive, SSE_KEEPALIVE_INTERVAL, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.openai import (
     ChatRequest, ChatResponse, Choice, ChoiceMessage,
@@ -235,7 +238,7 @@ async def _dispatch_thirdparty(request, req: ChatRequest, resolved_model: str):
 
 @router.get("/models")
 async def list_models(request: Request):
-    models = list(gemini_client.models)
+    models = with_retired_models_for_access_key(gemini_client.models)
     # Also include models from API key pool
     pool = getattr(request.app.state, 'api_key_pool', None)
     if pool:
@@ -537,12 +540,16 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
     streamed_any = False
     emitted_thoughts = ""  # 已发出的思维链前缀，用于跟已知累积 thoughts 做前缀 diff 只发增量
     # 不回传时（客户端没要求思考、是按默认档开的）思考只进内部记账，一个字都不进 SSE。
-    hidden_thoughts = ""
+    # 过滤放在 iter_with_keepalive 之前：思考期间对保活计时器来说就是静默，到点照发保活帧
+    # （见 app/core/thinking_stream.py）。
+    hidden = HiddenThoughts()
+    upstream = gemini_client.generate_stream(prompt, model, gemini_conv_id, attachments,
+                                             gem_id=gem_id, account_id=account_id,
+                                             extended_thinking=extended_thinking)
+    if not show_thinking:
+        upstream = drop_thought_events(upstream, hidden)
     try:
-        async for _kind, evt in iter_with_keepalive(
-            gemini_client.generate_stream(prompt, model, gemini_conv_id, attachments,
-                                          gem_id=gem_id, account_id=account_id,
-                                          extended_thinking=extended_thinking)):
+        async for _kind, evt in iter_with_keepalive(upstream):
             if _kind == "ping":
                 yield SSE_KEEPALIVE_FRAME
                 continue
@@ -558,10 +565,8 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                     )
                     yield format_sse(chunk.model_dump())
             elif evt.get("type") == "thoughts":
+                # 只有 show_thinking 时才会到这里（不回传的已在上游一侧被滤掉）
                 t_delta = evt.get("text", "")
-                if not show_thinking:
-                    hidden_thoughts += t_delta
-                    continue
                 if t_delta:
                     emitted_thoughts += t_delta
                     chunk = StreamChunk(
@@ -575,7 +580,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                 # 在文本尾部补发之前先发，保证客户端先看到 reasoning 再看到最终回答。
                 final_thoughts = evt.get("thoughts", "") or ""
                 if not show_thinking:
-                    hidden_thoughts = final_thoughts or hidden_thoughts
+                    hidden.text = final_thoughts or hidden.text
                 elif final_thoughts != emitted_thoughts and final_thoughts.startswith(emitted_thoughts):
                     thoughts_delta = final_thoughts[len(emitted_thoughts):]
                     emitted_thoughts = final_thoughts
@@ -603,13 +608,33 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                 new_conv_id = evt.get("conversation_id", "")
                 final_images = evt.get("images") or []
     except Exception as e:
-        # 流式失败：会话ID 过期等场景，用完整 prompt 非流式重试一次
-        if gemini_conv_id and messages_raw and not streamed_any:
+        # 尚未流出任何正文时，非流式不思考重试一次：
+        #   - 会话ID 过期等场景：用完整 prompt、开新会话重试（原有逻辑）；
+        #   - 思考路径失败（默认档上线后几乎每个请求都走思考路径）：原样退回不思考重试，
+        #     与非流式 / buffered（generate_with_thinking_fallback）、Responses 真流式同口径。
+        #     没有这一退回，上游拒收思考 payload 时，v1.6.42 能答的不传参流式请求会变成硬失败。
+        retry_args = None
+        if not streamed_any:
+            if gemini_conv_id and messages_raw:
+                retry_args = (build_prompt_from_messages(messages_raw), "")
+            elif should_retry_without_thinking(e, extended_thinking):
+                logger.warning(f"extended-thinking stream failed, retrying normal: {e}")
+                retry_args = (prompt, gemini_conv_id)
+        if retry_args is not None:
+            # 重试是一整轮非流式生成：用 task + keepalive 续心跳，别制造一段远超保活间隔的死寂
+            retry_task = asyncio.create_task(gemini_client.generate(
+                retry_args[0], model, retry_args[1], attachments,
+                gem_id=gem_id, account_id=account_id, extended_thinking=False))
             try:
-                retry_prompt = build_prompt_from_messages(messages_raw)
-                result = await gemini_client.generate(retry_prompt, model, "", attachments,
-                                                      gem_id=gem_id, account_id=account_id,
-                                                      extended_thinking=False)
+                async for ping in _sse_keepalive_during(retry_task):
+                    yield ping
+            except BaseException:          # GeneratorExit / CancelledError on client disconnect
+                retry_task.cancel()
+                if retry_task.done() and not retry_task.cancelled():
+                    retry_task.exception()
+                raise
+            try:
+                result = retry_task.result()
                 full_text = result.get("text", "")
                 new_conv_id = result.get("conversation_id", "")
                 final_images = result.get("images") or []
@@ -624,6 +649,15 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                         return
                 yield _err_chunk(e2)
                 return
+            # 重试拿到的正文要真的发出去。过去这里只赋值给 full_text（只进了持久化），
+            # 客户端看到的是 role 首帧 + finish_reason=stop 的空回答。
+            if full_text:
+                streamed_any = True
+                chunk = StreamChunk(
+                    id=completion_id, model=model_name,
+                    choices=[StreamChoice(delta=StreamDelta(content=full_text))],
+                )
+                yield format_sse(chunk.model_dump())
         else:
             if not streamed_any:
                 emitted = False
@@ -666,7 +700,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
     # 按-key 用量落账。OpenAI 流式过去从头到尾不出现 usage/estimate_tokens（四个协议里
     # 唯一的真空区）。这里**只在内部记账**，绝不往 SSE 里加 usage 帧 —— 那是线上协议的
     # 实际变更（客户端会突然开始收到 usage chunk）。
-    _record_usage(model, prompt, full_text, emitted_thoughts if show_thinking else hidden_thoughts)
+    _record_usage(model, prompt, full_text, emitted_thoughts if show_thinking else hidden.text)
 
     done_chunk = StreamChunk(
         id=completion_id, model=model_name,

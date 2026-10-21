@@ -150,6 +150,12 @@ def test_claude_real_stream_http_status_error_matches_nonstream_type(gem_client,
         yield  # pragma: no cover - 只为让本函数保留 async generator 形状
 
     monkeypatch.setattr(cl.gemini_client, "generate_stream", fake_generate_stream)
+    # 默认思考档（出厂 low）开着时，真流式失败会先退回不思考的非流式重试一次；
+    # 上游整体故障时那一次也同样失败，这里让 generate 抛同一个错误。
+    async def _same_failure(*a, **k):
+        raise HTTPStatusError(429, "rate limited")
+
+    monkeypatch.setattr(cl.gemini_client, "generate", _same_failure)
     with gem_client.stream("POST", "/v1/messages", json={
         "model": "gemini-pro", "max_tokens": 100, "stream": True,
         "messages": [{"role": "user", "content": "hi"}],
