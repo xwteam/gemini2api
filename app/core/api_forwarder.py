@@ -57,6 +57,31 @@ def _make_async_client(timeout: float = 300.0) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout)
 
 
+def _drop_none(message):
+    """消息里值为 None 的键不发出去。
+
+    请求模型的可选字段（name / tool_calls / tool_call_id ……）model_dump 后都是 null，而按
+    OpenAI SDK 严格校验的上游（书生端砚的 deepseek / glm / kimi / qwen 等）收到 `"name": null`
+    一律 400「Input should be a valid string」。只清消息第一层，内容原样不动。
+    """
+    if not isinstance(message, dict):
+        return message
+    return {k: v for k, v in message.items() if v is not None}
+
+
+def entry_name(entry) -> str:
+    """日志里认 key 用："书生端砚-01 / deepseek-v4-flash-0731"（没有标签就用 id）。"""
+    label = getattr(entry, "label", None) or getattr(entry, "id", "?")
+    return f"{label} / {getattr(entry, 'model', '?')}"
+
+
+def _upstream_reason(body, limit: int = 200) -> str:
+    """上游错误正文的简短摘要，只用于日志（排查时能看出是参数被拒还是额度用完）。"""
+    if isinstance(body, (bytes, bytearray)):
+        body = body.decode("utf-8", "replace")
+    return " ".join(str(body).split())[:limit]
+
+
 def _build_openai_request(entry: ApiKeyEntry, messages: list[dict], req) -> tuple[str, dict, dict]:
     """构造 OpenAI 兼容 chat/completions 的 (url, headers, payload)。URL 不安全时抛 ValueError。"""
     url = _build_safe_target_url(entry, "/chat/completions")
@@ -69,7 +94,7 @@ def _build_openai_request(entry: ApiKeyEntry, messages: list[dict], req) -> tupl
         headers["X-Title"] = "Gemini2API"
     payload = {
         "model": entry.model,
-        "messages": messages,
+        "messages": [_drop_none(m) for m in messages],
         "stream": req.stream,
     }
     if req.temperature is not None:
@@ -77,7 +102,7 @@ def _build_openai_request(entry: ApiKeyEntry, messages: list[dict], req) -> tupl
     if req.max_tokens is not None:
         payload["max_tokens"] = req.max_tokens
     if req.tools:
-        payload["tools"] = [t.model_dump() for t in req.tools]
+        payload["tools"] = [t.model_dump(exclude_none=True) for t in req.tools]
     if req.tool_choice is not None:
         payload["tool_choice"] = req.tool_choice
     effort = getattr(entry, "reasoning_effort", None)
@@ -149,7 +174,8 @@ async def _forward_openai_compatible(
             return JSONResponse(content=response.json())
 
     except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error forwarding to {entry.provider}: {e}")
+        logger.error(f"HTTP error forwarding to {entry.provider} ({entry_name(entry)}): "
+                     f"{e.response.status_code} {_upstream_reason(e.response.text)}")
         try:
             error_detail = e.response.json()
         except Exception:
@@ -249,6 +275,8 @@ async def open_openai_stream(
         body = await response.aread()
         await cm.__aexit__(None, None, None)
         await client.aclose()
+        logger.warning(f"Stream open rejected by {entry.provider} ({entry_name(entry)}): "
+                       f"{response.status_code} {_upstream_reason(body)}")
         try:
             detail = json.loads(body)
         except Exception:

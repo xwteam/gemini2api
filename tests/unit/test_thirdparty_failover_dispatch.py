@@ -2,6 +2,8 @@
 
 import asyncio
 import types
+
+import pytest
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import app.routers.openai as oai
@@ -54,7 +56,7 @@ def test_first_fails_second_used(tmp_path, monkeypatch):
     assert ids[0] in pool._cooldowns                      # 第一家被冷却
 
 
-def test_all_fail_returns_last_error(tmp_path, monkeypatch):
+def test_all_fail_with_the_same_error_returns_it(tmp_path, monkeypatch):
     pool, ids = _pool_with(tmp_path, "deepseek", "deepseek")
 
     async def fake_forward(entry, messages, req):
@@ -63,6 +65,71 @@ def test_all_fail_returns_last_error(tmp_path, monkeypatch):
 
     resp = asyncio.run(oai._dispatch_thirdparty(_request_with_pool(pool), _req(), "deepseek"))
     assert isinstance(resp, JSONResponse) and resp.status_code == 429
+    assert set(ids) <= set(pool._cooldowns)               # 429 是 key 自身的问题 → 冷却
+
+
+def test_request_rejected_is_reported_and_does_not_cool_down_good_keys(tmp_path, monkeypatch):
+    """线上真实形态（书生端砚 × 5）：前 4 个 key 都 400「参数被拒」、第 5 个 key 429 额度用完。
+    过去回最后那个 429，客户端被误导成"额度不够"，还把 4 个好 key 全冷却了。"""
+    pool, ids = _pool_with(tmp_path, *["deepseek"] * 5)
+
+    async def fake_forward(entry, messages, req):
+        if entry.id == ids[-1]:
+            return _err_json(429)
+        return JSONResponse(status_code=400, content={"error": {"message": "15 validation errors",
+                                                                "type": "upstream_request_rejected"}})
+    monkeypatch.setattr(oai, "forward_to_provider", fake_forward)
+
+    resp = asyncio.run(oai._dispatch_thirdparty(_request_with_pool(pool), _req(), "deepseek"))
+    assert resp.status_code == 400
+    assert b"15 validation errors" in resp.body               # 上游的真实原因原样带给客户端
+    assert set(pool._cooldowns) == {ids[-1]}                  # 只冷却真有问题的那个 key
+
+
+def test_request_rejected_on_stream_open_is_reported_without_cooldown(tmp_path, monkeypatch):
+    pool, ids = _pool_with(tmp_path, "deepseek", "deepseek")
+
+    async def fake_open_stream(entry, messages, req):
+        return None, _err_json(422)
+    monkeypatch.setattr(oai, "open_stream", fake_open_stream)
+
+    resp = asyncio.run(oai._dispatch_thirdparty(_request_with_pool(pool), _req(stream=True), "deepseek"))
+    assert resp.status_code == 422
+    assert not pool._cooldowns
+
+
+@pytest.mark.parametrize("statuses,expected", [
+    ((429, 400), 400),            # 请求被拒（带原因）优先于额度
+    ((401, 500, 429), 500),       # 上游故障优先于额度 / key 鉴权
+    ((403, 429), 429),            # 额度优先于 key 鉴权
+    ((401, 403), 401),            # 同档取先失败的那个
+])
+def test_all_fail_reports_the_most_informative_error(tmp_path, monkeypatch, statuses, expected):
+    pool, ids = _pool_with(tmp_path, *["deepseek"] * len(statuses))
+    by_id = dict(zip(ids, statuses))
+
+    async def fake_forward(entry, messages, req):
+        return _err_json(by_id[entry.id])
+    monkeypatch.setattr(oai, "forward_to_provider", fake_forward)
+
+    resp = asyncio.run(oai._dispatch_thirdparty(_request_with_pool(pool), _req(), "deepseek"))
+    assert resp.status_code == expected
+
+
+def test_reasoning_only_answer_counts_as_success(tmp_path, monkeypatch):
+    """推理模型被 max_tokens 截断：只有思考、正文为空。换下一个 key 同一个模型也一样截断，
+    不能当失败把每个 key 都冷却一遍。"""
+    pool, ids = _pool_with(tmp_path, "deepseek", "deepseek")
+    calls = []
+
+    async def fake_forward(entry, messages, req):
+        calls.append(entry.id)
+        return JSONResponse(content={"choices": [{"message": {"content": "", "reasoning_content": "想…"},
+                                                  "finish_reason": "length"}]})
+    monkeypatch.setattr(oai, "forward_to_provider", fake_forward)
+
+    resp = asyncio.run(oai._dispatch_thirdparty(_request_with_pool(pool), _req(), "deepseek"))
+    assert resp.status_code == 200 and calls == ids[:1] and not pool._cooldowns
 
 
 def test_empty_response_triggers_switch(tmp_path, monkeypatch):
