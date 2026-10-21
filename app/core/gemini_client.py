@@ -775,6 +775,185 @@ def _strip_image_placeholders(text: str, images: list) -> str:
     return cleaned
 
 
+# ---------------------------------------------------------------------------
+# Canvas 正文还原（M3）与正文里的控制标记清理（M4）
+# ---------------------------------------------------------------------------
+# Gemini 网页端写较长代码/文档时会自动把内容放进 Canvas 面板，正文里只留一个
+# `http://googleusercontent.com/immersive_entry_chip/N` 占位链接 —— 既不读真实内容、
+# 也不剥这个链接的话，客户端拿到的"答案"就是一条打不开的 URL，正文全丢。
+# 真实内容在 candidate[30]，口径同参考实现 refs/gemini-web-to-api
+# internal/modules/providers/gemini_canvas.go 的 extractCanvases / renderCanvasPlaceholders
+# （那边的抽取是**无条件**跑的，说明普通对话里也会出现 Canvas）。
+_CANVAS_CHIP_RE = re.compile(r'https?://googleusercontent\.com/immersive_entry_chip/(\d+)')
+# 取不到真实内容时的说明文案。**绝不能只把死链删成空白**：正文变空会被
+# fallback.is_empty_result / account_pool._is_empty_generation 判成"空响应"，
+# 累加空响应计数器甚至触发换号。生图那句提示（_IMAGE_RETRIEVAL_HINT）语义完全不对，
+# 不能复用。
+_CANVAS_MISSING_NOTE = "（这段内容 Gemini 放进了 Canvas 面板，本次没能取回正文。）"
+_CANVAS_CODE_KIND = 2
+
+# card_content 是和生图占位同族的死链（客户端访问无效），纯删除即可。
+# 参考实现 B 不处理，参考实现 A（refs/gemini-web2api gemini.py:165）按同一形状删。
+_CARD_CONTENT_RE = re.compile(r'https?://googleusercontent\.com/card_content/\d+\n?')
+
+# ```python?code_reference&code_event_index=3 这种伪代码围栏的 info string。
+# 参考实现 A（gemini.py:161-164）把整个围栏连正文一起 DOTALL 删掉；我们**只摘标记、
+# 保留正文**：那个围栏里装的到底是空壳、是前文代码的重复、还是模型真写的代码/真实
+# stdout，手上没有真机样本，删错就是又一次"正文丢失"。宁可多留一个围栏，不可少给一段代码。
+_CODE_EVENT_MARK_RE = re.compile(r'\?code_(?:reference|stdout)&code_event_index=\d+')
+# 流式时这个标记是逐字符到达的。半截标记（`?code_ref`）既不被上面的完整正则匹配、
+# 又会在 final 里被清掉 —— 一旦 emit 出去就破坏了 append-only 前缀关系，四个路由的
+# "补发缺失尾部"分支（final_text.startswith(已流出的内容)）直接走不到，客户端丢内容。
+# 所以和占位 URL 一样，需要一组"完整起始模板"用来 hold。
+_CODE_EVENT_MARK_PREFIXES = (
+    "?code_reference&code_event_index=",
+    "?code_stdout&code_event_index=",
+)
+
+# <ctrl94>thought…<ctrl95>：思考内容泄漏进正文。
+# **只处理成对出现的**。参考实现 B（refs/gemini-web-to-api internal/commons/utils/
+# utils.go:318-332）在只有起始标记、没有结束标记时把起始之后的**全部内容**都当思考、
+# 正文只留起始之前那段 —— 那是一条数据丢失路径（用户正文里出现一次字面量 `<ctrl94>`
+# 就会丢掉后面所有回答）。我们反过来：未闭合一律原样保留。
+_CTRL_THOUGHT_RE = re.compile(r'<ctrl94>(?:thought)?(.*?)<ctrl95>', re.S)
+_CTRL_MARKERS = ("<ctrl94>", "<ctrl95>")
+
+
+def _extract_canvases(candidate: list) -> list[dict]:
+    """从 candidate[30] 取出本帧的 Canvas 条目（结构不对/无内容一律返回 []，绝不抛）。
+
+    条目布局（参考实现 gemini_canvas.go:83-123 实证）：
+      [id, _, title, _, content, …, fileName(9), kind(10), …, details(14), …]
+      kind == 2 → 代码，否则文档；details 的第 1 格或第 4 格是语言，都没有就用
+      fileName 的扩展名。
+    """
+    try:
+        if not isinstance(candidate, list) or len(candidate) <= 30:
+            return []
+        entries = candidate[30]
+        if not isinstance(entries, list):
+            return []
+        out: list[dict] = []
+        for entry in entries:
+            if not isinstance(entry, list) or len(entry) < 11:
+                continue
+            content = entry[4]
+            if not isinstance(content, str) or not content:
+                continue
+            file_name = entry[9] if isinstance(entry[9], str) else ""
+            language = ""
+            details = entry[14] if len(entry) > 14 else None
+            if isinstance(details, list):
+                for idx in (1, 4):
+                    if idx < len(details) and isinstance(details[idx], str) and details[idx]:
+                        language = details[idx]
+                        break
+            if not language and "." in file_name:
+                language = file_name.rsplit(".", 1)[-1]
+            out.append({
+                "id": entry[0] if isinstance(entry[0], str) else "",
+                "title": entry[2] if isinstance(entry[2], str) else "",
+                "file_name": file_name,
+                "is_code": entry[10] == _CANVAS_CODE_KIND,
+                "language": language,
+                "content": content,
+            })
+        return out
+    except (IndexError, TypeError, KeyError):
+        return []
+
+
+def _canvas_markdown(canvas: dict) -> str:
+    """把一个 Canvas 渲染成官方 API 返回生成文件时的那种形态（文档原样、代码加围栏）。"""
+    content = str(canvas.get("content") or "").strip()
+    if not canvas.get("is_code") or content.startswith("```"):
+        return content
+    return f"```{canvas.get('language') or ''}\n{content}\n```"
+
+
+def _render_canvas_chips(text: str, canvases: list) -> str:
+    """把正文里的 immersive_entry_chip 占位链接换成它代表的 Canvas 真实内容。
+
+    取不到对应 Canvas 时换成 _CANVAS_MISSING_NOTE（而不是删成空白）：死链不能当答案
+    交付，但正文也不能变空。chip 里的 N 按参考实现是 canvases 数组下标，真机上是否
+    还有别的口径没有定论，所以越界时打一条日志把 N 和条目数都写出来，方便核对。
+    """
+    if not text or not _CANVAS_CHIP_RE.search(text):
+        return text
+
+    def _one(m: "re.Match[str]") -> str:
+        try:
+            index = int(m.group(1))
+        except ValueError:          # pragma: no cover - 正则已保证是数字
+            index = -1
+        if 0 <= index < len(canvases):
+            return _canvas_markdown(canvases[index])
+        logger.warning(
+            "Canvas placeholder has no content to render: index=%s canvases=%d",
+            m.group(1), len(canvases),
+        )
+        return _CANVAS_MISSING_NOTE
+
+    return _CANVAS_CHIP_RE.sub(_one, text)
+
+
+def _clean_control_markers(text: str) -> tuple[str, str]:
+    """清掉正文里的控制标记，返回 (清理后的正文, 抽出来的思考文本)。
+
+    三类：
+      1. 成对的 <ctrl94>thought…<ctrl95> —— 内容**归到思考链**，不是直接扔掉
+         （我们有 reasoning_content / thinking 通道，扔掉就是白丢模型的思考过程）。
+         未闭合的 <ctrl94> 原样保留（见 _CTRL_THOUGHT_RE 的注释）。
+      2. code_reference / code_stdout 伪围栏的 info string —— 只摘标记、留正文。
+      3. card_content 死链 —— 删掉。
+    """
+    if not text:
+        return text, ""
+    thoughts: list[str] = []
+    if "<ctrl94>" in text and "<ctrl95>" in text:
+        def _take(m: "re.Match[str]") -> str:
+            piece = (m.group(1) or "").strip()
+            if piece:
+                thoughts.append(piece)
+            return ""
+        text = _CTRL_THOUGHT_RE.sub(_take, text)
+    if "code_event_index=" in text:
+        text = _CODE_EVENT_MARK_RE.sub("", text)
+    if "card_content/" in text:
+        text = _CARD_CONTENT_RE.sub("", text)
+    return text, "\n\n".join(thoughts)
+
+
+def _restore_body(text: str, canvases: list, thoughts: str) -> tuple[str, str]:
+    """正文还原 + 控制标记清理，返回 (正文, 合并后的思考链)。
+
+    流式收尾（_finalize_stream）与非流式（_parse_output）**必须调同一个函数**：两条
+    路径对同一段正文产出不一致，就是本仓最难查的一类 bug（同一个请求走 buffered 和走
+    真流式拿到不同答案）。
+
+    顺序是定死的：Canvas 还原 → 控制标记清理。Canvas 的真实内容本身也可能带 ctrl
+    标记，所以必须先还原再清理。生图占位的剥除**不在这里**：两条路径在"真的拿到图"
+    时的收尾口径本来就不同（见 _finalize_stream），那是改动前就有的区别。
+    """
+    text = _render_canvas_chips(text, canvases or [])
+    text, ctrl_thoughts = _clean_control_markers(text)
+    return text, _merge_thoughts(thoughts, ctrl_thoughts)
+
+
+def _merge_thoughts(primary: str, extra: str) -> str:
+    """candidate[37] 的思考链在前，ctrl94 抽出来的在后。
+
+    顺序不能反：openai.py 的流式收尾只在 `final_thoughts.startswith(emitted_thoughts)`
+    时补发差量，否则明确不重发 —— 把 ctrl 那段放前面会让前缀关系断裂、整段 reasoning
+    被静默丢掉。
+    """
+    if not extra:
+        return primary
+    if not primary:
+        return extra
+    return f"{primary}\n\n{extra}"
+
+
 def _stable_placeholder_prefix(text: str) -> str:
     """返回 text 中"可安全 emit 的稳定前缀"（已剥离完整占位 URL，并 hold 住尚未成形的占位 URL 尾部）。
 
@@ -787,6 +966,16 @@ def _stable_placeholder_prefix(text: str) -> str:
     这样既不会泄露半截网址，也不会因为后续帧把占位串删掉而破坏 append-only 前缀关系。
     """
     cleaned = _IMAGE_GEN_PLACEHOLDER_RE.sub("", text)
+    # card_content 死链和生图占位同族（纯删除、没有"剥空给提示"的语义），一起在这里剥掉，
+    # 否则它后面的正文会被下面的 host 前缀 hold 白白压到 final 才发。
+    if "card_content/" in cleaned:
+        cleaned = _CARD_CONTENT_RE.sub("", cleaned)
+    # 成对的 ctrl 标记整段剥掉继续放行（收尾 _restore_body 会把同一段归进思考链）。
+    if "<ctrl94>" in cleaned and "<ctrl95>" in cleaned:
+        cleaned = _CTRL_THOUGHT_RE.sub("", cleaned)
+    # 已完整的 code_reference / code_stdout 标记一起剥掉（与 _clean_control_markers 同口径）。
+    if "code_event_index=" in cleaned:
+        cleaned = _CODE_EVENT_MARK_RE.sub("", cleaned)
     cut = len(cleaned)
     # 1) 扫描所有 `http` 起点：其后内容若仍是占位模板的前缀（或反过来模板是其前缀），
     #    说明还可能补全成占位 URL，从该起点 hold 住。
@@ -807,6 +996,34 @@ def _stable_placeholder_prefix(text: str) -> str:
         if cut == len(cleaned) and cleaned.endswith("http"[:k]):
             cut = len(cleaned) - k
             break
+    # 3) 刚到一半的 code_event 标记：从该 `?` 起 hold 住（`=` 到了但数字还没到时，
+    #    tail 恰好等于模板，也要 hold）。
+    search_from = 0
+    while True:
+        p = cleaned.find("?", search_from)
+        if p == -1 or p >= cut:
+            break
+        tail = cleaned[p:]
+        for tmpl in _CODE_EVENT_MARK_PREFIXES:
+            if tmpl.startswith(tail) or tail.startswith(tmpl):
+                cut = min(cut, p)
+                break
+        search_from = p + 1
+    # 4) 尚未闭合（或刚到一半）的 ctrl 控制标记：从该 `<` 起 hold 住，等 final 决断。
+    #    形状与上面 http 模板的 hold 完全一致，不新增一套机制。没有这道 hold，
+    #    `<ctrl94>` 会被原样流给客户端，而 final 里它要么被清掉（成对）、要么留着
+    #    （未闭合）—— 前一种会直接破坏 append-only 前缀关系。
+    search_from = 0
+    while True:
+        p = cleaned.find("<", search_from)
+        if p == -1 or p >= cut:
+            break
+        tail = cleaned[p:]
+        for marker in _CTRL_MARKERS:
+            if marker.startswith(tail) or tail.startswith(marker):
+                cut = min(cut, p)
+                break
+        search_from = p + 1
     return cleaned[:cut]
 
 
@@ -1990,6 +2207,7 @@ class GeminiWebClient:
         last_thoughts = ""       # 累积思维链（最新一帧的完整思考文本，final 兜底用）
         emitted_thoughts = ""    # 已 yield 出去的思维链前缀（逐帧增量用）
         last_images: list = []
+        last_canvases: list = []  # Canvas 只出现在部分帧，保留最新非空（同 last_images）
         chunk_timeout = 120      # 单个 chunk 最长等待（兜底 #215 timeout 失效）
 
         session = AsyncSession(impersonate=self._current_target, timeout=180)
@@ -2037,6 +2255,9 @@ class GeminiWebClient:
                             imgs = self._images_from_wrb(elem)
                             if imgs:
                                 last_images = imgs
+                            cvs = self._canvases_from_wrb(elem)
+                            if cvs:
+                                last_canvases = cvs
                             if text is None:
                                 continue
                             # last_text 始终存原始累积文本，供收尾 _finalize_stream 统一过滤占位串。
@@ -2069,7 +2290,8 @@ class GeminiWebClient:
             except Exception:
                 pass
 
-        yield await self._finalize_stream(last_text, last_conv, last_images, last_thoughts)
+        yield await self._finalize_stream(last_text, last_conv, last_images, last_thoughts,
+                                          last_canvases)
 
     def _images_from_wrb(self, elem: list) -> list:
         """从单个 wrb.fr 帧提取 AI 生成图片（复用 _extract_generated_images）。"""
@@ -2086,12 +2308,35 @@ class GeminiWebClient:
         except Exception:
             return []
 
-    async def _finalize_stream(self, text: str, conv_id: str, images: list, thoughts: str = "") -> dict:
+    def _canvases_from_wrb(self, elem: list) -> list:
+        """从单个 wrb.fr 帧提取 Canvas 条目（复用 _extract_canvases）。
+
+        刻意不改 _extract_text_from_wrb 的三元组签名：那个函数有既有调用点与测试，
+        为了多带一格把签名改掉不划算。
+        """
+        try:
+            if not isinstance(elem, list) or len(elem) < 3 or elem[0] != "wrb.fr":
+                return []
+            payload = json.loads(elem[2]) if isinstance(elem[2], str) else None
+            if not isinstance(payload, list) or len(payload) < 5:
+                return []
+            cands = payload[4]
+            if not isinstance(cands, list) or not cands:
+                return []
+            return _extract_canvases(cands[0])
+        except Exception:
+            return []
+
+    async def _finalize_stream(self, text: str, conv_id: str, images: list, thoughts: str = "",
+                               canvases: list | None = None) -> dict:
         """流式收尾：下载/存生成图、过滤占位 URL，组装与 _send_request 一致的 final 结果。
         thoughts 增量已由 generate_stream 循环内逐帧 yield（`{"type": "thoughts"}` 事件）；
         这里的 thoughts 是完整累积思维链，作为收尾兜底一次性带上（防漏发/防中途断连丢失）。
         """
         result_images: list = []
+        # Canvas 还原 + 控制标记清理必须在剥生图占位**之前**跑，且与 _parse_output
+        # 共用同一个 _restore_body —— 两条路径对同一段正文必须逐字节一致。
+        text, thoughts = _restore_body(text, canvases, thoughts)
         if images:
             cookies = self._get_cookies()
             for img in images:
@@ -2265,6 +2510,7 @@ class GeminiWebClient:
         thoughts_content = ""
         conv_id = ""
         images: list[dict] = []
+        canvases: list[dict] = []
 
         for line in lines:
             line = line.strip()
@@ -2314,12 +2560,19 @@ class GeminiWebClient:
                 imgs = self._extract_generated_images(candidate)
                 if imgs:
                     images = imgs  # 生图是流式响应，用含图的最新帧
+                # Canvas 同理：参考实现注释明说 Canvas 只出现在部分帧、最后一帧常常
+                # 只有文本，所以必须"保留最新非空"而不是每帧覆盖。
+                cvs = _extract_canvases(candidate)
+                if cvs:
+                    canvases = cvs
                 if payload[1]:
                     conv_id = str(payload[1])
 
         # 生图/找图时模型文本里会带 googleusercontent 占位 URL（无实际意义，真图在 images 里；
         # image_retrieval/image_collection 是检索占位客户端访问无效），无条件过滤，避免显示成网址。
         # 与真流式收尾（_finalize_stream）共用同一套口径。
+        # Canvas 还原 + 控制标记清理（与真流式收尾共用 _restore_body），再剥生图占位
+        text_content, thoughts_content = _restore_body(text_content, canvases, thoughts_content)
         text_content = _strip_image_placeholders(text_content, images)
 
         return {"text": text_content, "conversation_id": conv_id, "images": images, "thoughts": thoughts_content}

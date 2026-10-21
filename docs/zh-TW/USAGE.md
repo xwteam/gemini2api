@@ -292,6 +292,22 @@ curl -X POST http://localhost:5918/v1/images/generations \
 
 對話介面會回傳圖片的本機 URL（例如 `http://你的位址/images/xxx.png`），可直接開啟或在客戶端中渲染；`/v1/images/generations` 則回傳 `b64_json`（Base64 編碼的圖片資料）。兩者皆回傳全解析度原圖（例如 1408×768）。
 
+## 正文還原（Canvas 與控制標記）
+
+Gemini 網頁端有兩類「正文不是正文」的情況，服務會在把回答交給客戶端之前統一處理（流式與非流式口徑完全一致）：
+
+**Canvas 面板**：寫較長程式碼／文件時，網頁端會把內容搬進 Canvas 面板，回答正文裡只留一個 `http://googleusercontent.com/immersive_entry_chip/N` 佔位連結。服務會從回應裡取出該 Canvas 的真實內容還原進正文（程式碼自動補上帶語言的 Markdown 圍欄，文件原樣內嵌）。取不到真實內容時**剝掉死連結並留一句可讀說明**，不會把一條打不開的 URL 當答案交付，也不會讓正文變成空的。
+
+**控制標記**：正文裡可能混進三類內部標記，都會被清掉：
+
+| 標記 | 處理方式 |
+|------|---------|
+| `<ctrl94>thought…<ctrl95>` | 內容**歸入思考鏈**（`reasoning_content` / Anthropic `thinking` 區塊），不是直接丟棄。只處理**成對**出現的；未閉合的標記原樣保留 |
+| `?code_reference&code_event_index=N` / `?code_stdout&…` | 只摘掉圍欄 info string 裡的這段標記，**圍欄正文一字不動** |
+| `http://googleusercontent.com/card_content/N` | 刪除（客戶端訪問無效的死連結） |
+
+正文裡只是「提到」這些字樣時不會被誤傷。
+
 ## 支援的模型
 
 ### 對外固定穩定模型名

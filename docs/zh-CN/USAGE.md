@@ -400,6 +400,22 @@ curl -X POST http://localhost:5918/v1/images/generations \
 - **`/v1/images/generations`**：返回 `b64_json` 字段（Base64 编码的图片数据）。
 - 生成的图片均为全分辨率原图（如 1408×768）。
 
+## 正文还原（Canvas 与控制标记）
+
+Gemini 网页端有两类"正文不是正文"的情况，服务会在把回答交给客户端之前统一处理（流式与非流式口径完全一致）：
+
+**Canvas 面板**：写较长代码/文档时，网页端会把内容搬进 Canvas 面板，回答正文里只留一个 `http://googleusercontent.com/immersive_entry_chip/N` 占位链接。服务会从响应里取出该 Canvas 的真实内容还原进正文（代码自动补上带语言的 Markdown 围栏，文档原样内联）。取不到真实内容时**剥掉死链并留一句可读说明**，不会把一条打不开的 URL 当答案交付，也不会让正文变成空的。
+
+**控制标记**：正文里可能混进三类内部标记，都会被清掉：
+
+| 标记 | 处理方式 |
+|------|---------|
+| `<ctrl94>thought…<ctrl95>` | 内容**归入思考链**（`reasoning_content` / Anthropic `thinking` 块），不是直接丢弃。只处理**成对**出现的；未闭合的标记原样保留，绝不因为少一个结束标记就把后面的正文当成思考切掉 |
+| `?code_reference&code_event_index=N` / `?code_stdout&…` | 只摘掉围栏 info string 里的这段标记，**围栏正文一字不动** |
+| `http://googleusercontent.com/card_content/N` | 删除（客户端访问无效的死链） |
+
+正文里只是"提到"这些字样（例如让模型解释 `<ctrl94>` 是什么）时不会被误伤。
+
 ## 支持的模型
 
 ### 对外固定稳定模型名

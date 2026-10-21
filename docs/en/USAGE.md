@@ -332,6 +332,22 @@ curl -X POST http://localhost:5918/v1/images/generations \
 
 Chat endpoints return a locally hosted image URL (such as `http://localhost:5918/images/xxx.png`) that you can open or render directly. The `/v1/images/generations` endpoint returns `b64_json` instead. In both cases the image is the full-resolution original (for example, 1408x768).
 
+## Body Recovery (Canvas and control markers)
+
+Gemini Web has two cases where "the body isn't the body". The service normalises both before handing the answer to the client, with the streaming and non-streaming paths producing byte-for-byte the same text:
+
+**Canvas panel**: when writing longer code or documents, the web client moves the content into its Canvas panel and leaves only a `http://googleusercontent.com/immersive_entry_chip/N` placeholder link in the body. The service pulls the real Canvas content out of the response and restores it into the body (code gets a fenced block with its language, documents are inlined as-is). When the real content cannot be recovered, the dead link is **stripped and replaced with a readable note** — an unopenable URL is never delivered as the answer, and the body never ends up empty.
+
+**Control markers**: three kinds of internal markers can leak into the body; all of them are cleaned up:
+
+| Marker | Handling |
+|--------|----------|
+| `<ctrl94>thought…<ctrl95>` | The content is **moved into the thinking chain** (`reasoning_content` / Anthropic `thinking` block) rather than discarded. Only **paired** markers are processed; an unterminated marker is left untouched — a missing end marker must never cause the rest of the body to be treated as thinking |
+| `?code_reference&code_event_index=N` / `?code_stdout&…` | Only the marker inside the fence info string is removed; **the fence body is kept verbatim** |
+| `http://googleusercontent.com/card_content/N` | Removed (a dead link clients cannot open) |
+
+Prose that merely mentions these strings (e.g. asking the model what `<ctrl94>` is) is not touched.
+
 ## Supported Models
 
 Gemini2API provides 3 fixed stable model names that never change. These serve as the API contract, allowing clients to use them long-term without worrying about model name changes:
