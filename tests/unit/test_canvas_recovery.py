@@ -215,3 +215,52 @@ def test_canvas_content_does_not_leak_into_thoughts():
                           thoughts="我先想想"))
 
     assert out["thoughts"] == "我先想想"
+
+
+# ---------------------------------------------------------------------------
+# _restore_body 的顺序不变量：Canvas 还原必须在控制标记清理之前
+# ---------------------------------------------------------------------------
+
+def test_markers_inside_restored_canvas_content_are_still_cleaned():
+    """顺序反过来（先清标记再还原 Canvas）的话，Canvas 内容里的标记已经错过了清理：
+    `<ctrl94>…<ctrl95>` 会原样流给客户端，而那段思考本该进 thoughts。"""
+    body = f"see {CHIP0}"
+    canvas = canvas_entry("x=1 <ctrl94>leaked thinking<ctrl95> y=2", language="python")
+
+    text, thoughts = gc._restore_body(body, gc._extract_canvases([None] * 30 + [[canvas]]), "")
+
+    assert "<ctrl94>" not in text and "<ctrl95>" not in text
+    assert "leaked thinking" not in text
+    assert "leaked thinking" in thoughts
+    assert "x=1" in text and "y=2" in text
+
+
+def test_a_card_content_dead_link_inside_restored_canvas_content_is_cleaned():
+    """同一个顺序不变量的第二条：Canvas 里夹一条 card_content 死链也必须被剥掉。"""
+    body = f"see {CHIP0}"
+    canvas = canvas_entry("a\nhttp://googleusercontent.com/card_content/5\nb",
+                          is_code=False)
+
+    text, _ = gc._restore_body(body, gc._extract_canvases([None] * 30 + [[canvas]]), "")
+
+    assert "card_content" not in text
+    assert "a" in text and "b" in text
+
+
+def test_a_shrinking_canvas_list_is_logged(caplog):
+    """两条解析路径都是"保留最新非空帧"。如果 chip 的 N 真是数组下标，后一帧少了几条
+    就会让一个**没越界**的 chip 渲染成另一个 Canvas 的内容 —— 正文张冠李戴，而且不像
+    越界那样有日志。这条告警是留给真机流量裁决的唯一线索。"""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger=gc.logger.name)
+    two = gc._extract_canvases([None] * 30 + [[canvas_entry("A"), canvas_entry("B", cid="c-2")]])
+    one = gc._extract_canvases([None] * 30 + [[canvas_entry("B", cid="c-2")]])
+
+    gc._warn_if_canvas_list_shrank(two, one)
+    assert any("Canvas list shrank" in r.message for r in caplog.records)
+
+    caplog.clear()
+    gc._warn_if_canvas_list_shrank(one, two)      # 变多不告警
+    gc._warn_if_canvas_list_shrank([], one)       # 第一次拿到不告警
+    assert not caplog.records

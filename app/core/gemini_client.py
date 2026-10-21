@@ -874,7 +874,11 @@ _CANVAS_CHIP_RE = re.compile(r'https?://googleusercontent\.com/immersive_entry_c
 # fallback.is_empty_result / account_pool._is_empty_generation 判成"空响应"，
 # 累加空响应计数器甚至触发换号。生图那句提示（_IMAGE_RETRIEVAL_HINT）语义完全不对，
 # 不能复用。
-_CANVAS_MISSING_NOTE = "（这段内容 Gemini 放进了 Canvas 面板，本次没能取回正文。）"
+# 这句会被**拼进正文**交给客户端（不是日志、不是面板文案），所以中英双语：英文/日文/
+# 韩文会话里甩一句纯中文很突兀，而 chip 就是整个正文时它还会是全部答案。
+_CANVAS_MISSING_NOTE = ("（这段内容 Gemini 放进了 Canvas 面板，本次没能取回正文。"
+                        "/ This part was moved into Gemini's Canvas panel and could "
+                        "not be retrieved.）")
 _CANVAS_CODE_KIND = 2
 
 # card_content 是和生图占位同族的死链（客户端访问无效），纯删除即可。
@@ -946,6 +950,21 @@ def _extract_canvases(candidate: list) -> list[dict]:
         return out
     except (IndexError, TypeError, KeyError):
         return []
+
+
+def _warn_if_canvas_list_shrank(previous: list, current: list) -> None:
+    """后一帧带的 Canvas 条目比前一帧少时留一条 WARNING。
+
+    两条解析路径都是"保留最新非空帧"（参考实现 gemini_canvas.go:1093 同口径）。可是
+    chip 里的 N 是不是 canvases 数组下标，真机上还没有定论：如果是，而最后一个非空帧
+    少了几条，那么一个**下标没越界**的 chip 就会渲染成另一个 Canvas 的内容 —— 正文被
+    张冠李戴，而且不像越界那样有日志。这条告警就是为了让真机流量来裁决这件事。
+    """
+    if previous and current and len(current) < len(previous):
+        logger.warning(
+            "Canvas list shrank between frames: %d -> %d; an in-range chip index may now "
+            "resolve to a different canvas", len(previous), len(current),
+        )
 
 
 def _canvas_markdown(canvas: dict) -> str:
@@ -1039,6 +1058,38 @@ def _merge_thoughts(primary: str, extra: str) -> str:
     return f"{primary}\n\n{extra}"
 
 
+def _hold_from_marker(cleaned: str, templates: tuple) -> int:
+    """`cleaned` 里最早一个"该 hold 住"的下标；没有就返回 len(cleaned)。
+
+    命中条件和逐位置扫描完全一样：某个起点 p 之后的尾巴 `cleaned[p:]` 要么是某个模板的
+    真前缀（还可能补全成完整标记），要么以某个模板开头（标记已完整但正则还没清掉它，
+    例如 `?code_reference&code_event_index=` 的数字还没到）。
+
+    为什么不逐位置扫：那条路要对每个候选字符切一次尾巴（`tail = cleaned[p:]` 是一次
+    O(剩余长度) 的复制），代价 = 候选字符数 x 正文长度。`http` 在散文里罕见，但 `<` 和
+    `?` 在 HTML/JSX/XML/代码里遍地都是 —— 而那正是 Canvas 还原与控制标记清理要处理的
+    内容。实测 118KB 的代码类回答、1000 帧要烧 8 秒**同步** CPU，而这段代码跑在流式
+    生成器里，等于把整个事件循环连带同实例上所有并发请求一起堵住。
+
+    两种命中各自有 O(n) 的算法，不必逐位置切片：
+      - 模板是尾巴的延长（半截标记）只可能出现在**末尾**，查后缀即可，代价只跟模板长度
+        有关、与正文长度无关；
+      - 已完整的标记用 str.find 一次定位。
+    """
+    cut = len(cleaned)
+    for tmpl in templates:
+        # a) 尾部半截：cleaned 以 tmpl 的某个真前缀结尾（k 从长到短，取最早的起点）
+        for k in range(min(len(tmpl), len(cleaned)), 0, -1):
+            if cleaned.endswith(tmpl[:k]):
+                cut = min(cut, len(cleaned) - k)
+                break
+        # b) 完整标记（含"模板到齐、可变部分还没到"）
+        p = cleaned.find(tmpl)
+        if p != -1:
+            cut = min(cut, p)
+    return cut
+
+
 def _stable_placeholder_prefix(text: str) -> str:
     """返回 text 中"可安全 emit 的稳定前缀"（已剥离完整占位 URL，并 hold 住尚未成形的占位 URL 尾部）。
 
@@ -1051,64 +1102,33 @@ def _stable_placeholder_prefix(text: str) -> str:
     这样既不会泄露半截网址，也不会因为后续帧把占位串删掉而破坏 append-only 前缀关系。
     """
     cleaned = _IMAGE_GEN_PLACEHOLDER_RE.sub("", text)
+    # 成对的 ctrl 标记整段剥掉继续放行（收尾 _restore_body 会把同一段归进思考链）。
+    if "<ctrl94>" in cleaned and "<ctrl95>" in cleaned:
+        cleaned = _CTRL_THOUGHT_RE.sub("", cleaned)
+    # ⚠️ 下面两步的顺序必须和 _clean_control_markers 里**完全一致**，而且 card_content
+    # 必须在 code_event 之后：_CARD_CONTENT_RE 会连带吃掉紧跟的一个 `\n`，所以两步不可
+    # 交换 —— card_content 链接后面紧跟 `?code_stdout&...` 时，先剥 card_content 的那
+    # 一侧下一个字符是 `?`（`\n?` 不匹配，`\n` 留下），先剥 code_event 的那一侧 `\n` 会
+    # 被吃掉。两条路径对同一段正文产出不一致，流出去的文本就不再是 final 的前缀，四个
+    # 路由"补发缺失尾部"的分支（final_text.startswith(已流出的内容)）直接走不到，
+    # 整段还原出来的 Canvas 正文会被静默丢掉。
+    # 已完整的 code_reference / code_stdout 标记一起剥掉（与 _clean_control_markers 同口径）。
+    if "code_event_index=" in cleaned:
+        cleaned = _CODE_EVENT_MARK_RE.sub("", cleaned)
     # card_content 死链和生图占位同族（纯删除、没有"剥空给提示"的语义），一起在这里剥掉，
     # 否则它后面的正文会被下面的 host 前缀 hold 白白压到 final 才发。
     if "card_content/" in cleaned:
         cleaned = _CARD_CONTENT_RE.sub("", cleaned)
-    # 成对的 ctrl 标记整段剥掉继续放行（收尾 _restore_body 会把同一段归进思考链）。
-    if "<ctrl94>" in cleaned and "<ctrl95>" in cleaned:
-        cleaned = _CTRL_THOUGHT_RE.sub("", cleaned)
-    # 已完整的 code_reference / code_stdout 标记一起剥掉（与 _clean_control_markers 同口径）。
-    if "code_event_index=" in cleaned:
-        cleaned = _CODE_EVENT_MARK_RE.sub("", cleaned)
-    cut = len(cleaned)
-    # 1) 扫描所有 `http` 起点：其后内容若仍是占位模板的前缀（或反过来模板是其前缀），
-    #    说明还可能补全成占位 URL，从该起点 hold 住。
-    search_from = 0
-    while True:
-        p = cleaned.find("http", search_from)
-        if p == -1:
-            break
-        tail = cleaned[p:]
-        for tmpl in (_IMAGE_GEN_PLACEHOLDER_PREFIX, _IMAGE_GEN_PLACEHOLDER_PREFIX_S):
-            if tmpl.startswith(tail) or tail.startswith(tmpl):
-                cut = min(cut, p)
-                break
-        search_from = p + 1
-    # 2) 末尾刚到一半的协议头（`h`/`ht`/`htt`，长度 < 4 时上面 find('http') 找不到）：
-    #    若结尾是 `http` 的真前缀，也 hold 住，等下一帧确认是不是占位 URL 起点。
-    for k in (3, 2, 1):
-        if cut == len(cleaned) and cleaned.endswith("http"[:k]):
-            cut = len(cleaned) - k
-            break
-    # 3) 刚到一半的 code_event 标记：从该 `?` 起 hold 住（`=` 到了但数字还没到时，
-    #    tail 恰好等于模板，也要 hold）。
-    search_from = 0
-    while True:
-        p = cleaned.find("?", search_from)
-        if p == -1 or p >= cut:
-            break
-        tail = cleaned[p:]
-        for tmpl in _CODE_EVENT_MARK_PREFIXES:
-            if tmpl.startswith(tail) or tail.startswith(tmpl):
-                cut = min(cut, p)
-                break
-        search_from = p + 1
-    # 4) 尚未闭合（或刚到一半）的 ctrl 控制标记：从该 `<` 起 hold 住，等 final 决断。
-    #    形状与上面 http 模板的 hold 完全一致，不新增一套机制。没有这道 hold，
+    # 1) 占位 URL：尾部刚到一半的（含只到 `h`/`ht`/`htt` 的协议头）与已完整但数字还没
+    #    到的，都从起点 hold 住。
+    cut = _hold_from_marker(cleaned, (_IMAGE_GEN_PLACEHOLDER_PREFIX,
+                                      _IMAGE_GEN_PLACEHOLDER_PREFIX_S))
+    # 2) 刚到一半的 code_event 标记（`=` 到了但数字还没到时模板恰好等于尾巴，也要 hold）。
+    cut = min(cut, _hold_from_marker(cleaned, _CODE_EVENT_MARK_PREFIXES))
+    # 3) 尚未闭合（或刚到一半）的 ctrl 控制标记：等 final 决断。没有这道 hold，
     #    `<ctrl94>` 会被原样流给客户端，而 final 里它要么被清掉（成对）、要么留着
     #    （未闭合）—— 前一种会直接破坏 append-only 前缀关系。
-    search_from = 0
-    while True:
-        p = cleaned.find("<", search_from)
-        if p == -1 or p >= cut:
-            break
-        tail = cleaned[p:]
-        for marker in _CTRL_MARKERS:
-            if marker.startswith(tail) or tail.startswith(marker):
-                cut = min(cut, p)
-                break
-        search_from = p + 1
+    cut = min(cut, _hold_from_marker(cleaned, _CTRL_MARKERS))
     return cleaned[:cut]
 
 
@@ -2372,6 +2392,7 @@ class GeminiWebClient:
                                 last_images = imgs
                             cvs = self._canvases_from_wrb(elem)
                             if cvs:
+                                _warn_if_canvas_list_shrank(last_canvases, cvs)
                                 last_canvases = cvs
                             if text is None:
                                 continue
@@ -2679,6 +2700,7 @@ class GeminiWebClient:
                 # 只有文本，所以必须"保留最新非空"而不是每帧覆盖。
                 cvs = _extract_canvases(candidate)
                 if cvs:
+                    _warn_if_canvas_list_shrank(canvases, cvs)
                     canvases = cvs
                 if payload[1]:
                     conv_id = str(payload[1])

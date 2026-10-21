@@ -362,6 +362,8 @@ Gemini Web has two cases where "the body isn't the body". The service normalises
 
 Prose that merely mentions these strings (e.g. asking the model what `<ctrl94>` is) is not touched.
 
+**Known boundary**: if the body genuinely contains a **paired** `<ctrl94>…<ctrl95>` (for example you pasted a log holding both literals and asked the model to echo it), the enclosed text is treated as thinking and moved out of the body. On the OpenAI protocol it comes back in `reasoning_content`, and on the Anthropic protocol it comes back in a `thinking` block when you pass `thinking`; but the native Gemini protocol and `/v1/messages` without `thinking` have no channel for thinking, so that text is not recoverable there. For such content, use the OpenAI protocol.
+
 ## Supported Models
 
 Gemini2API provides 3 fixed stable model names that never change. These serve as the API contract, allowing clients to use them long-term without worrying about model name changes:

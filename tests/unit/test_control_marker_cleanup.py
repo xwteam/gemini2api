@@ -198,3 +198,105 @@ def test_text_after_a_complete_code_event_marker_keeps_flowing():
     out = safe_prefix("```python?code_reference&code_event_index=2\nx=1")
 
     assert out == "```python\nx=1"
+
+
+# ---------------------------------------------------------------------------
+# 4. 流式/非流式的剥除**顺序**必须一致
+# ---------------------------------------------------------------------------
+
+def test_card_content_and_code_event_are_stripped_in_the_same_order_on_both_paths():
+    """_CARD_CONTENT_RE 会连带吃掉紧跟的一个 `\\n`，所以这两步不可交换：
+    card_content 链接后面紧跟 `?code_stdout&...` 时，先剥 card_content 的那一侧
+    下一个字符是 `?`（`\\n?` 不匹配，`\\n` 留下），先剥 code_event 的那一侧 `\\n` 被吃掉。
+    两条路径产出不一致 → 流出去的文本不再是 final 的前缀 → 四个路由的补尾分支走不到
+    → 整段正文被静默丢掉。"""
+    body = ("http://googleusercontent.com/card_content/9?code_stdout&code_event_index=12\n"
+            "这是你要的代码：\n跑一下就知道了。")
+
+    final = finalize(body)["text"]
+    emitted = safe_prefix(body)
+
+    assert final.startswith(emitted), f"{final!r} 不以 {emitted!r} 开头"
+    assert final == clean(body)[0], "非流式口径也必须是同一套"
+
+
+def test_a_restored_canvas_after_a_card_content_link_is_not_dropped():
+    """最终形态的数据丢失：顺序不一致时，整段还原出来的 Canvas 代码 + 收尾那句话
+    （实测 48 个字符）都不会到客户端。"""
+    chip = "http://googleusercontent.com/immersive_entry_chip/0"
+    body = (f"http://googleusercontent.com/card_content/9?code_stdout&code_event_index=12\n"
+            f"这是你要的代码：{chip}\n跑一下就知道了。")
+    canvas = [None] * 18
+    canvas[0], canvas[2], canvas[4] = "c-1", "Demo", "def solve():\n    return 42"
+    canvas[9], canvas[10] = "a.py", 2
+    canvas[14] = [None, "python"]
+
+    final, _ = gc._restore_body(body, [_canvas_dict(canvas)], "")
+    emitted = safe_prefix(body)
+
+    assert final.startswith(emitted)
+    assert "def solve():" in final
+    assert "跑一下就知道了。" in final
+
+
+def _canvas_dict(entry: list) -> dict:
+    return gc._extract_canvases([None] * 30 + [[entry]])[0]
+
+
+def test_the_prefix_invariant_holds_across_every_fragment_combination():
+    """手写几条用例挡不住"顺序/正则吃掉一个换行"这类组合问题。这里穷举 M3/M4 这几个
+    片段的 3 元组合（含成对/未闭合的 ctrl、card_content、code_event、占位 chip、
+    紧跟的换行），逐条验 final.startswith(已流出的内容)。"""
+    import itertools
+
+    frags = [
+        "正文A", "\n", "B",
+        "<ctrl94>想了想<ctrl95>", "<ctrl94>", "<ctrl95>",
+        "http://googleusercontent.com/card_content/3",
+        "?code_reference&code_event_index=7",
+        "?code_stdout&code_event_index=1",
+        "http://googleusercontent.com/immersive_entry_chip/0",
+        "```python",
+    ]
+    checked = 0
+    for combo in itertools.product(frags, repeat=3):
+        text = "".join(combo)
+        emitted = safe_prefix(text)
+        final = finalize(text)["text"]
+        assert final.startswith(emitted), f"{text!r}: {final!r} 不以 {emitted!r} 开头"
+        checked += 1
+    assert checked == len(frags) ** 3
+
+
+# ---------------------------------------------------------------------------
+# 5. hold 扫描不许是正文长度的二次方
+# ---------------------------------------------------------------------------
+
+def test_the_hold_scan_is_not_quadratic_in_the_body_length():
+    """`<` 和 `?` 在 HTML/JSX/XML/代码里遍地都是（而那正是 M3/M4 要处理的内容）。
+    对每个候选位置切一次尾巴 = 标记数 x 正文长度：实测 118KB 的代码类回答、1000 帧要烧
+    8 秒**同步** CPU，而这段代码跑在流式生成器里，等于把事件循环连带同实例上所有并发
+    请求一起堵住。阈值给了 10 倍以上余量，只拦"退回逐位置切片"这一类回归。"""
+    import time
+
+    body = ('<div className="x">{a ? b : c}</div>\n' * 100) * 32
+    step = len(body) // 1000
+
+    start = time.perf_counter()
+    for i in range(1000):
+        safe_prefix(body[:step * (i + 1)])
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 3.0, f"1000 帧 x {len(body)} 字符用了 {elapsed:.2f}s（逐位置切片约 8s）"
+
+
+def test_hold_from_marker_finds_the_earliest_hold_point():
+    """helper 的两类命中：尾部半截标记（查后缀）与已完整但还没被正则清掉的标记（find）。"""
+    markers = ("<ctrl94>", "<ctrl95>")
+
+    assert gc._hold_from_marker("没有标记", markers) == len("没有标记")
+    assert gc._hold_from_marker("abc<ctrl9", markers) == 3          # 尾部半截
+    assert gc._hold_from_marker("abc<", markers) == 3               # 只到第一个字符
+    assert gc._hold_from_marker("a<ctrl94>b<ctrl9", markers) == 1    # 取最早的那个
+    assert gc._hold_from_marker("a<x>b", markers) == 5               # 已分叉，不 hold
+    assert gc._hold_from_marker("", markers) == 0
