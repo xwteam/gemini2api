@@ -88,7 +88,7 @@ def test_system_instruction_camel_reaches_upstream_prompt(gem_client, monkeypatc
     import app.routers.gemini as ge
     captured = {}
 
-    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["prompt"] = prompt
         return _ok_result()
 
@@ -110,7 +110,7 @@ def test_system_instruction_snake_case_regression_identical(gem_client, monkeypa
     import app.routers.gemini as ge
     captured = {}
 
-    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["prompt"] = prompt
         return _ok_result()
 
@@ -131,7 +131,7 @@ def test_inline_data_camel_reaches_attachments(gem_client, monkeypatch):
     import app.routers.gemini as ge
     captured = {}
 
-    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["attachments"] = attachments
         return _ok_result()
 
@@ -157,7 +157,7 @@ def test_inline_data_snake_case_regression_identical(gem_client, monkeypatch):
     import app.routers.gemini as ge
     captured = {}
 
-    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["attachments"] = attachments
         return _ok_result()
 
@@ -184,7 +184,7 @@ def test_function_call_and_response_camel_reach_prompt(gem_client, monkeypatch):
     import app.routers.gemini as ge
     captured = {}
 
-    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["prompt"] = prompt
         return _ok_result()
 
@@ -216,7 +216,7 @@ def test_function_call_and_response_snake_case_regression_identical(gem_client, 
     import app.routers.gemini as ge
     captured = {}
 
-    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["prompt"] = prompt
         return _ok_result()
 

@@ -11,7 +11,9 @@ from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import (
     ensure_model_allowed, filter_models_for_access_key, record_token_usage,
 )
-from app.core.gemini_client import HTTPStatusError, classify_error
+from app.core.gemini_client import (HTTPStatusError, classify_error,
+                                    generate_with_thinking_fallback,
+                                    parse_gemini_thinking_config, resolve_thinking)
 from app.core.stream import split_into_chunks, iter_with_keepalive, sse_keepalive_during
 from app.models.gemini import (
     GeminiRequest,
@@ -172,6 +174,22 @@ def _describe(model: str) -> str:
     return _MODEL_DESCRIPTIONS.get(model, _DISCOVERED_DESCRIPTION)
 
 
+def _thinking_plan(req: GeminiRequest):
+    """generationConfig.thinkingConfig → ThinkingPlan（见 gemini_client.resolve_thinking）。
+
+    不传 → 上游按"默认思考档位"思考，但响应里**不加**思考部分（官方语义：只有
+    includeThoughts=true 才返回思考），响应结构与不思考时逐字节一致。
+    """
+    config = req.generation_config.thinking_config if req.generation_config else None
+    requested, show = parse_gemini_thinking_config(config)
+    return resolve_thinking(requested, show=show)
+
+
+def _thought_part(thoughts: str) -> dict:
+    """官方 wire format 的思考部分：Part.thought=true 标记这段文本是思考。"""
+    return {"text": thoughts, "thought": True}
+
+
 @router.get("/models")
 async def list_models():
     """List available Gemini models."""
@@ -241,9 +259,12 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
             has_tools = True
             prompt = build_tool_prompt(prompt, function_declarations)
 
+    plan = _thinking_plan(req)
     try:
-        result = await gemini_client.generate(prompt, model, "", attachments,
-                                              gem_id=gem_id, account_id=gem_account_id)
+        # 思考路径失败时退回不思考重试一次（同另外三个协议的口径）。
+        result = await generate_with_thinking_fallback(
+            gemini_client, prompt, model, "", attachments,
+            gem_id=gem_id, account_id=gem_account_id, extended_thinking=plan.upstream)
     except (RuntimeError, ValueError, HTTPStatusError) as e:
         status, err_type, retry_after = classify_error(e)
         headers = {"Retry-After": str(retry_after)} if retry_after else None
@@ -301,6 +322,10 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
         for im in gen_images:
             parts.append({"inlineData": {"mimeType": im.get("mime", "image/png"), "data": im["b64"]}})
         finish = "STOP"
+    # 思考部分排最前，只在客户端 includeThoughts=true 时出现
+    thoughts = result.get("thoughts") or ""
+    if plan.show and thoughts.strip():
+        parts = [_thought_part(thoughts)] + parts
 
     gemini_response = {
         "candidates": [{
@@ -356,6 +381,8 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
             has_tools = True
             prompt = build_tool_prompt(prompt, function_declarations)
 
+    plan = _thinking_plan(req)
+
     async def stream_generator() -> AsyncGenerator[str, None]:
         def _chunk(text: str) -> str:
             return json.dumps({
@@ -365,11 +392,20 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                 }]
             }) + "\n"
 
+        def _thought_chunk(text: str) -> str:
+            return json.dumps({
+                "candidates": [{
+                    "content": {"parts": [_thought_part(text)], "role": "model"},
+                    "index": 0,
+                }]
+            }) + "\n"
+
         prompt_tokens = estimate_tokens(prompt)
         response_text = ""
-        # 这条流里拿到的思考链（两条子路径各自填）。只用于按-key 用量落账 ——
-        # 原生 Gemini 协议本来就不回思考链，wire format 一个字节不变。
+        # 这条流里拿到的思考链（两条子路径各自填）。用于按-key 用量落账；只有客户端
+        # includeThoughts=true 时才以 thought 部分回传，否则 wire format 一个字节不变。
         stream_thoughts = ""
+        emitted_thoughts = ""
 
         # 只有「工具调用」才强制走 buffered：tool_calls 必须拿到完整 JSON 才能解析。
         # 附件不再挡在这里（底层 generate_stream 本就先上传附件再对话，下方真流式路径也已
@@ -377,8 +413,10 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
         # generate() 阻塞期间此前零字节输出——不是空闲读超时，是首字节超时，60s 首字节限制的
         # 代理会直接杀连接。NDJSON 流不能用 SSE 注释帧保活，改发空行（与下方真流式路径同款）。
         if has_tools:
-            gen_task = asyncio.create_task(gemini_client.generate(prompt, model, "", attachments,
-                                                                  gem_id=gem_id, account_id=gem_account_id))
+            # 思考路径失败时在同一个 task 里退回不思考重试一次（keepalive 照常覆盖）。
+            gen_task = asyncio.create_task(generate_with_thinking_fallback(
+                gemini_client, prompt, model, "", attachments,
+                gem_id=gem_id, account_id=gem_account_id, extended_thinking=plan.upstream))
             try:
                 async for _ping in sse_keepalive_during(gen_task):
                     yield "\n"
@@ -425,6 +463,8 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                 parsed = parse_task.result()
                 if isinstance(parsed, dict):
                     response_text = parsed.get("content", _retried.get("text") or response_text)
+            if plan.show and stream_thoughts.strip():
+                yield _thought_chunk(stream_thoughts)
             async for chunk in split_into_chunks(response_text):
                 yield _chunk(chunk)
         else:
@@ -432,7 +472,8 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
             try:
                 async for _kind, evt in iter_with_keepalive(
                     gemini_client.generate_stream(prompt, model, "", attachments,
-                                                  gem_id=gem_id, account_id=gem_account_id)):
+                                                  gem_id=gem_id, account_id=gem_account_id,
+                                                  extended_thinking=plan.upstream)):
                     if _kind == "ping":
                         # NDJSON blank-line keepalive (SSE ": ping" comment is invalid on this application/json stream)
                         yield "\n"
@@ -443,8 +484,22 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                         response_text += delta
                         if delta:
                             yield _chunk(delta)
+                    elif evt.get("type") == "thoughts":
+                        t_delta = evt.get("text", "")
+                        stream_thoughts += t_delta
+                        # 只有 includeThoughts=true 才回传；否则只进内部记账
+                        if plan.show and t_delta:
+                            emitted_thoughts += t_delta
+                            yield _thought_chunk(t_delta)
                     elif evt.get("type") == "final":
-                        stream_thoughts = evt.get("thoughts") or ""
+                        stream_thoughts = evt.get("thoughts") or stream_thoughts
+                        # 收尾补发思考差量（按已发前缀 diff，不重发整段；同 openai.py 口径）
+                        if plan.show and stream_thoughts != emitted_thoughts \
+                                and stream_thoughts.startswith(emitted_thoughts):
+                            t_tail = stream_thoughts[len(emitted_thoughts):]
+                            emitted_thoughts = stream_thoughts
+                            if t_tail.strip():
+                                yield _thought_chunk(t_tail)
                         # final.text 是过滤完占位串的完整文本，可能比已流出的 response_text
                         # 多出（流式时被 hold 住的尾部）。补发缺失尾部，保证拿到完整内容。
                         final_text = evt.get("text", response_text)

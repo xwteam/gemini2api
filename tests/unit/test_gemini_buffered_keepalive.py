@@ -22,7 +22,7 @@ def test_gemini_buffered_emits_blankline_keepalive_before_first_payload(gem_clie
     monkeypatch.setattr(stream_mod, "SSE_KEEPALIVE_INTERVAL", 0.05)
 
     async def slow_generate(prompt, model, conversation_id="", attachments=None, gem_id=None,
-                            account_id=None):
+                            account_id=None, extended_thinking=False):
         await asyncio.sleep(0.25)
         return {"text": "85", "conversation_id": "", "images": [], "thoughts": ""}
 
@@ -40,7 +40,7 @@ def test_gemini_buffered_error_path_unchanged(gem_client, monkeypatch):
     """generate 抛错时仍走原有 error 行，不被保活吞掉。"""
     import app.routers.gemini as gm
 
-    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(gm.gemini_client, "generate", boom)
@@ -65,7 +65,7 @@ def test_gemini_buffered_cancels_gen_task_on_client_disconnect(monkeypatch):
     monkeypatch.setattr(stream_mod, "SSE_KEEPALIVE_INTERVAL", 0.05)
 
     async def slow_generate(prompt, model, conversation_id="", attachments=None, gem_id=None,
-                            account_id=None):
+                            account_id=None, extended_thinking=False):
         await asyncio.sleep(5)   # long enough that aclose() always arrives first
         return {"text": "done", "conversation_id": "", "images": [], "thoughts": ""}
 

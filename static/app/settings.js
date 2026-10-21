@@ -19,7 +19,8 @@ function getGroupTitle(groupKey) {
     account_management: 'settings.group.accounts',
     usage_stats: 'settings.group.stats',
     chat_cleanup: 'settings.group.chatCleanup',
-    logging: 'settings.group.logging'
+    logging: 'settings.group.logging',
+    thinking: 'settings.group.thinking'
   };
   return t(map[groupKey] || groupKey);
 }
@@ -31,7 +32,8 @@ const GROUP_ICONS = {
   account_management: 'fa-users-cog',
   usage_stats: 'fa-chart-line',
   chat_cleanup: 'fa-broom',
-  logging: 'fa-file-alt'
+  logging: 'fa-file-alt',
+  thinking: 'fa-brain'
 };
 
 function getFieldLabel(key) {
@@ -51,6 +53,7 @@ function getFieldLabel(key) {
     usage_stats_retention_days: 'settings.field.usageStatsRetention',
     version_sync_enabled: 'settings.field.versionSyncEnabled',
     extended_thinking_enabled: 'settings.field.extendedThinkingEnabled',
+    default_thinking_level: 'settings.field.defaultThinkingLevel',
     chat_cleanup_enabled: 'settings.field.chatCleanupEnabled',
     chat_cleanup_keep_hours: 'settings.field.chatCleanupKeepHours',
     chat_cleanup_interval_hours: 'settings.field.chatCleanupInterval',
@@ -63,7 +66,9 @@ function getFieldLabel(key) {
 // 字段级补充说明（可选）。只有出现在这里的字段才会多渲染一行提示，
 // 未登记的字段渲染结果与之前逐字节一致。
 const FIELD_HINTS = {
-  log_bodies_enabled: 'settings.hint.logBodies'
+  log_bodies_enabled: 'settings.hint.logBodies',
+  default_thinking_level: 'settings.hint.defaultThinkingLevel',
+  extended_thinking_enabled: 'settings.hint.extendedThinkingEnabled'
 };
 
 function getFieldHint(key) {
@@ -74,6 +79,21 @@ const ROTATION_OPTIONS = [
   { value: 'round-robin', labelKey: 'settings.strategy.roundRobin' },
   { value: 'failover', labelKey: 'settings.strategy.failover' }
 ];
+
+// 默认思考档位（后端 settings_overrides.THINKING_DEFAULT_LEVELS）。
+const THINKING_LEVEL_OPTIONS = [
+  { value: 'off', labelKey: 'settings.thinkingLevel.off' },
+  { value: 'low', labelKey: 'settings.thinkingLevel.low' },
+  { value: 'medium', labelKey: 'settings.thinkingLevel.medium' },
+  { value: 'high', labelKey: 'settings.thinkingLevel.high' }
+];
+
+// 渲染成单选组的枚举字段。radio 的 name 取字段名：写死同一个 name 的话，两组 radio
+// 会被浏览器当成同一组互斥，选中思考档位会把轮换策略的选中状态清掉。
+const ENUM_OPTIONS = {
+  rotation_strategy: ROTATION_OPTIONS,
+  default_thinking_level: THINKING_LEVEL_OPTIONS
+};
 
 // 后端 app/core/settings_overrides.py 的 FIELD_TYPES 里声明为 float 的字段。
 // 必须按字段名判定，不能按"当前值是不是整数"猜：JSON 没有 int/float 之分，后端的
@@ -100,10 +120,11 @@ function createFieldInput(key, value) {
     `;
   }
 
-  if (key.endsWith('.rotation_strategy')) {
-    const radios = ROTATION_OPTIONS.map(opt =>
+  const field = String(key).split('.').pop();
+  if (ENUM_OPTIONS[field]) {
+    const radios = ENUM_OPTIONS[field].map(opt =>
       `<label class="radio-option">
-        <input type="radio" name="rotation_strategy" data-key="${key}" value="${opt.value}" ${value === opt.value ? 'checked' : ''}>
+        <input type="radio" name="${field}" data-key="${key}" value="${opt.value}" ${value === opt.value ? 'checked' : ''}>
         <span>${t(opt.labelKey)}</span>
       </label>`
     ).join('');

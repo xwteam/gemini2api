@@ -17,7 +17,7 @@ def test_stream_response_buffered_cancels_gen_task_on_client_disconnect(monkeypa
     monkeypatch.setattr(stream_mod, "SSE_KEEPALIVE_INTERVAL", 0.05)
 
     async def slow_generate(prompt, model, conversation_id="", attachments=None,
-                            gem_id=None, account_id=None):
+                            gem_id=None, account_id=None, extended_thinking=False):
         await asyncio.sleep(5)   # long enough that aclose() always arrives first
         return {"text": "done", "conversation_id": "", "images": [], "thoughts": ""}
 
@@ -62,7 +62,7 @@ def test_stream_response_buffered_cancels_retry_task_on_client_disconnect(monkey
     monkeypatch.setattr(stream_mod, "SSE_KEEPALIVE_INTERVAL", 0.05)
 
     async def flaky_generate(prompt, model, conversation_id="", attachments=None,
-                             gem_id=None, account_id=None):
+                             gem_id=None, account_id=None, extended_thinking=False):
         if conversation_id:
             # first attempt (uses the original gemini_conv_id) fails fast -> triggers retry
             raise RuntimeError("boom")

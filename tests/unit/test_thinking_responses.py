@@ -2,7 +2,7 @@ import json
 
 # reasoning_effort 不再被布尔化：high → THINKING_LEVEL_HIGH 这个具体档位，
 # 下游用它决定 payload 的第 80 格与 model header 的第 15 位（见 gemini_client.parse_thinking_level）。
-from app.core.gemini_client import THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH
+from app.core.gemini_client import THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW
 
 _AUTH = {"Authorization": "Bearer sk-test-key"}
 
@@ -23,20 +23,23 @@ def test_responses_reasoning_effort_enables_thinking(gem_client, monkeypatch):
     assert "reasoning" in types
 
 
-def test_responses_no_reasoning_no_thinking(gem_client, monkeypatch):
+def test_responses_no_reasoning_uses_default_level_without_reasoning_item(gem_client, monkeypatch):
+    """不传 reasoning：上游按"默认思考档位"（出厂 low）思考，但**不出 reasoning 输出项**
+    （客户端没要求）。上游返回了非空思考，才验得到这道拦截。"""
     import app.routers.responses as rp
     captured = {}
     async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["ext"] = extended_thinking
-        return {"text": "answer", "images": [], "conversation_id": "c", "thoughts": ""}
+        return {"text": "answer", "images": [], "conversation_id": "c", "thoughts": "hidden thoughts"}
     monkeypatch.setattr(rp.gemini_client, "generate", fake_generate)
     r = gem_client.post("/v1/responses", json={
         "model": "gemini-flash", "input": "hi",
     }, headers=_AUTH)
     assert r.status_code == 200
-    assert captured["ext"] is False
+    assert captured["ext"] == THINKING_LEVEL_LOW
     types = [it.get("type") for it in r.json()["output"]]
     assert "reasoning" not in types
+    assert "hidden thoughts" not in r.text
 
 
 def test_responses_top_level_reasoning_effort_enables_thinking(gem_client, monkeypatch):

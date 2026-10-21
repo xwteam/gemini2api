@@ -6,6 +6,7 @@ import random
 import asyncio
 import logging
 from enum import Enum
+from typing import NamedTuple
 from pathlib import Path
 from threading import Lock
 from collections import deque
@@ -175,13 +176,20 @@ _CFG_SNAPSHOT_DOMAIN = "config.local"
 # 的 ParseThinkingLevel（"" / low → 1、medium → 4、high → 2，并有
 # gemini_thinking_test.go:20 的断言兜底），以及 internal/modules/openai/openai_service.go
 # 把 none/minimal 夹成 low、xhigh 夹成 high。
-# ⚠️ 证据来自对方的测试断言，**我方尚未在真机复验**（受账号状态所限没拿到干净数据）。
-# 所以做成常量：真机验证后直接改这里，不用动调用方。
+# 真机实测（gemini-pro、需要推理的题、每档 2 次）：
+#   low(1)    思考 411 / 707 字，36～47 秒
+#   medium(4) 思考 524 / 450 字，30～34 秒
+#   high(2)   思考 1256 / 562 字，42～65 秒 —— **已证实是最深的一档**
+# low 与 medium 两次采样区分不开（噪声大），这两档沿用参考实现的映射。
+# 做成常量：哪天拿到更干净的数据直接改这里，不用动调用方。
 THINKING_LEVEL_LOW = 1
 THINKING_LEVEL_MEDIUM = 4
 THINKING_LEVEL_HIGH = 2
-# 不传 reasoning_effort（以及传了认不出的值）时用的档位 = 改动前写死的那个 2，
-# 保证既有行为逐字节不变。
+# "客户端明确要了思考、但没给出可认的档位"时用的档位（effort 认不出、Anthropic
+# adaptive / budget 无效、Gemini thinkingLevel 未指定等），以及底层编码器拿到空档位时
+# 的兜底。保持改动前写死的那个 2：明确请求思考的客户端，行为与改动前完全一致。
+# ⚠️ 它**不是**"客户端没传思考参数时用哪一档"：那个由面板/环境变量的"默认思考档位"
+# 决定（出厂 low，见 default_thinking_level），面板改了即时生效。
 THINKING_LEVEL_DEFAULT = 2
 
 _THINKING_LEVELS = {
@@ -194,7 +202,7 @@ _THINKING_ALIASES = {"none": "low", "minimal": "low", "xhigh": "high"}
 
 
 def parse_thinking_level(effort: str | None) -> int:
-    """reasoning_effort → thinking level。空值/认不出的值回默认档，绝不抛错。
+    """reasoning_effort → thinking level。空值/认不出的值回静态兜底档，绝不抛错。
 
     过去 reasoning_effort 被 bool 化（`bool(_eff)`）后一律写死最高档：客户端默认带
     "low" / "minimal" 的请求（Codex、Cursor）全部跑成最慢的档位 —— 用户要"快"，
@@ -205,6 +213,77 @@ def parse_thinking_level(effort: str | None) -> int:
         return THINKING_LEVEL_DEFAULT
     raw = _THINKING_ALIASES.get(raw, raw)
     return _THINKING_LEVELS.get(raw, THINKING_LEVEL_DEFAULT)
+
+
+# ---------------------------------------------------------------------------
+# 思考请求的统一决策（四个协议共用）
+# ---------------------------------------------------------------------------
+# 各协议的解析器只负责把入参翻成"客户端要了什么"（requested），三态：
+#   None  = 客户端没说（没传 / 空值）     → 用"默认思考档位"设置，**思考内容不回传**
+#   False = 客户端明确不要思考            → 不思考旧路径
+#   1/2/4 = 客户端明确要了思考            → 按这个档位走，回传
+# "明确要了但没给出可认的档位"（effort 认不出、adaptive、budget 无效……）按改动前的
+# 口径落到 THINKING_LEVEL_DEFAULT —— 客户端明确请求思考时的行为与改动前完全一致，
+# 本轮只改"没传"这一种情况。然后统一交给 resolve_thinking 做决定。决策逻辑只有这一份。
+
+# 默认思考档位设置值 → 档位（None = 不思考）。键集合必须与
+# settings_overrides.THINKING_DEFAULT_LEVELS 一致（有守卫测试）。
+_DEFAULT_THINKING_CHOICES = {
+    "off": None,
+    "low": THINKING_LEVEL_LOW,
+    "medium": THINKING_LEVEL_MEDIUM,
+    "high": THINKING_LEVEL_HIGH,
+}
+
+
+def default_thinking_level() -> int | None:
+    """当前"默认思考档位"设置对应的档位；off → None。每次请求现读，面板改了即时生效。"""
+    raw = str(getattr(settings, "default_thinking_level", "low") or "").strip().lower()
+    return _DEFAULT_THINKING_CHOICES.get(raw, THINKING_LEVEL_LOW)
+
+
+class ThinkingPlan(NamedTuple):
+    """一次请求的思考决策。
+
+    level：发给上游的档位，None = 走不思考旧路径（payload/header 与改动前逐字节一致）。
+    show： 是否把思考内容回传给客户端。**只有客户端明确要了才回传**：按默认档替客户端
+           开的思考只用于上游生成 —— 官方 API 不请求就不返回思考，严格的客户端（含部分
+           Claude Code 版本）收到未请求的 thinking 块会报错。
+    """
+    level: int | None
+    show: bool
+
+    @property
+    def upstream(self):
+        """原样喂给 generate / generate_stream 的 extended_thinking（False 或 1/2/4）。"""
+        return self.level or False
+
+
+THINKING_OFF = ThinkingPlan(None, False)
+
+
+def resolve_thinking(requested, *, show: bool | None = None) -> ThinkingPlan:
+    """requested（见上面三态）→ ThinkingPlan。show 只在"明确要了"时生效，None = 回传。"""
+    if not getattr(settings, "extended_thinking_enabled", True):
+        return THINKING_OFF            # 总闸：一律不思考，连明确请求也忽略
+    if requested is None:
+        return ThinkingPlan(default_thinking_level(), False)
+    if requested is False:
+        return THINKING_OFF
+    return ThinkingPlan(thinking_level_of(requested), True if show is None else bool(show))
+
+
+def parse_effort_request(effort) -> int | None:
+    """OpenAI reasoning_effort / Responses reasoning.effort → requested（见上）。
+
+    空值/纯空白 → None（视同没传、走默认档）；其余交给 parse_thinking_level：
+    low/medium/high 及别名（none/minimal → low、xhigh → high）→ 对应档位，认不出的
+    非空值 → THINKING_LEVEL_DEFAULT（与改动前一致），绝不 500。
+    """
+    raw = str(effort if effort is not None else "").strip()
+    if not raw:
+        return None
+    return parse_thinking_level(raw)
 
 
 # Anthropic 的 thinking 入参形态（官方现行规范）：
@@ -221,27 +300,8 @@ _ANTHROPIC_BUDGET_MEDIUM = 2048
 _ANTHROPIC_BUDGET_HIGH = 4096
 
 
-def parse_anthropic_thinking(thinking) -> int | bool:
-    """Anthropic 的 thinking 入参 → 本仓思考档位。False = 不走思考路径。
-
-    返回值直接当 extended_thinking 用（既是开关也是档位，见 thinking_level_of）。
-    认不出的 type 一律回 False：我们不是真 API，宁可保持"和不传一样"的既有行为，
-    也不要凭一个猜测去改上游请求的形状（开思考会走另一套 payload + header）。
-    budget_tokens 不做 "< max_tokens" 校验、不 400 —— 宽容比正确性在这里更有用。
-    """
-    if not isinstance(thinking, dict):
-        return False
-    kind = str(thinking.get("type") or "").strip().lower()
-    if kind in _ANTHROPIC_THINKING_OFF:
-        return False
-    if kind == "adaptive":
-        # 官方语义是"模型自己决定"，映到"不传 reasoning_effort"的同一个默认档，零惊喜。
-        return THINKING_LEVEL_DEFAULT
-    if kind != "enabled":
-        if kind:
-            logger.info("Unrecognized Anthropic thinking type %r; treating as disabled", kind)
-        return False
-    budget = thinking.get("budget_tokens")
+def _budget_level(budget) -> int:
+    """正整数 budget → 档位；无效 budget → THINKING_LEVEL_DEFAULT（与改动前一致）。"""
     if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
         return THINKING_LEVEL_DEFAULT
     if budget >= _ANTHROPIC_BUDGET_HIGH:
@@ -251,12 +311,104 @@ def parse_anthropic_thinking(thinking) -> int | bool:
     return THINKING_LEVEL_LOW
 
 
+def parse_anthropic_thinking(thinking) -> int | bool | None:
+    """Anthropic 的 thinking 入参 → requested（三态，见 resolve_thinking 上方说明）。
+
+    - 没传 / 非 dict / 没有 type → None（视同没传：上游按默认档，**不出 thinking 块**）
+    - disabled / between_tools  → False
+    - adaptive                  → THINKING_LEVEL_DEFAULT（官方语义"模型自己决定"，
+                                   与改动前同一档）
+    - enabled + 合法 budget     → 按切点分档；budget 缺失/无效 → THINKING_LEVEL_DEFAULT
+    - 认不出的 type             → None（同"没传"：不凭猜测去开 thinking 块）
+    budget_tokens 不做 "< max_tokens" 校验、不 400 —— 宽容比正确性在这里更有用。
+    """
+    if not isinstance(thinking, dict):
+        return None
+    kind = str(thinking.get("type") or "").strip().lower()
+    if not kind:
+        return None
+    if kind in _ANTHROPIC_THINKING_OFF:
+        return False
+    if kind == "adaptive":
+        return THINKING_LEVEL_DEFAULT
+    if kind != "enabled":
+        logger.info("Unrecognized Anthropic thinking type %r; treating as not passed", kind)
+        return None
+    return _budget_level(thinking.get("budget_tokens"))
+
+
+# Gemini 原生 generationConfig.thinkingConfig（字段语义取自官方 SDK
+# googleapis/python-genai google/genai/types.py 的 ThinkingConfig）：
+#   includeThoughts: bool  —— 是否在响应里返回思考（true 才返回）
+#   thinkingBudget:  int   —— token 预算，0 = 关闭，-1 = 自动；取值范围官方只写 "model dependent"
+#   thinkingLevel:   enum  —— MINIMAL / LOW / MEDIUM / HIGH（另有 THINKING_LEVEL_UNSPECIFIED）
+# 本仓只有三档，MINIMAL 夹到 low。budget 沿用 Anthropic 那张切点表（2048 / 4096），
+# 不另起一套阈值 —— 官方没给各模型的 budget 范围，单独定切点也只是另一种猜测。
+# 两个都传时 level 优先、宽容处理，不 400（官方是否对此报 400 本仓未能查证）。
+_GEMINI_THINKING_LEVELS = {
+    "minimal": THINKING_LEVEL_LOW,
+    "low": THINKING_LEVEL_LOW,
+    "medium": THINKING_LEVEL_MEDIUM,
+    "high": THINKING_LEVEL_HIGH,
+}
+
+
+def _pick(d: dict, camel: str, snake: str):
+    return d.get(camel) if camel in d else d.get(snake)
+
+
+def parse_gemini_thinking_config(config) -> tuple[int | bool | None, bool]:
+    """thinkingConfig → (requested, show)。show = includeThoughts is True（照官方语义）。
+
+    非 dict（或没传）→ (None, False)：视同没传，上游按默认档、响应里不加思考部分。
+    明确要了但档位认不出（UNSPECIFIED / 未知 level / budget=-1 自动 / 只给了
+    includeThoughts）→ THINKING_LEVEL_DEFAULT，与另外两个协议"明确要了没给档"同口径。
+    """
+    if not isinstance(config, dict):
+        return None, False
+    show = _pick(config, "includeThoughts", "include_thoughts") is True
+    level = _pick(config, "thinkingLevel", "thinking_level")
+    if isinstance(level, str) and level.strip():
+        key = level.strip().lower()
+        if key.startswith("thinking_level_"):
+            key = key[len("thinking_level_"):]
+        return _GEMINI_THINKING_LEVELS.get(key, THINKING_LEVEL_DEFAULT), show
+    budget = _pick(config, "thinkingBudget", "thinking_budget")
+    if isinstance(budget, int) and not isinstance(budget, bool):
+        if budget == 0:
+            return False, False
+        if budget < 0:                  # -1 = AUTOMATIC
+            return THINKING_LEVEL_DEFAULT, show
+        return _budget_level(budget), show
+    if show:
+        return THINKING_LEVEL_DEFAULT, True
+    return None, False
+
+
+async def generate_with_thinking_fallback(client, prompt, model, *args,
+                                         extended_thinking=False, **kwargs):
+    """client.generate；思考路径失败时原样退回不思考重试一次（非流式/buffered 路径共用）。
+
+    开思考 = 走另一套 payload + header，失败率与普通路径不同。默认档上线后几乎每个请求
+    都走思考路径，没有这一退回就会比改动前多出一类硬失败。不思考的请求失败照旧直接抛
+    （不白打第二次上游）。
+    """
+    try:
+        return await client.generate(prompt, model, *args,
+                                     extended_thinking=extended_thinking, **kwargs)
+    except (RuntimeError, ValueError, HTTPStatusError) as e:
+        if not extended_thinking:
+            raise
+        logger.warning(f"extended-thinking request failed, retrying normal: {e}")
+        return await client.generate(prompt, model, *args, extended_thinking=False, **kwargs)
+
+
 def thinking_level_of(extended_thinking) -> int:
     """从 extended_thinking 参数里取出思考档位。
 
     这个参数既是开关也是档位，形态有三种：
       False / None → 不走思考路径（调用方的 `if extended_thinking:` 为假）
-      True         → 走思考路径、用默认档 THINKING_LEVEL_DEFAULT（改动前的唯一行为）
+      True         → 走思考路径、用静态兜底档 THINKING_LEVEL_DEFAULT
       1 / 2 / 4    → 走思考路径、并用这个档位
 
     为什么不另加一个平行的 thinking_level 参数：这个值要穿过 路由 → 账号池 →

@@ -25,7 +25,7 @@ def test_function_response_mentioning_image_does_not_drop_tools(gem_client, monk
     import app.routers.gemini as ge
     captured = {}
 
-    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["prompt"] = prompt
         return _ok_result()
 
@@ -63,7 +63,7 @@ def test_genuine_image_text_still_routes_to_image_path(gem_client, monkeypatch):
     import app.routers.gemini as ge
     captured = {}
 
-    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["prompt"] = prompt
         return _ok_result()
 

@@ -39,6 +39,7 @@ class SettingsResponse(BaseModel):
     # 新增分组必须在此显式声明：pydantic 默认 extra="ignore"，且路由声明了
     # response_model=SettingsResponse，未声明的分组会被静默丢弃（面板永远看不到该开关）。
     logging: Dict[str, Any] = Field(default_factory=dict, description="Request/response body logging settings")
+    thinking: Dict[str, Any] = Field(default_factory=dict, description="Thinking (reasoning) level settings")
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -85,12 +86,26 @@ def _get_grouped_settings() -> Dict[str, Dict[str, Any]]:
             "chat_cleanup_keep_hours": settings.chat_cleanup_keep_hours,
             "chat_cleanup_interval_hours": settings.chat_cleanup_interval_hours,
             "chat_cleanup_skip_pinned": settings.chat_cleanup_skip_pinned,
-            "extended_thinking_enabled": settings.extended_thinking_enabled,
         },
         "logging": {
             "log_bodies_enabled": settings.log_bodies_enabled,
         },
+        "thinking": _thinking_group(),
     }
+
+
+def _thinking_group() -> Dict[str, Any]:
+    """「思考」分组。平时只露一个控件：默认思考档位（off / low / medium / high）。
+
+    extended_thinking_enabled（总闸：关 = 一律不思考，连客户端明确要求的也忽略）只在
+    它**被关掉时**才显示。两个开关同时摆出来，"off" 与"总闸关"在大多数请求上效果相同，
+    用户分不清该点哪个；但把总闸彻底藏起来，之前关过它的人就再也看不到、改不回来，
+    而默认档位怎么切都不生效 —— 那更困惑。所以：开着时藏，关着时露出来供他打开。
+    """
+    group: Dict[str, Any] = {"default_thinking_level": settings.default_thinking_level}
+    if not settings.extended_thinking_enabled:
+        group["extended_thinking_enabled"] = False
+    return group
 
 
 # .env 的位置。刻意保持相对路径（在使用时才由 OS 相对 CWD 解析），只是把字面量收成
@@ -209,6 +224,12 @@ def _validate_settings_domain(updates: Dict[str, Any]) -> None:
                 status_code=400,
                 detail=f"Setting '{key}' must be a finite number",
             )
+
+        # 枚举等取值域与启动回放共用同一份校验（settings_overrides.check_domain），
+        # 免得出现"面板能存、重启回放却被丢"或反过来的两份口径。
+        reason = settings_overrides.check_domain(key, value)
+        if reason is not None:
+            raise HTTPException(status_code=400, detail=reason)
 
         # 取值域：计数/间隔不允许负数，并发上限至少为 1
         if key in _NON_NEGATIVE_FIELDS and value < 0:

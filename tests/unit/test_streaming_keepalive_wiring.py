@@ -99,7 +99,7 @@ def test_gemini_native_realstream_emits_blankline_keepalive_during_silence(gem_c
     monkeypatch.setattr(stream_mod, "SSE_KEEPALIVE_INTERVAL", 0.05)
 
     async def slow_generate_stream(prompt, model, conversation_id="", attachments=None,
-                                   gem_id=None, account_id=None):
+                                   gem_id=None, account_id=None, extended_thinking=False):
         await asyncio.sleep(0.25)
         yield {"type": "delta", "text": "85"}
         yield {"type": "final", "text": "85", "conversation_id": "", "images": [], "thoughts": ""}

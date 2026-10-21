@@ -301,7 +301,7 @@ def test_openai_nonstream_http_status_error_still_tries_fallback(gem_client, mon
 def test_gemini_nonstream_http_status_error_maps_to_upstream_status(gem_client, monkeypatch):
     import app.routers.gemini as ge
 
-    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         raise HTTPStatusError(429, "rate limited")
 
     monkeypatch.setattr(ge.gemini_client, "generate", boom)
@@ -317,7 +317,7 @@ def test_gemini_nonstream_http_status_error_maps_to_upstream_status(gem_client, 
 def test_gemini_nonstream_pool_busy_maps_to_529_with_retry_after(gem_client, monkeypatch):
     import app.routers.gemini as ge
 
-    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         raise RuntimeError("No more accounts to failover to")
 
     monkeypatch.setattr(ge.gemini_client, "generate", boom)
@@ -334,7 +334,7 @@ def test_gemini_nonstream_pool_busy_maps_to_529_with_retry_after(gem_client, mon
 def test_gemini_nonstream_value_error_maps_to_400(gem_client, monkeypatch):
     import app.routers.gemini as ge
 
-    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         raise ValueError("Model 'bogus' unavailable")
 
     monkeypatch.setattr(ge.gemini_client, "generate", boom)

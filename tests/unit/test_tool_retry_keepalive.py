@@ -29,7 +29,7 @@ _GEMINI_TOOLS = [{"function_declarations": [{
 
 def _slow_retry_generate(calls, first_text, retry_text, delay=0.25):
     """首次快速返回 first_text；第二次（重试）先睡 delay 秒再返回 retry_text。"""
-    async def gen(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def gen(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         calls["n"] += 1
         if calls["n"] == 1:
             return {"text": first_text, "conversation_id": "", "images": [], "thoughts": ""}
@@ -39,7 +39,7 @@ def _slow_retry_generate(calls, first_text, retry_text, delay=0.25):
 
 
 def _fast_generate(text):
-    async def gen(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def gen(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         return {"text": text, "conversation_id": "", "images": [], "thoughts": ""}
     return gen
 

@@ -368,9 +368,18 @@ def test_chat_completions_forwards_the_level(gem_client, monkeypatch, effort, ex
     assert captured["ext"] is not True
 
 
-def test_chat_completions_without_effort_stays_off(gem_client, monkeypatch):
-    """零回归：不传 reasoning_effort 时 extended_thinking 仍是 False（而不是某个档位）。"""
+@pytest.mark.parametrize("default,expected", [
+    ("low", 1), ("medium", 4), ("high", 2),
+    # off = 不思考旧路径：extended_thinking 必须是 False 本身（不是 0、不是某个档位）
+    ("off", False),
+])
+def test_chat_completions_without_effort_uses_the_default_level(gem_client, monkeypatch,
+                                                                default, expected):
+    """用户要求：不传 reasoning_effort 时按"默认思考档位"设置走（出厂 low）。
+    v1.6.42 这里恒为 False；现在只有设置成 off 才回到那条路径。"""
     import app.routers.openai as oai
+    from app.config import settings
+    monkeypatch.setattr(settings, "default_thinking_level", default)
 
     captured = {}
 
@@ -385,7 +394,10 @@ def test_chat_completions_without_effort_stays_off(gem_client, monkeypatch):
     }, headers=_AUTH)
 
     assert r.status_code == 200
-    assert captured["ext"] is False
+    assert captured["ext"] == expected
+    assert captured["ext"] is not True
+    if expected is False:
+        assert captured["ext"] is False
 
 
 @pytest.mark.parametrize("effort,expected", [("low", 1), ("medium", 4), ("high", 2)])

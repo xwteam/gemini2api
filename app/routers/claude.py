@@ -13,7 +13,9 @@ from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import (
     ensure_model_allowed, filter_models_for_access_key, record_token_usage,
 )
-from app.core.gemini_client import HTTPStatusError, classify_error, parse_anthropic_thinking
+from app.core.gemini_client import (HTTPStatusError, classify_error,
+                                    generate_with_thinking_fallback, parse_anthropic_thinking,
+                                    resolve_thinking)
 from app.core.stream import split_into_chunks, iter_with_keepalive, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.claude import (
     ClaudeRequest, ClaudeResponse, ContentBlock, ClaudeUsage,
@@ -81,16 +83,16 @@ def _thoughts_tokens(blocks: list[ContentBlock]) -> int:
     return sum(estimate_tokens(b.thinking or "") for b in blocks if b.type == "thinking")
 
 
-def _thinking_blocks(result: dict, extended_thinking) -> list[ContentBlock]:
+def _thinking_blocks(result: dict, show_thinking) -> list[ContentBlock]:
     """思考内容 → Anthropic thinking 内容块（规范要求它排在 text / tool_use 之前）。
 
-    开关只看 extended_thinking（= 客户端有没有传 thinking）。底层 candidate[37] 的
-    thoughts 解析是**无条件**跑的，所以"有 thoughts 就吐 thinking 块"会改掉所有不传
-    thinking 的既有请求的响应形状。
+    开关只看 show_thinking（= 客户端有没有明确要思考），**不看**发给上游的档位：
+    不传 thinking 时上游照样会按"默认思考档位"思考，但官方 API 只有请求了才返回
+    thinking 块，严格的客户端（含部分 Claude Code 版本）遇到未请求的 thinking 块会出错。
     signature 不发：真实 API 的 thinking 块恒带签名，我们造不出合法的，发空串/自造串
     更坏（客户端把它回传给真 API 会 400）。
     """
-    if not extended_thinking:
+    if not show_thinking:
         return []
     thoughts = result.get("thoughts") or ""
     if not thoughts.strip():
@@ -166,14 +168,14 @@ async def create_message(req: ClaudeRequest, request: Request):
 
     ensure_model_allowed(req.model, resolved_model)
 
-    # 客户端传了 thinking 才走思考路径（与 /v1/chat/completions 的 reasoning_effort 同口径）。
-    # 这个变量既是开关也是档位（False = 关闭；1/2/4 = 开启 + 档位）。
-    # **唯一开关是"客户端是否传了 thinking"**：底层的 thoughts 解析（candidate[37]）跟
-    # extended_thinking 无关、是无条件跑的，所以"有 thoughts 就吐 thinking 块"会改掉
-    # 所有不传 thinking 的既有请求的响应形状。
-    extended_thinking = (
-        parse_anthropic_thinking(req.thinking) if settings.extended_thinking_enabled else False
-    )
+    # thinking 入参 → 思考档位（与 /v1/chat/completions 的 reasoning_effort 同一套决策，见
+    # gemini_client.resolve_thinking）；**不传 → "默认思考档位"设置**（出厂 low）。拆成两个量：
+    #   extended_thinking —— 发给上游的档位（False = 不思考旧路径；1/2/4 = 档位）
+    #   show_thinking     —— 出不出 thinking 块。**只看客户端是否明确要了思考**：按默认档
+    #                        替它开的思考绝不出 thinking 块，帧序列与不思考时逐字节一致。
+    _plan = resolve_thinking(parse_anthropic_thinking(req.thinking))
+    extended_thinking = _plan.upstream
+    show_thinking = _plan.show
 
     has_tools = bool(req.tools)
     # 生图意图优先：带 tools 但明确生图意图时跳过工具模拟，直接生图（否则生图被压制）。
@@ -201,7 +203,8 @@ async def create_message(req: ClaudeRequest, request: Request):
     if req.stream:
         return StreamingResponse(
             _stream_claude(prompt, resolved_model, has_tools, attachments, req.model, gem_id, gem_account_id,
-                          request=request, extended_thinking=extended_thinking),
+                          request=request, extended_thinking=extended_thinking,
+                          show_thinking=show_thinking),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -215,11 +218,12 @@ async def create_message(req: ClaudeRequest, request: Request):
         err = e
         # 开思考 = 走另一套 payload + header（见 gemini_client._send_request），失败率与
         # 普通路径不同。先原样退回非思考重试一次再报错，别让"勾了思考"把整条请求搞挂
-        # （镜像 openai.py 既有做法）。退回成功时也把 extended_thinking 关掉：
+        # （镜像 openai.py 既有做法）。退回成功时也把 show_thinking 关掉：
         # 这一轮确实没有思考，不该再去吐 thinking 块。
         if extended_thinking:
             logger.warning(f"extended-thinking request failed, retrying normal: {e}")
             extended_thinking = False
+            show_thinking = False
             try:
                 result = await gemini_client.generate(prompt, resolved_model, "", attachments,
                                                       gem_id=gem_id, account_id=gem_account_id)
@@ -245,7 +249,7 @@ async def create_message(req: ClaudeRequest, request: Request):
 
         parsed = await parse_tool_response_with_retry(text, _regenerate_for_tools)
         if parsed["type"] == "tool_calls":
-            blocks = _thinking_blocks(result, extended_thinking)
+            blocks = _thinking_blocks(result, show_thinking)
             _record_usage(resolved_model, prompt, text, result)
             for tc in parsed["tool_calls"]:
                 blocks.append(ContentBlock(
@@ -278,7 +282,7 @@ async def create_message(req: ClaudeRequest, request: Request):
     # 上游回答是空字符串且无图时，不能发一个 text:"" 的空文本块，也不能让 content
     # 整体变成 []（defect ⑩）——两者都有客户端会踩坑（遍历 content 假设至少一块非空）。
     # 用单空格占位，恰好一块，不改变非空/纯空白文本的既有行为。
-    blocks = _thinking_blocks(result, extended_thinking) + [
+    blocks = _thinking_blocks(result, show_thinking) + [
         ContentBlock(type="text", text=text if text else " ")
     ]
     _record_usage(resolved_model, prompt, text, result)
@@ -305,7 +309,7 @@ async def count_tokens(req: ClaudeRequest):
     return {"input_tokens": count}
 
 
-async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=None, display_model: str = "", gem_id=None, account_id=None, request=None, extended_thinking=False) -> AsyncGenerator[str, None]:
+async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=None, display_model: str = "", gem_id=None, account_id=None, request=None, extended_thinking=False, show_thinking=False) -> AsyncGenerator[str, None]:
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     model_name = display_model or model
 
@@ -315,7 +319,8 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
     # 带图/带文件的请求都"等全文生成完才吐第一个字"。与 /v1/chat/completions 同口径。
     if has_tools:
         async for sse in _stream_claude_buffered(prompt, model, has_tools, attachments, msg_id, model_name, gem_id, account_id,
-                                                 request=request, extended_thinking=extended_thinking):
+                                                 request=request, extended_thinking=extended_thinking,
+                                                 show_thinking=show_thinking):
             yield sse
         return
 
@@ -337,9 +342,9 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
             },
         },
     })
-    # 块索引与开块时机：
-    # - 不传 thinking（extended_thinking 为假）时，照旧在循环前就开 index 0 的文本块，
-    #   SSE 帧序列与改动前逐字节一致。
+    # 块索引与开块时机（只看 show_thinking，不看发给上游的档位）：
+    # - 不回传思考（客户端没要求，含"按默认档替它开了思考"）时，照旧在循环前就开
+    #   index 0 的文本块，SSE 帧序列与改动前逐字节一致。
     # - 传了 thinking 时改成惰性开块：先等思考增量（开 index 0 的 thinking 块），首个
     #   正文增量到达时才关掉它、开 index 1 的文本块。Anthropic 规定 thinking 块必须排在
     #   text 之前，所以文本块一开就回不去了。
@@ -347,6 +352,8 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
     text_open = False
     text_index = 0
     emitted_thoughts = ""
+    # 不回传时思考只进内部记账（官方口径：思考 token 按 output 计费），一个字都不进 SSE。
+    hidden_thoughts = ""
     # 正文块开了之后才到的思考增量只能丢（见下面那条 WARNING）。记下丢了多少，
     # 收尾时一次说清，别让 reasoning 通道静默少内容。
     dropped_thoughts = 0
@@ -366,7 +373,7 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
         frames.append(_text_block_start(text_index))
         return frames
 
-    if not extended_thinking:
+    if not show_thinking:
         text_open = True
         yield _text_block_start(0)
 
@@ -383,7 +390,8 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
             if evt.get("type") == "thoughts":
                 # 这一支过去根本不存在：{"type":"thoughts"} 事件被 if/elif 整个漏掉，
                 # 于是 Anthropic 协议用户永远拿不到思考链。
-                if not extended_thinking:
+                if not show_thinking:
+                    hidden_thoughts += evt.get("text", "")
                     continue
                 t_delta = evt.get("text", "")
                 if not t_delta:
@@ -434,7 +442,9 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
                 # 收尾的完整思考链：按「已发前缀 diff」补发差量（同 openai.py 的口径，
                 # startswith 不成立时不重发整段、避免重复）。只有文本块还没开时才可能补 ——
                 # 开了就回不去 thinking 块前面了。
-                if extended_thinking and text_open:
+                if not show_thinking:
+                    hidden_thoughts = (evt.get("thoughts", "") or "") or hidden_thoughts
+                if show_thinking and text_open:
                     final_thoughts = evt.get("thoughts", "") or ""
                     missing = len(final_thoughts) - len(emitted_thoughts)
                     if missing > 0 or dropped_thoughts:
@@ -444,7 +454,7 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
                             "so the thinking block could no longer be extended",
                             max(missing, dropped_thoughts), dropped_thoughts,
                         )
-                if extended_thinking and not text_open:
+                if show_thinking and not text_open:
                     final_thoughts = evt.get("thoughts", "") or ""
                     if final_thoughts != emitted_thoughts \
                             and final_thoughts.startswith(emitted_thoughts):
@@ -528,7 +538,8 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
             "delta": {"type": "text_delta", "text": full_text},
         })
 
-    _record_usage(model, prompt, full_text, {"thoughts": emitted_thoughts})
+    _record_usage(model, prompt, full_text,
+                  {"thoughts": emitted_thoughts if show_thinking else hidden_thoughts})
 
     yield _claude_sse({"type": "content_block_stop", "index": text_index})
     yield _claude_sse({
@@ -545,12 +556,14 @@ async def _stream_claude(prompt: str, model: str, has_tools: bool, attachments=N
     yield _claude_sse({"type": "message_stop"})
 
 
-async def _stream_claude_buffered(prompt: str, model: str, has_tools: bool, attachments, msg_id: str, display_model: str = "", gem_id=None, account_id=None, request=None, extended_thinking=False) -> AsyncGenerator[str, None]:
+async def _stream_claude_buffered(prompt: str, model: str, has_tools: bool, attachments, msg_id: str, display_model: str = "", gem_id=None, account_id=None, request=None, extended_thinking=False, show_thinking=False) -> AsyncGenerator[str, None]:
     """非流式收集 + 切片：用于有工具调用/附件的场景。"""
     model_name = display_model or model
-    gen_task = asyncio.create_task(gemini_client.generate(prompt, model, "", attachments,
-                                                          gem_id=gem_id, account_id=account_id,
-                                                          extended_thinking=extended_thinking))
+    # 思考路径失败时在同一个 task 里退回不思考重试一次（keepalive 照常覆盖）。退回后
+    # 结果里没有思考，_thinking_blocks 自然为空。
+    gen_task = asyncio.create_task(generate_with_thinking_fallback(
+        gemini_client, prompt, model, "", attachments,
+        gem_id=gem_id, account_id=account_id, extended_thinking=extended_thinking))
     try:
         async for ping in sse_keepalive_during(gen_task):
             yield ping
@@ -572,8 +585,8 @@ async def _stream_claude_buffered(prompt: str, model: str, has_tools: bool, atta
 
     text = result.get("text", "")
     # thinking 块（若有）恒占 index 0，后面所有块的索引整体 +1。
-    # 不传 thinking 时 thinking_blocks 为空、base 为 0，帧序列与改动前逐字节一致。
-    thinking_blocks = _thinking_blocks(result, extended_thinking)
+    # 不回传思考时 thinking_blocks 为空、base 为 0，帧序列与改动前逐字节一致。
+    thinking_blocks = _thinking_blocks(result, show_thinking)
     base = 1 if thinking_blocks else 0
 
     yield _claude_sse({

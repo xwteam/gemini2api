@@ -50,6 +50,11 @@ class GenerationConfig(BaseModel):
     max_output_tokens: int | None = None
     top_p: float | None = None
     top_k: int | None = None
+    # thinkingConfig（includeThoughts / thinkingBudget / thinkingLevel）。刻意用 Any：
+    # 限成 dict/严格模型的话，客户端传成字符串/数字时会从 200 变成 FastAPI 原生 422
+    # （与 app/models/claude.py 的 thinking 字段同一个教训）。宽容解析见
+    # gemini_client.parse_gemini_thinking_config —— 非 dict 视同没传。
+    thinking_config: Any = None
 
 
 class GeminiRequest(BaseModel):

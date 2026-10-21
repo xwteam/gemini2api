@@ -11,7 +11,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import ensure_model_allowed, record_token_usage
-from app.core.gemini_client import GEMINI_MODELS, _resolve_model, parse_thinking_level
+from app.core.gemini_client import (GEMINI_MODELS, _resolve_model, parse_effort_request,
+                                    resolve_thinking)
 from app.core.responses_protocol import (
     parse_responses_input, build_responses_object, new_response_id, ResponsesStreamEncoder,
 )
@@ -92,12 +93,12 @@ async def create_response(request: Request):
         _eff = str(_reasoning.get("effort") or "").strip()
     if not _eff:
         _eff = str(body.get("reasoning_effort") or "").strip()
-    # 既是开关也是档位（False = 关闭；1/2/4 = 开启 + 档位）：low/medium/high 各走各的档，
-    # none/minimal 夹到 low、xhigh 夹到 high（见 gemini_client.parse_thinking_level）。
-    # Codex 默认带 reasoning_effort，过去被布尔化成"一律最高档"。
-    extended_thinking = (
-        parse_thinking_level(_eff) if (_eff and settings.extended_thinking_enabled) else False
-    )
+    # 与 /v1/chat/completions 同一套决策（见 gemini_client.resolve_thinking）：
+    # low/medium/high 各走各的档，none/minimal 夹到 low、xhigh 夹到 high；
+    # **不传 → "默认思考档位"设置**（出厂 low），但思考只给上游用、不出 reasoning 输出项。
+    _plan = resolve_thinking(parse_effort_request(_eff))
+    extended_thinking = _plan.upstream
+    show_thinking = _plan.show
 
     if previous_response_id:
         return _error(400, "previous_response_id is not supported by this server "
@@ -146,7 +147,8 @@ async def create_response(request: Request):
     if stream:
         return StreamingResponse(
             _stream_gemini_response(request, prompt, resolved_model, has_tools, attachments,
-                                    gem_id, gem_account_id, request_params, extended_thinking),
+                                    gem_id, gem_account_id, request_params, extended_thinking,
+                                    show_thinking),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -159,6 +161,7 @@ async def create_response(request: Request):
         # 扩展思维链路径失败：先原样退回非思维链重试一次（同 chat/completions 的兜底策略）
         if extended_thinking:
             logger.warning(f"extended-thinking request failed, retrying normal: {e}")
+            show_thinking = False   # 这一轮确实没思考
             try:
                 result = await gemini_client.generate(prompt, resolved_model, "", attachments,
                                                       gem_id=gem_id, account_id=gem_account_id,
@@ -182,7 +185,7 @@ async def create_response(request: Request):
 
     output, _ = await _build_output_items(text, has_tools, _regenerate_for_tools)
     thoughts = result.get("thoughts") or ""
-    if thoughts:
+    if show_thinking and thoughts:
         output = [{"type": "reasoning", "id": new_response_id().replace("resp_", "rs_"),
                   "summary": [{"type": "summary_text", "text": thoughts}]}] + output
     usage = {"input_tokens": estimate_tokens(prompt), "output_tokens": estimate_tokens(text)}
@@ -205,7 +208,8 @@ def _record_usage(model: str, prompt: str, text: str, thoughts: str = "") -> Non
 
 
 async def _stream_gemini_response(request, prompt, model, has_tools, attachments, gem_id,
-                                  gem_account_id, request_params, extended_thinking=False):
+                                  gem_account_id, request_params, extended_thinking=False,
+                                  show_thinking=False):
     response_id = new_response_id()
     enc = ResponsesStreamEncoder(response_id, model, request_params)
     yield enc.created()
@@ -283,7 +287,7 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
         usage = {"input_tokens": estimate_tokens(prompt), "output_tokens": estimate_tokens(text)}
         _record_usage(model, prompt, text, thoughts)
         completed_output = output
-        if thoughts:
+        if show_thinking and thoughts:
             completed_output = [{"type": "reasoning", "id": new_response_id().replace("resp_", "rs_"),
                                  "summary": [{"type": "summary_text", "text": thoughts}]}] + output
         yield enc.completed(completed_output, usage)
@@ -347,7 +351,7 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
         yield frame
     output = [{"id": msg_id, "type": "message", "role": "assistant", "status": "completed",
               "content": [{"type": "output_text", "text": full_text, "annotations": []}]}]
-    if thoughts:
+    if show_thinking and thoughts:
         output = [{"type": "reasoning", "id": new_response_id().replace("resp_", "rs_"),
                   "summary": [{"type": "summary_text", "text": thoughts}]}] + output
     usage = {"input_tokens": estimate_tokens(prompt), "output_tokens": estimate_tokens(full_text)}

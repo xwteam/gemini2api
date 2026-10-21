@@ -28,9 +28,10 @@ class ClaudeRequest(BaseModel):
     # FastAPI 原生 422 `{"detail":[...]}` —— 既改了既有状态码（这个字段在加进来之前是被
     # extra="ignore" 静默吞掉、请求照常 200），错误信封也不是 Anthropic 的
     # `{"type":"error","error":{...}}` 形状，SDK 拿到它会报解析错误而不是一条可读的报错。
-    # parse_anthropic_thinking 本身对非 dict 是宽容的（返回 False = 和不传一样），
+    # parse_anthropic_thinking 本身对非 dict 是宽容的（返回 None = 和不传一样），
     # 这里放开类型正是为了让那份宽容真的生效。
-    # 不传（None）时整条路径与改动前逐字节一致 —— 这是本功能唯一的开关。
+    # 不传（None）时上游按"默认思考档位"走，但响应里绝不出 thinking 块，响应形状与
+    # 改动前逐字节一致。
     thinking: Any | None = None
 
     @field_validator("system", mode="before")

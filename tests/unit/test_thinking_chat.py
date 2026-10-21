@@ -1,6 +1,6 @@
 # reasoning_effort 不再被布尔化：high → THINKING_LEVEL_HIGH 这个具体档位，
 # 下游用它决定 payload 的第 80 格与 model header 的第 15 位（见 gemini_client.parse_thinking_level）。
-from app.core.gemini_client import THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH
+from app.core.gemini_client import THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW
 
 _AUTH = {"Authorization": "Bearer sk-test-key"}
 
@@ -21,34 +21,38 @@ def test_reasoning_effort_enables_thinking_and_returns_reasoning_content(gem_cli
     assert r.json()["choices"][0]["message"]["reasoning_content"] == "my thoughts"
 
 
-def test_no_reasoning_effort_no_thinking(gem_client, monkeypatch):
+def test_no_reasoning_effort_uses_default_level_but_returns_no_reasoning(gem_client, monkeypatch):
+    """不传 reasoning_effort：上游按"默认思考档位"（出厂 low）思考，但客户端没要求，
+    **绝不回传 reasoning_content**。上游给了非空思考，才验得到这道拦截。"""
     import app.routers.openai as oai
     captured = {}
     async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["ext"] = extended_thinking
-        return {"text": "answer", "images": [], "conversation_id": "c", "thoughts": ""}
+        return {"text": "answer", "images": [], "conversation_id": "c", "thoughts": "hidden thoughts"}
     monkeypatch.setattr(oai.gemini_client, "generate", fake_generate)
     r = gem_client.post("/v1/chat/completions", json={
         "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}],
     }, headers=_AUTH)
-    assert captured["ext"] is False
+    assert captured["ext"] == THINKING_LEVEL_LOW
     assert r.json()["choices"][0]["message"].get("reasoning_content") is None
+    assert "hidden thoughts" not in r.text
 
 
-def test_blank_reasoning_effort_no_thinking(gem_client, monkeypatch):
-    """纯空白 reasoning_effort（如 "   "）strip 后为空，视同未设置。"""
+def test_blank_reasoning_effort_counts_as_not_passed(gem_client, monkeypatch):
+    """纯空白 reasoning_effort（如 "   "）strip 后为空，视同未设置：默认档、不回传。"""
     import app.routers.openai as oai
     captured = {}
     async def fake_generate(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None, extended_thinking=False):
         captured["ext"] = extended_thinking
-        return {"text": "answer", "images": [], "conversation_id": "c", "thoughts": ""}
+        return {"text": "answer", "images": [], "conversation_id": "c", "thoughts": "hidden thoughts"}
     monkeypatch.setattr(oai.gemini_client, "generate", fake_generate)
     r = gem_client.post("/v1/chat/completions", json={
         "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}],
         "reasoning_effort": "   ",
     }, headers=_AUTH)
     assert r.status_code == 200
-    assert captured["ext"] is False
+    assert captured["ext"] == THINKING_LEVEL_LOW
+    assert r.json()["choices"][0]["message"].get("reasoning_content") is None
 
 
 def test_extended_thinking_disabled_by_settings_toggle(gem_client, monkeypatch):
@@ -138,9 +142,10 @@ def test_streaming_emits_reasoning_content_before_done(gem_client, monkeypatch):
 
 
 def test_streaming_no_reasoning_effort_no_reasoning_content(gem_client, monkeypatch):
-    """未设置 reasoning_effort：真流式路径每帧的 reasoning_content 都应是 null（未启用思维链，
-    不应有任何帧携带非空 reasoning_content 文本；StreamDelta 未设置字段本就序列化为 null，
-    与既有 content/tool_calls 字段的既有约定一致）。"""
+    """未设置 reasoning_effort：上游按默认档（出厂 low）思考，但真流式路径每帧的
+    reasoning_content 都应是 null —— 客户端没要求思考，增量与收尾帧里的思考都不许发出
+    （StreamDelta 未设置字段本就序列化为 null，与既有 content/tool_calls 字段的约定一致）。
+    上游的思考增量与 final 帧都带非空思考，才验得到这两处拦截。"""
     import json as _json
     import app.routers.openai as oai
     captured = {}
@@ -148,8 +153,10 @@ def test_streaming_no_reasoning_effort_no_reasoning_content(gem_client, monkeypa
     async def fake_generate_stream(prompt, model, conversation_id="", attachments=None,
                                    gem_id=None, account_id=None, extended_thinking=False):
         captured["ext"] = extended_thinking
+        yield {"type": "thoughts", "text": "hidden "}
         yield {"type": "delta", "text": "Hi"}
-        yield {"type": "final", "text": "Hi", "conversation_id": "", "images": [], "thoughts": ""}
+        yield {"type": "final", "text": "Hi", "conversation_id": "", "images": [],
+               "thoughts": "hidden thoughts"}
 
     monkeypatch.setattr(oai.gemini_client, "generate_stream", fake_generate_stream)
     with gem_client.stream("POST", "/v1/chat/completions", json={
@@ -157,7 +164,8 @@ def test_streaming_no_reasoning_effort_no_reasoning_content(gem_client, monkeypa
         "stream": True,
     }, headers=_AUTH) as r:
         body = "".join(r.iter_text())
-    assert captured["ext"] is False
+    assert captured["ext"] == THINKING_LEVEL_LOW
+    assert "hidden" not in body
     for line in body.splitlines():
         if not line.startswith("data: ") or line.strip() == "data: [DONE]":
             continue

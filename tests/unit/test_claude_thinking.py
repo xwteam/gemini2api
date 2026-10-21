@@ -79,13 +79,16 @@ def _post(client, **extra):
 # 1. 入参 → 档位
 # ---------------------------------------------------------------------------
 
+# 返回值三态（v1.6.43 起）：None = 没传（上游按"默认思考档位"、不出 thinking 块）、
+# False = 明确不要、1/2/4 = 明确要了。过去"没传"与"明确不要"都是 False —— 那时"没传"
+# 就等于不思考；现在用户要求"没传"走默认档 low，两者必须分开。
 @pytest.mark.parametrize("payload,expected", [
-    (None, False),
-    ({}, False),
-    ("enabled", False),
+    (None, None),
+    ({}, None),
+    ("enabled", None),
     ({"type": "disabled"}, False),
     ({"type": "between_tools"}, False),
-    ({"type": "something-new"}, False),
+    ({"type": "something-new"}, None),
     ({"type": "adaptive"}, THINKING_LEVEL_DEFAULT),
     ({"type": "adaptive", "display": "summarized"}, THINKING_LEVEL_DEFAULT),
     ({"type": "enabled"}, THINKING_LEVEL_DEFAULT),
@@ -121,20 +124,22 @@ def test_the_official_off_forms_are_not_logged_as_unrecognized(caplog, payload):
 
 
 def test_an_unknown_type_is_logged(caplog):
-    """认不出的 type 要留一行，否则"新版客户端发了我们不认识的写法"永远查不出来。"""
+    """认不出的 type 要留一行，否则"新版客户端发了我们不认识的写法"永远查不出来。
+    它按"没传"处理（None）：上游走默认档，但不凭猜测去开 thinking 块。"""
     import logging
 
     from app.core import gemini_client as gc
     caplog.set_level(logging.INFO, logger=gc.logger.name)
 
-    assert parse_anthropic_thinking({"type": "something-new"}) is False
+    assert parse_anthropic_thinking({"type": "something-new"}) is None
     assert any("Unrecognized" in r.getMessage() for r in caplog.records)
 
 
-def test_the_level_constants_are_still_the_unverified_ones():
-    """low→1 / medium→4 / high→2 来自参考实现的测试断言，我方两次真机复验都没能确认
-    （最近一次：low 380 字 / medium 358 字 / high 147 字，无单调规律）。M5 复用这三个
-    常量、不另起一套映射，也不把它们当成已证实的 —— 这条断言就是那个"待验证"的锚。"""
+def test_the_level_constants_match_the_measured_mapping():
+    """low→1 / medium→4 / high→2 来自参考实现的测试断言（gemini_thinking_test.go:20）。
+    真机实测（gemini-pro，每档 2 次）：high(2) 思考 1256/562 字、42～65 秒，已证实是最深
+    的一档；low(1) 411/707 字与 medium(4) 524/450 字两次采样区分不开，沿用参考实现。
+    THINKING_LEVEL_DEFAULT 是"明确要了思考但没给可认档位"时的档，保持改动前的 2。"""
     assert (THINKING_LEVEL_LOW, THINKING_LEVEL_MEDIUM, THINKING_LEVEL_HIGH) == (1, 4, 2)
     assert THINKING_LEVEL_DEFAULT == 2
 
@@ -147,7 +152,8 @@ def test_the_requested_level_reaches_generate(gem_client, monkeypatch):
     _post(gem_client, thinking={"type": "enabled", "budget_tokens": 4096})
     _post(gem_client)
 
-    assert captured == [THINKING_LEVEL_LOW, THINKING_LEVEL_HIGH, False]
+    # 第三次没传 thinking → "默认思考档位"设置（出厂 low），用户要求的新默认
+    assert captured == [THINKING_LEVEL_LOW, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW]
 
 
 def test_the_global_switch_still_wins(gem_client, monkeypatch):
@@ -394,14 +400,15 @@ def test_a_non_dict_thinking_behaves_like_not_passing_it(gem_client, monkeypatch
     限成 `dict | None` 会把它变成 FastAPI 原生 422：既改了既有状态码，响应体
     `{"detail":[...]}` 也不是 Anthropic 的 `{"type":"error","error":{...}}` 形状，
     SDK 拿到它会报解析错误而不是一条可读的报错。parse_anthropic_thinking 本身对非 dict
-    是宽容的（返回 False），放开类型正是为了让那份宽容真的生效。"""
+    是宽容的（返回 None = 没传），放开类型正是为了让那份宽容真的生效。"""
     captured = []
     _patch_generate(monkeypatch, captured=captured)
 
     resp = _post(gem_client, thinking=payload)
 
     assert resp.status_code == 200, resp.text
-    assert captured == [False], "非 dict 必须等价于「没传」，不许开思考"
+    # 等价于「没传」：上游按默认档（出厂 low）思考，但绝不出 thinking 块
+    assert captured == [THINKING_LEVEL_LOW], "非 dict 必须等价于「没传」"
     assert not any(b.get("type") == "thinking" for b in resp.json()["content"])
 
 
@@ -473,8 +480,11 @@ def test_both_attempts_failing_still_returns_an_anthropic_error(gem_client, monk
     assert body["error"]["type"] and "not ready" in body["error"]["message"]
 
 
-def test_without_thinking_a_failure_is_not_retried(gem_client, monkeypatch):
-    """零回归：不传 thinking 时**只调一次**，不许凭空多打一次上游。"""
+def test_with_default_off_a_failure_is_not_retried(gem_client, monkeypatch):
+    """零回归：默认档 off 且不传 thinking 时走不思考路径，**只调一次**，不许凭空多打一次上游。
+    （v1.6.42 里"不传"就是这条路径；现在"不传"走默认档，off 才回到它。）"""
+    from app.config import settings
+    monkeypatch.setattr(settings, "default_thinking_level", "off")
     calls = _patch_generate_failing_on_thinking(
         monkeypatch, RuntimeError("Client not ready"), fail_all=True)
 
@@ -482,6 +492,18 @@ def test_without_thinking_a_failure_is_not_retried(gem_client, monkeypatch):
 
     assert calls == [False]
     assert resp.status_code != 200
+
+
+def test_a_failed_default_level_request_retries_without_thinking(gem_client, monkeypatch):
+    """默认档（出厂 low）也走思考路径，失败时同样退回不思考重试一次 —— 否则默认开 low
+    会比改动前多出一类硬失败。退回后的那一轮没有思考，当然也不出 thinking 块。"""
+    calls = _patch_generate_failing_on_thinking(monkeypatch, RuntimeError("thinking boom"))
+
+    resp = _post(gem_client)
+
+    assert resp.status_code == 200, resp.text
+    assert calls == [THINKING_LEVEL_LOW, False]
+    assert [b["type"] for b in resp.json()["content"]] == ["text"]
 
 
 # ---------------------------------------------------------------------------

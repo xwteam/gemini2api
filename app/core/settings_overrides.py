@@ -52,6 +52,7 @@ EDITABLE_FIELDS = {
     "chat_cleanup_interval_hours",
     "chat_cleanup_skip_pinned",
     "extended_thinking_enabled",
+    "default_thinking_level",
     "log_bodies_enabled",
 }
 
@@ -76,6 +77,7 @@ FIELD_TYPES = {
     "chat_cleanup_interval_hours": float,
     "chat_cleanup_skip_pinned": bool,
     "extended_thinking_enabled": bool,
+    "default_thinking_level": str,
     "log_bodies_enabled": bool,
 }
 
@@ -103,6 +105,11 @@ POSITIVE_FIELDS = {
 # （那会循环导入 app.config）；tests/unit/test_settings_overrides.py 有守卫测试断言
 # 本集合与 RotationStrategy 枚举一致，枚举一变就会红。
 ROTATION_STRATEGIES = {"round-robin", "failover"}
+
+# 默认思考档位的合法取值（同样硬编码避免循环导入；守卫测试断言它与
+# gemini_client.default_thinking_level 认的取值一致）。面板/覆盖文件只收小写原值，
+# 大小写宽容只在 config 读环境变量那一层做。
+THINKING_DEFAULT_LEVELS = {"off", "low", "medium", "high"}
 
 _PathLike = Optional[Union[str, Path]]
 
@@ -150,6 +157,9 @@ def check_domain(key: str, value: Any) -> Optional[str]:
         return f"Setting '{key}' must be >= 1"
     if key == "rotation_strategy" and value not in ROTATION_STRATEGIES:
         return f"Setting 'rotation_strategy' must be one of {sorted(ROTATION_STRATEGIES)}"
+    if key == "default_thinking_level" and value not in THINKING_DEFAULT_LEVELS:
+        return (f"Setting 'default_thinking_level' must be one of "
+                f"{sorted(THINKING_DEFAULT_LEVELS)}")
     return None
 
 

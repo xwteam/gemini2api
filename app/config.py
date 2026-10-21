@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
 
-from app.core.settings_overrides import apply_overrides
+from app.core.settings_overrides import THINKING_DEFAULT_LEVELS, apply_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +70,15 @@ class Settings(BaseSettings):
     chat_cleanup_keep_hours: float = 24.0
     chat_cleanup_interval_hours: float = 6.0
     chat_cleanup_skip_pinned: bool = True
-    # 原生 Gemini 扩展思考（reasoning_effort 触发）。默认开、可一键关；关闭后 reasoning_effort 对原生 Gemini 无效、走普通格式。
+    # 思考总闸（高级/兼容项，一般不用碰）。true = 允许思考；false = 一律不思考、连客户端
+    # 明确要求的思考也忽略（四个协议都走"不思考"的旧路径，最快）。面板上平时不显示它，
+    # 只有它被关掉时才露出来，免得和下面的"默认思考档位"看上去是两个意思重叠的开关。
     extended_thinking_enabled: bool = True
+    # 默认思考档位：客户端**没指定**思考参数时用哪一档（off / low / medium / high）。
+    # 出厂 low。实测 low 比不思考平均每请求多约 5 秒；最看重速度就设 off（= 不思考旧路径）。
+    # 客户端明确传了档位（reasoning_effort / thinking / thinkingConfig）时按客户端的走。
+    # 按默认档替客户端开的思考只用于上游生成，**绝不**把思考内容回传给客户端。
+    default_thinking_level: str = "low"
     # 管理面板/admin 路由的独立访问密钥。默认空 → 回退到 api_key（保持单 key 全功能的原行为，零回归）。
     # 设置非空后，/admin/* 改用该 key 校验，业务 API 仍用 api_key，实现权限分离。
     admin_api_key: str = ""
@@ -137,6 +144,19 @@ class Settings(BaseSettings):
         if not v:
             return _generate_api_key()
         return v
+
+    @field_validator("default_thinking_level", mode="before")
+    @classmethod
+    def thinking_level_choice(cls, v) -> str:
+        # .env 手写错（大小写、空格、拼错）绝不能让服务起不来：先归一，认不出就回出厂 low。
+        raw = str(v if v is not None else "").strip().lower()
+        if raw in THINKING_DEFAULT_LEVELS:
+            return raw
+        logger.warning(
+            f"DEFAULT_THINKING_LEVEL={v!r} is not one of {sorted(THINKING_DEFAULT_LEVELS)}; "
+            "falling back to 'low'"
+        )
+        return "low"
 
     @field_validator("port")
     @classmethod

@@ -18,7 +18,8 @@ from app.core.api_forwarder import forward_to_provider, open_stream
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
 from app.core.gemini_client import (GEMINI_MODELS, MODEL_ALIASES, _resolve_model, HTTPStatusError,
-                                    classify_error, parse_thinking_level)
+                                    classify_error, generate_with_thinking_fallback,
+                                    parse_effort_request, resolve_thinking)
 from app.core.stream import split_into_chunks, format_sse, iter_with_keepalive, SSE_KEEPALIVE_INTERVAL, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.openai import (
     ChatRequest, ChatResponse, Choice, ChoiceMessage,
@@ -327,20 +328,20 @@ async def chat_completions(req: ChatRequest, request: Request):
     # 提取图片/文件附件（多模态），纯文本时为空列表
     attachments = extract_attachments(messages_raw)
 
-    # reasoning_effort（非空）+ 全局开关 → 走扩展思维链路径，并按 effort 定思考档位：
-    # low/medium/high 各走各的档，none/minimal 夹到 low、xhigh 夹到 high，认不出的值回默认档
-    # （见 gemini_client.parse_thinking_level）。过去这里把 effort 布尔化（bool(_eff)），
-    # 下游一律写死最高档：Codex / Cursor 这类默认带 "low" / "minimal" 的客户端全部跑成最慢的
-    # 档位 —— 用户要"快"，我们给最慢。
-    # 这个变量既是开关也是档位（False = 关闭；1/2/4 = 开启 + 档位），下游的真假判断不变。
-    _eff = (req.reasoning_effort or "").strip()
-    extended_thinking = (
-        parse_thinking_level(_eff) if (_eff and settings.extended_thinking_enabled) else False
-    )
+    # reasoning_effort → 思考档位：low/medium/high 各走各的档，none/minimal 夹到 low、
+    # xhigh 夹到 high，认不出的非空值 → THINKING_LEVEL_DEFAULT（与旧版一致）；
+    # **不传 → "默认思考档位"设置**（出厂 low）。
+    # 见 gemini_client.resolve_thinking。决策拆成两个量：
+    #   extended_thinking —— 发给上游的档位（False = 不思考旧路径；1/2/4 = 档位）
+    #   show_thinking     —— 回不回传 reasoning_content。只有客户端明确传了才回传：
+    #                        按默认档替它开的思考只用于上游生成，响应结构与不思考时一致。
+    _plan = resolve_thinking(parse_effort_request(req.reasoning_effort))
+    extended_thinking = _plan.upstream
+    show_thinking = _plan.show
 
     if req.stream:
         return StreamingResponse(
-            _stream_response(prompt, resolved_model, has_tools, gemini_conv_id, conv, messages_raw, req.model, attachments, _image_base(request), request, req, gem_id, gem_account_id, extended_thinking=extended_thinking),
+            _stream_response(prompt, resolved_model, has_tools, gemini_conv_id, conv, messages_raw, req.model, attachments, _image_base(request), request, req, gem_id, gem_account_id, extended_thinking=extended_thinking, show_thinking=show_thinking),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -355,6 +356,7 @@ async def chat_completions(req: ChatRequest, request: Request):
         # 扩展思维链路径失败：先原样退回非思维链重试一次，再走既有兜底（会话过期/第三方）
         if extended_thinking:
             logger.warning(f"extended-thinking request failed, retrying normal: {e}")
+            show_thinking = False   # 这一轮确实没思考
             try:
                 result = await gemini_client.generate(prompt, resolved_model, gemini_conv_id, attachments,
                                                       gem_id=gem_id, account_id=gem_account_id,
@@ -462,7 +464,8 @@ async def chat_completions(req: ChatRequest, request: Request):
         model=req.model,
         choices=[Choice(
             message=ChoiceMessage(role="assistant", content=text,
-                                  reasoning_content=(result.get("thoughts") or None)),
+                                  reasoning_content=((result.get("thoughts") or None)
+                                                     if show_thinking else None)),
             finish_reason="stop",
         )],
         usage=_usage_and_record(resolved_model, prompt, text, result),
@@ -496,7 +499,7 @@ def _usage_and_record(model: str, prompt: str, text: str, result: dict | None = 
     )
 
 
-async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, display_model: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking: bool = False) -> AsyncGenerator[str, None]:
+async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, display_model: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False, show_thinking: bool = False) -> AsyncGenerator[str, None]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     model_name = display_model or model
 
@@ -515,7 +518,8 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
     if has_tools:
         async for sse in _stream_response_buffered(
             prompt, model, has_tools, gemini_conv_id, conv, messages_raw,
-            model_name, completion_id, attachments, base_url, request, req, gem_id, account_id
+            model_name, completion_id, attachments, base_url, request, req, gem_id, account_id,
+            extended_thinking=extended_thinking,
         ):
             yield sse
         return
@@ -532,6 +536,8 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
     final_images = []
     streamed_any = False
     emitted_thoughts = ""  # 已发出的思维链前缀，用于跟已知累积 thoughts 做前缀 diff 只发增量
+    # 不回传时（客户端没要求思考、是按默认档开的）思考只进内部记账，一个字都不进 SSE。
+    hidden_thoughts = ""
     try:
         async for _kind, evt in iter_with_keepalive(
             gemini_client.generate_stream(prompt, model, gemini_conv_id, attachments,
@@ -553,6 +559,9 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                     yield format_sse(chunk.model_dump())
             elif evt.get("type") == "thoughts":
                 t_delta = evt.get("text", "")
+                if not show_thinking:
+                    hidden_thoughts += t_delta
+                    continue
                 if t_delta:
                     emitted_thoughts += t_delta
                     chunk = StreamChunk(
@@ -565,7 +574,9 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                 # 这里仍按「已发出前缀 diff」的方式只发新增部分，为未来逐帧增量留好口子；
                 # 在文本尾部补发之前先发，保证客户端先看到 reasoning 再看到最终回答。
                 final_thoughts = evt.get("thoughts", "") or ""
-                if final_thoughts != emitted_thoughts and final_thoughts.startswith(emitted_thoughts):
+                if not show_thinking:
+                    hidden_thoughts = final_thoughts or hidden_thoughts
+                elif final_thoughts != emitted_thoughts and final_thoughts.startswith(emitted_thoughts):
                     thoughts_delta = final_thoughts[len(emitted_thoughts):]
                     emitted_thoughts = final_thoughts
                     if thoughts_delta:
@@ -655,7 +666,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
     # 按-key 用量落账。OpenAI 流式过去从头到尾不出现 usage/estimate_tokens（四个协议里
     # 唯一的真空区）。这里**只在内部记账**，绝不往 SSE 里加 usage 帧 —— 那是线上协议的
     # 实际变更（客户端会突然开始收到 usage chunk）。
-    _record_usage(model, prompt, full_text, emitted_thoughts)
+    _record_usage(model, prompt, full_text, emitted_thoughts if show_thinking else hidden_thoughts)
 
     done_chunk = StreamChunk(
         id=completion_id, model=model_name,
@@ -679,7 +690,7 @@ def _err_chunk(exc: Exception) -> str:
     return format_sse(chunk) + "data: [DONE]\n\n"
 
 
-async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, model_name: str = "", completion_id: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None) -> AsyncGenerator[str, None]:
+async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, model_name: str = "", completion_id: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False) -> AsyncGenerator[str, None]:
     """非流式收集 + 切片伪流式：用于有工具调用/附件、需要完整文本的场景。"""
     # 立即发出首帧 SSE，避免生图/工具路径在 generate() 阻塞期间零字节导致前置代理超时。
     first = StreamChunk(
@@ -689,8 +700,11 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
     yield format_sse(first.model_dump())
 
     async def _run_generate():
-        return await gemini_client.generate(prompt, model, gemini_conv_id, attachments,
-                                            gem_id=gem_id, account_id=account_id)
+        # 思考档位照样生效（这条路径从不回传 reasoning_content，思考只进内部记账）；
+        # 思考路径失败时在同一个 task 里退回不思考重试，keepalive 照常覆盖。
+        return await generate_with_thinking_fallback(
+            gemini_client, prompt, model, gemini_conv_id, attachments,
+            gem_id=gem_id, account_id=account_id, extended_thinking=extended_thinking)
 
     gen_task = asyncio.create_task(_run_generate())
     try:
