@@ -433,6 +433,20 @@ curl http://localhost:5918/claude/v1/models/gemini-2.5-pro \
 }
 ```
 
+#### 擴展思考（`thinking`）
+
+| 參數 | 類型 | 必填 | 說明 |
+|------|------|------|------|
+| `thinking` | object | ❌ | 開啟擴展思考。**不傳該參數時行為與舊版逐字節一致** |
+
+- `{"type":"enabled","budget_tokens":N}`：開啟。`N` 按 `<2048` / `2048–4095` / `≥4096` 分成低／中／高三檔。
+- `{"type":"adaptive"}`：開啟，用預設檔。
+- `{"type":"disabled"}` / `{"type":"between_tools"}`：不思考，與完全不傳該參數**逐字節相同**。
+
+思考內容以 Anthropic 規範的 `thinking` 內容區塊回傳，排在 `text` / `tool_use` 區塊**之前**；流式下是 `content_block_start(thinking)` → `thinking_delta` → `content_block_stop`。
+
+⚠️ **不帶 `signature`**（本服務造不出合法簽名，發空串／自造串更糟：客戶端回傳給真 API 會 400）。**檔位與網頁端思考深度的對應關係尚未真機證實**。全域開關 `EXTENDED_THINKING_ENABLED=false` 時即使傳了也不走思考路徑。
+
 ### POST /messages/count_tokens
 
 估算訊息的 token 數。

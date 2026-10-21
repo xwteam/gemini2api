@@ -1,0 +1,384 @@
+"""M5：Anthropic 协议的思考链。
+
+改动前 `grep -rn thinking app/routers/claude.py` 零命中：ClaudeRequest 没有 thinking
+字段（pydantic 默认 extra="ignore"），Claude Code 发的
+`thinking: {type:"enabled", budget_tokens:N}` 在校验阶段就被静默吃掉；真流式里
+`{"type":"thoughts"}` 事件也被 if/elif 整个漏掉。于是 Anthropic 协议用户永远锁死在
+"不思考"，而 OpenAI 协议用户可以用 reasoning_effort 选档 —— 同一个后端两种协议表现不一致。
+
+零回归红线：**不传 thinking 时响应/帧序列逐字节不变**。这一条尤其要紧，因为底层
+candidate[37] 的 thoughts 解析跟 extended_thinking 无关、是无条件跑的，所以"有
+thoughts 就吐 thinking 块"会改掉所有既有请求的响应形状。
+"""
+
+import json
+
+import pytest
+
+from app.core.gemini_client import (
+    THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW,
+    THINKING_LEVEL_MEDIUM, parse_anthropic_thinking,
+)
+
+_AUTH = {"Authorization": "Bearer sk-test-key"}
+
+
+def _parse_sse(body: str):
+    out = []
+    for chunk in body.split("\n\n"):
+        ev, data = None, None
+        for line in chunk.split("\n"):
+            if line.startswith(":") or not line.strip():
+                continue
+            if line.startswith("event:"):
+                ev = line[6:].strip()
+            elif line.startswith("data:"):
+                data = json.loads(line[5:].strip())
+        if ev or data:
+            out.append((ev, data))
+    return out
+
+
+def _result(text="答案", thoughts="我先想想"):
+    return {"text": text, "conversation_id": "", "images": [], "thoughts": thoughts}
+
+
+def _patch_generate(monkeypatch, result=None, captured=None):
+    import app.routers.claude as cl
+
+    async def _gen(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                   account_id=None, extended_thinking=False):
+        if captured is not None:
+            captured.append(extended_thinking)
+        return result if result is not None else _result()
+
+    monkeypatch.setattr(cl.gemini_client, "generate", _gen)
+
+
+def _patch_stream(monkeypatch, events, captured=None):
+    import app.routers.claude as cl
+
+    async def _gen(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                   account_id=None, extended_thinking=False):
+        if captured is not None:
+            captured.append(extended_thinking)
+        for evt in events:
+            yield evt
+
+    monkeypatch.setattr(cl.gemini_client, "generate_stream", _gen)
+
+
+def _post(client, **extra):
+    body = {"model": "gemini-flash", "max_tokens": 128,
+            "messages": [{"role": "user", "content": "hi"}]}
+    body.update(extra)
+    return client.post("/v1/messages", json=body, headers=_AUTH)
+
+
+# ---------------------------------------------------------------------------
+# 1. 入参 → 档位
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("payload,expected", [
+    (None, False),
+    ({}, False),
+    ("enabled", False),
+    ({"type": "disabled"}, False),
+    ({"type": "between_tools"}, False),
+    ({"type": "something-new"}, False),
+    ({"type": "adaptive"}, THINKING_LEVEL_DEFAULT),
+    ({"type": "adaptive", "display": "summarized"}, THINKING_LEVEL_DEFAULT),
+    ({"type": "enabled"}, THINKING_LEVEL_DEFAULT),
+    ({"type": "enabled", "budget_tokens": None}, THINKING_LEVEL_DEFAULT),
+    ({"type": "enabled", "budget_tokens": "4096"}, THINKING_LEVEL_DEFAULT),
+    ({"type": "enabled", "budget_tokens": 0}, THINKING_LEVEL_DEFAULT),
+    ({"type": "enabled", "budget_tokens": -1}, THINKING_LEVEL_DEFAULT),
+    ({"type": "enabled", "budget_tokens": True}, THINKING_LEVEL_DEFAULT),
+    ({"type": "enabled", "budget_tokens": 1}, THINKING_LEVEL_LOW),
+    ({"type": "enabled", "budget_tokens": 1024}, THINKING_LEVEL_LOW),
+    ({"type": "enabled", "budget_tokens": 2047}, THINKING_LEVEL_LOW),
+    ({"type": "enabled", "budget_tokens": 2048}, THINKING_LEVEL_MEDIUM),
+    ({"type": "enabled", "budget_tokens": 4095}, THINKING_LEVEL_MEDIUM),
+    ({"type": "enabled", "budget_tokens": 4096}, THINKING_LEVEL_HIGH),
+    ({"type": "enabled", "budget_tokens": 31999}, THINKING_LEVEL_HIGH),
+    ({"type": "ENABLED", "budget_tokens": 4096}, THINKING_LEVEL_HIGH),
+])
+def test_parse_anthropic_thinking(payload, expected):
+    assert parse_anthropic_thinking(payload) == expected
+
+
+@pytest.mark.parametrize("payload", [{"type": "disabled"}, {"type": "between_tools"}])
+def test_the_official_off_forms_are_not_logged_as_unrecognized(caplog, payload):
+    """disabled / between_tools 是官方明确的"关思考"写法，不是"我们认不出的 type"。
+    打成 unrecognized 会在排查时把人往"客户端发错了"的方向带。"""
+    import logging
+
+    from app.core import gemini_client as gc
+    caplog.set_level(logging.INFO, logger=gc.logger.name)
+
+    assert parse_anthropic_thinking(payload) is False
+    assert not [r for r in caplog.records if "Unrecognized" in r.getMessage()]
+
+
+def test_an_unknown_type_is_logged(caplog):
+    """认不出的 type 要留一行，否则"新版客户端发了我们不认识的写法"永远查不出来。"""
+    import logging
+
+    from app.core import gemini_client as gc
+    caplog.set_level(logging.INFO, logger=gc.logger.name)
+
+    assert parse_anthropic_thinking({"type": "something-new"}) is False
+    assert any("Unrecognized" in r.getMessage() for r in caplog.records)
+
+
+def test_the_level_constants_are_still_the_unverified_ones():
+    """low→1 / medium→4 / high→2 来自参考实现的测试断言，我方两次真机复验都没能确认
+    （最近一次：low 380 字 / medium 358 字 / high 147 字，无单调规律）。M5 复用这三个
+    常量、不另起一套映射，也不把它们当成已证实的 —— 这条断言就是那个"待验证"的锚。"""
+    assert (THINKING_LEVEL_LOW, THINKING_LEVEL_MEDIUM, THINKING_LEVEL_HIGH) == (1, 4, 2)
+    assert THINKING_LEVEL_DEFAULT == 2
+
+
+def test_the_requested_level_reaches_generate(gem_client, monkeypatch):
+    captured: list = []
+    _patch_generate(monkeypatch, captured=captured)
+
+    _post(gem_client, thinking={"type": "enabled", "budget_tokens": 1024})
+    _post(gem_client, thinking={"type": "enabled", "budget_tokens": 4096})
+    _post(gem_client)
+
+    assert captured == [THINKING_LEVEL_LOW, THINKING_LEVEL_HIGH, False]
+
+
+def test_the_global_switch_still_wins(gem_client, monkeypatch):
+    from app.config import settings
+    captured: list = []
+    _patch_generate(monkeypatch, captured=captured)
+    monkeypatch.setattr(settings, "extended_thinking_enabled", False)
+
+    _post(gem_client, thinking={"type": "enabled", "budget_tokens": 4096})
+
+    assert captured == [False]
+
+
+# ---------------------------------------------------------------------------
+# 2. 非流式：thinking 块
+# ---------------------------------------------------------------------------
+
+def test_nonstream_returns_a_thinking_block_before_the_text_block(gem_client, monkeypatch):
+    _patch_generate(monkeypatch)
+
+    body = _post(gem_client, thinking={"type": "enabled", "budget_tokens": 4096}).json()
+
+    assert body["content"] == [
+        {"type": "thinking", "thinking": "我先想想"},
+        {"type": "text", "text": "答案", "citations": None},
+    ]
+    assert "signature" not in body["content"][0], "造不出合法签名就不发，发空串更坏"
+
+
+def test_nonstream_counts_thinking_tokens_into_output(gem_client, monkeypatch):
+    from app.utils.tools import estimate_tokens
+    _patch_generate(monkeypatch)
+
+    body = _post(gem_client, thinking={"type": "enabled", "budget_tokens": 4096}).json()
+
+    assert body["usage"]["output_tokens"] == estimate_tokens("答案") + estimate_tokens("我先想想")
+
+
+def test_nonstream_without_thinking_is_byte_for_byte_unchanged(gem_client, monkeypatch):
+    """底层的 thoughts 解析是无条件的，所以这条是 M5 的核心零回归用例。"""
+    from app.utils.tools import estimate_tokens
+    _patch_generate(monkeypatch)
+
+    body = _post(gem_client).json()
+
+    assert body["content"] == [{"type": "text", "text": "答案", "citations": None}]
+    assert body["usage"]["output_tokens"] == estimate_tokens("答案")
+
+
+@pytest.mark.parametrize("payload", [{"type": "disabled"}, {"type": "between_tools"}])
+def test_disabled_thinking_matches_not_passing_it_at_all(gem_client, monkeypatch, payload):
+    _patch_generate(monkeypatch)
+
+    with_off = _post(gem_client, thinking=payload).json()
+    without = _post(gem_client).json()
+
+    with_off.pop("id"), without.pop("id")
+    assert with_off == without
+
+
+def test_an_empty_thinking_chain_does_not_produce_an_empty_block(gem_client, monkeypatch):
+    _patch_generate(monkeypatch, result=_result(thoughts="   "))
+
+    body = _post(gem_client, thinking={"type": "enabled", "budget_tokens": 4096}).json()
+
+    assert body["content"] == [{"type": "text", "text": "答案", "citations": None}]
+
+
+# ---------------------------------------------------------------------------
+# 3. 真流式
+# ---------------------------------------------------------------------------
+
+STREAM_EVENTS = [
+    {"type": "thoughts", "text": "先想"},
+    {"type": "thoughts", "text": "再想"},
+    {"type": "delta", "text": "答"},
+    {"type": "delta", "text": "案"},
+    {"type": "final", "text": "答案", "conversation_id": "", "images": [], "thoughts": "先想再想"},
+]
+
+
+def _stream(client, **extra):
+    body = {"model": "gemini-flash", "max_tokens": 128, "stream": True,
+            "messages": [{"role": "user", "content": "hi"}]}
+    body.update(extra)
+    with client.stream("POST", "/v1/messages", json=body, headers=_AUTH) as r:
+        return _parse_sse("".join(r.iter_text()))
+
+
+def test_realstream_emits_a_thinking_block_then_the_text_block(gem_client, monkeypatch):
+    _patch_stream(monkeypatch, STREAM_EVENTS)
+
+    events = _stream(gem_client, thinking={"type": "enabled", "budget_tokens": 4096})
+    shape = [(ev, (d or {}).get("index"),
+              (d or {}).get("content_block", {}).get("type")
+              or (d or {}).get("delta", {}).get("type"))
+             for ev, d in events]
+
+    assert shape == [
+        ("message_start", None, None),
+        ("content_block_start", 0, "thinking"),
+        ("content_block_delta", 0, "thinking_delta"),
+        ("content_block_delta", 0, "thinking_delta"),
+        ("content_block_stop", 0, None),
+        ("content_block_start", 1, "text"),
+        ("content_block_delta", 1, "text_delta"),
+        ("content_block_delta", 1, "text_delta"),
+        ("content_block_stop", 1, None),
+        ("message_delta", None, None),
+        ("message_stop", None, None),
+    ]
+    thinking = [d["delta"]["thinking"] for ev, d in events
+                if ev == "content_block_delta" and d["delta"]["type"] == "thinking_delta"]
+    assert thinking == ["先想", "再想"]
+
+
+def test_realstream_without_thinking_is_byte_for_byte_unchanged(gem_client, monkeypatch):
+    _patch_stream(monkeypatch, STREAM_EVENTS)
+
+    events = _stream(gem_client)
+    shape = [(ev, (d or {}).get("index")) for ev, d in events]
+
+    assert shape == [
+        ("message_start", None),
+        ("content_block_start", 0),
+        ("content_block_delta", 0),
+        ("content_block_delta", 0),
+        ("content_block_stop", 0),
+        ("message_delta", None),
+        ("message_stop", None),
+    ]
+    assert not any("thinking" in json.dumps(d) for _ev, d in events)
+
+
+def test_realstream_thoughts_arriving_only_in_the_final_frame_still_land(gem_client, monkeypatch):
+    _patch_stream(monkeypatch, [
+        {"type": "final", "text": "答案", "conversation_id": "", "images": [],
+         "thoughts": "收尾才给的思考"},
+    ])
+
+    events = _stream(gem_client, thinking={"type": "enabled", "budget_tokens": 2048})
+    kinds = [(ev, (d or {}).get("index")) for ev, d in events]
+
+    assert ("content_block_start", 0) in kinds
+    assert events[1][1]["content_block"]["type"] == "thinking"
+    assert any(d.get("delta", {}).get("thinking") == "收尾才给的思考"
+               for ev, d in events if ev == "content_block_delta")
+
+
+def test_realstream_late_thoughts_after_text_are_dropped_not_misordered(gem_client, monkeypatch):
+    """Anthropic 规定 thinking 块排在 text 之前。文本块一开就回不去了，
+    迟到的思考增量只能丢，绝不能在 text 之后插一个顺序违规的 thinking 块。"""
+    _patch_stream(monkeypatch, [
+        {"type": "delta", "text": "答案"},
+        {"type": "thoughts", "text": "迟到的思考"},
+        {"type": "final", "text": "答案", "conversation_id": "", "images": [], "thoughts": "迟到的思考"},
+    ])
+
+    events = _stream(gem_client, thinking={"type": "enabled", "budget_tokens": 2048})
+    starts = [(ev, d["index"], d["content_block"]["type"])
+              for ev, d in events if ev == "content_block_start"]
+
+    assert starts == [("content_block_start", 0, "text")]
+    assert "迟到的思考" not in json.dumps(events, ensure_ascii=False)
+
+
+def test_realstream_counts_thinking_tokens_into_output(gem_client, monkeypatch):
+    from app.utils.tools import estimate_tokens
+    _patch_stream(monkeypatch, STREAM_EVENTS)
+
+    events = _stream(gem_client, thinking={"type": "enabled", "budget_tokens": 4096})
+    delta = next(d for ev, d in events if ev == "message_delta")
+
+    assert delta["usage"]["output_tokens"] == \
+        estimate_tokens("答案") + estimate_tokens("先想再想")
+
+
+# ---------------------------------------------------------------------------
+# 4. buffered 流式（带 tools，Claude Code 走的就是这条）
+# ---------------------------------------------------------------------------
+
+_TOOLS = [{"name": "get_weather", "description": "d",
+           "input_schema": {"type": "object", "properties": {}}}]
+
+
+def test_buffered_text_block_index_shifts_by_one_when_thinking_is_on(gem_client, monkeypatch):
+    """带 tools 时走 buffered（tool_calls 必须拿到完整 JSON 才能解析）。
+    这里上游回的不是工具 JSON，于是回落成普通文本块 —— buffered 的文本路径。"""
+    _patch_generate(monkeypatch)
+
+    events = _stream(gem_client, tools=_TOOLS,
+                     thinking={"type": "enabled", "budget_tokens": 4096})
+    starts = [(d["index"], d["content_block"]["type"])
+              for ev, d in events if ev == "content_block_start"]
+
+    assert starts == [(0, "thinking"), (1, "text")]
+
+
+def test_buffered_tool_blocks_shift_by_one_and_keep_tool_use(gem_client, monkeypatch):
+    _patch_generate(monkeypatch, result=_result(
+        text='{"tool_calls":[{"name":"get_weather","arguments":{}}]}'))
+
+    events = _stream(gem_client, tools=_TOOLS,
+                     thinking={"type": "enabled", "budget_tokens": 4096})
+    starts = [(d["index"], d["content_block"]["type"])
+              for ev, d in events if ev == "content_block_start"]
+    delta = next(d for ev, d in events if ev == "message_delta")
+
+    assert starts == [(0, "thinking"), (1, "tool_use")]
+    assert delta["delta"]["stop_reason"] == "tool_use"
+
+
+def test_buffered_tool_blocks_are_zero_based_without_thinking(gem_client, monkeypatch):
+    """索引写错会让客户端把 tool_use 和 thinking 块对错号 → 工具调用直接失效。"""
+    _patch_generate(monkeypatch, result=_result(
+        text='{"tool_calls":[{"name":"get_weather","arguments":{}}]}'))
+
+    events = _stream(gem_client, tools=_TOOLS)
+    starts = [(d["index"], d["content_block"]["type"])
+              for ev, d in events if ev == "content_block_start"]
+
+    assert starts == [(0, "tool_use")]
+    assert not any("thinking" in json.dumps(d) for _ev, d in events)
+
+
+def test_buffered_without_thinking_is_byte_for_byte_unchanged(gem_client, monkeypatch):
+    _patch_generate(monkeypatch)
+
+    events = _stream(gem_client)
+    starts = [(d["index"], d["content_block"]["type"])
+              for ev, d in events if ev == "content_block_start"]
+
+    assert starts == [(0, "text")]
+    assert not any("thinking" in json.dumps(d) for _ev, d in events)

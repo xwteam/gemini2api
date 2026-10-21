@@ -473,6 +473,24 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 }
 ```
 
+#### Extended thinking (`thinking`)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `thinking` | object | No | Turns on extended thinking. **Omitting it keeps the previous behaviour byte for byte** |
+
+- `{"type":"enabled","budget_tokens":N}` — on. `N` maps to low / medium / high at `<2048` / `2048–4095` / `>=4096`. Those cut points are the inverse of the `{low:1024, medium:2048, high:4096}` table this service uses when forwarding to a third-party Anthropic endpoint, so a round trip through this service keeps the same level.
+- `{"type":"adaptive"}` — on, at the default level (the same level an OpenAI-protocol request gets without `reasoning_effort`).
+- `{"type":"disabled"}` / `{"type":"between_tools"}` — no thinking; byte-for-byte identical to omitting the field.
+
+Thinking is returned as an Anthropic `thinking` content block, placed **before** the `text` / `tool_use` blocks; when streaming, as `content_block_start(thinking)` → `thinking_delta` → `content_block_stop`.
+
+⚠️ Two things to know:
+- **No `signature`.** The real Anthropic API always signs `thinking` blocks; this service cannot produce a valid signature, so the field is omitted (an empty or invented signature would be worse — a client replaying it to the real API gets a 400).
+- **The mapping from level to actual web-client thinking depth is not yet verified on a real account.** Raising `budget_tokens` from 1024 to 31999 may not visibly deepen the thinking.
+- Thinking tokens are counted into `usage.output_tokens` (matching the official billing convention), but that number is still an estimate — see the access-key usage section.
+- With `EXTENDED_THINKING_ENABLED=false`, the thinking path is skipped even when `thinking` is sent.
+
 ### POST /claude/v1/messages/count_tokens
 
 Estimate token count for messages.

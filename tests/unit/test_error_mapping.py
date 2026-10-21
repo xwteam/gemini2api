@@ -168,7 +168,8 @@ def test_claude_real_stream_http_status_error_matches_nonstream_type(gem_client,
 def test_claude_nonstream_http_status_error_maps_to_upstream_status(gem_client, monkeypatch):
     import app.routers.claude as cl
 
-    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                   account_id=None, extended_thinking=False):
         raise HTTPStatusError(429, "rate limited")
 
     monkeypatch.setattr(cl.gemini_client, "generate", boom)
@@ -183,7 +184,8 @@ def test_claude_nonstream_http_status_error_maps_to_upstream_status(gem_client, 
 def test_claude_nonstream_pool_busy_maps_to_529_with_retry_after(gem_client, monkeypatch):
     import app.routers.claude as cl
 
-    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                   account_id=None, extended_thinking=False):
         raise RuntimeError("All accounts busy (max_concurrent=8), waited 60.0s")
 
     monkeypatch.setattr(cl.gemini_client, "generate", boom)
@@ -199,7 +201,8 @@ def test_claude_nonstream_pool_busy_maps_to_529_with_retry_after(gem_client, mon
 def test_claude_nonstream_value_error_maps_to_400(gem_client, monkeypatch):
     import app.routers.claude as cl
 
-    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None, account_id=None):
+    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                   account_id=None, extended_thinking=False):
         raise ValueError("Model 'bogus' unavailable")
 
     monkeypatch.setattr(cl.gemini_client, "generate", boom)

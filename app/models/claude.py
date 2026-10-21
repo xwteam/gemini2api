@@ -21,6 +21,12 @@ class ClaudeRequest(BaseModel):
     stream: bool = False
     tools: list[ClaudeTool] | None = None
     tool_choice: dict | None = None
+    # Anthropic 的扩展思考入参。刻意用裸 dict 而不是严格子模型：官方这个对象的形态还在
+    # 变（enabled+budget_tokens / adaptive+display / disabled / between_tools），
+    # 用严格模型的话以后多一个字段就会被吞掉或直接 422。解析见
+    # gemini_client.parse_anthropic_thinking。
+    # 不传（None）时整条路径与改动前逐字节一致 —— 这是本功能唯一的开关。
+    thinking: dict | None = None
 
     @field_validator("system", mode="before")
     @classmethod
@@ -42,6 +48,10 @@ class ContentBlock(BaseModel):
     name: str | None = None
     input: dict | None = None
     source: dict | None = None  # type=image 时：{type:"base64",media_type,data}
+    # type=thinking 时的思考正文。真实 API 的 thinking 块恒带 signature，我们造不出
+    # 合法签名，所以**不发** signature（参考实现的 ConfigContent 同样没有这个字段）：
+    # 发一个空串/自造串更坏 —— 客户端把它回传给真 API 会 400。
+    thinking: str | None = None
     citations: list | None = None  # 仅 text 块：真实 Anthropic API 两侧（流式/非流式）恒发该字段
 
 

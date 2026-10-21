@@ -465,6 +465,20 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 }
 ```
 
+#### 확장 사고(`thinking`)
+
+| 파라미터 | 타입 | 필수 | 설명 |
+|---------|------|------|------|
+| `thinking` | object | ❌ | 확장 사고를 켭니다. **이 파라미터를 보내지 않으면 동작은 이전과 완전히 동일합니다** |
+
+- `{"type":"enabled","budget_tokens":N}`: 켜기. `N`은 `<2048` / `2048–4095` / `>=4096` 기준으로 낮음／중간／높음 3단계에 대응합니다.
+- `{"type":"adaptive"}`: 켜기, 기본 단계(OpenAI 호환에서 `reasoning_effort`를 보내지 않을 때와 같은 단계).
+- `{"type":"disabled"}` / `{"type":"between_tools"}`: 사고하지 않음. 파라미터를 보내지 않은 것과 완전히 동일합니다.
+
+사고 내용은 Anthropic 규격의 `thinking` 콘텐츠 블록으로, `text` / `tool_use` 블록**앞에** 반환됩니다. 스트리밍에서는 `content_block_start(thinking)` → `thinking_delta` → `content_block_stop` 순서입니다.
+
+⚠️ **`signature`는 포함하지 않습니다**(유효한 서명을 만들 수 없기 때문입니다. 빈 문자열이나 임의의 서명을 넣는 것이 더 위험합니다 — 클라이언트가 실제 API로 되돌려 보내면 400). **단계와 웹 측 사고 깊이의 대응 관계는 실제 계정에서 아직 검증되지 않았습니다.** `EXTENDED_THINKING_ENABLED=false`이면 `thinking`을 보내도 사고 경로를 사용하지 않습니다.
+
 ### GET /claude/v1/models
 
 Claude 호환 모델 목록

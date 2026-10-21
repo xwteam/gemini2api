@@ -203,6 +203,50 @@ def parse_thinking_level(effort: str | None) -> int:
     return _THINKING_LEVELS.get(raw, THINKING_LEVEL_DEFAULT)
 
 
+# Anthropic 的 thinking 入参形态（官方现行规范）：
+#   {"type":"enabled","budget_tokens":N}   旧式。N 最小 1024、且必须小于 max_tokens。
+#                                          我方 api_forwarder 出站用的也正是这个形态。
+#   {"type":"adaptive", "display":...}     4.6 起的新式写法，没有 budget。
+#   {"type":"disabled"} / {"type":"between_tools"}   明确要求不思考。
+# 只认 budget_tokens 的话，新版 Claude Code / SDK 发的 adaptive 请求会继续被锁在"不思考"。
+_ANTHROPIC_THINKING_OFF = ("disabled", "between_tools")
+# budget → 档位的切点，取 api_forwarder.py 的 LEVEL_BUDGET{low:1024,medium:2048,high:4096}
+# 的**反函数**（相邻两档的下界作切点），这样"我方网关 → 第三方 Anthropic"再转回来时
+# 档位往返一致，不会因为两处各写一套阈值而漂移。
+_ANTHROPIC_BUDGET_MEDIUM = 2048
+_ANTHROPIC_BUDGET_HIGH = 4096
+
+
+def parse_anthropic_thinking(thinking) -> int | bool:
+    """Anthropic 的 thinking 入参 → 本仓思考档位。False = 不走思考路径。
+
+    返回值直接当 extended_thinking 用（既是开关也是档位，见 thinking_level_of）。
+    认不出的 type 一律回 False：我们不是真 API，宁可保持"和不传一样"的既有行为，
+    也不要凭一个猜测去改上游请求的形状（开思考会走另一套 payload + header）。
+    budget_tokens 不做 "< max_tokens" 校验、不 400 —— 宽容比正确性在这里更有用。
+    """
+    if not isinstance(thinking, dict):
+        return False
+    kind = str(thinking.get("type") or "").strip().lower()
+    if kind in _ANTHROPIC_THINKING_OFF:
+        return False
+    if kind == "adaptive":
+        # 官方语义是"模型自己决定"，映到"不传 reasoning_effort"的同一个默认档，零惊喜。
+        return THINKING_LEVEL_DEFAULT
+    if kind != "enabled":
+        if kind:
+            logger.info("Unrecognized Anthropic thinking type %r; treating as disabled", kind)
+        return False
+    budget = thinking.get("budget_tokens")
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
+        return THINKING_LEVEL_DEFAULT
+    if budget >= _ANTHROPIC_BUDGET_HIGH:
+        return THINKING_LEVEL_HIGH
+    if budget >= _ANTHROPIC_BUDGET_MEDIUM:
+        return THINKING_LEVEL_MEDIUM
+    return THINKING_LEVEL_LOW
+
+
 def thinking_level_of(extended_thinking) -> int:
     """从 extended_thinking 参数里取出思考档位。
 

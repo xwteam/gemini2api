@@ -77,7 +77,7 @@ def test_claude_realstream_emits_keepalive_ping_during_silence(gem_client, monke
     monkeypatch.setattr(stream_mod, "SSE_KEEPALIVE_INTERVAL", 0.05)
 
     async def slow_generate_stream(prompt, model, conversation_id="", attachments=None,
-                                   gem_id=None, account_id=None):
+                                   gem_id=None, account_id=None, extended_thinking=False):
         await asyncio.sleep(0.25)   # 静默 gap > interval → 多个 ping
         yield {"type": "delta", "text": "85"}
         yield {"type": "final", "text": "85", "conversation_id": "", "images": [], "thoughts": ""}

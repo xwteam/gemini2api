@@ -472,6 +472,20 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 }
 ```
 
+#### 拡張思考（`thinking`）
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| `thinking` | object | ❌ | 拡張思考を有効にします。**このパラメータを送らない場合の挙動は従来と完全に同一です** |
+
+- `{"type":"enabled","budget_tokens":N}`：有効。`N` は `<2048` / `2048–4095` / `>=4096` で低／中／高の 3 段階に対応します。
+- `{"type":"adaptive"}`：有効、デフォルト段階（OpenAI 互換で `reasoning_effort` を送らない場合と同じ段階）。
+- `{"type":"disabled"}` / `{"type":"between_tools"}`：思考しません。パラメータを送らない場合と完全に同一です。
+
+思考内容は Anthropic 仕様の `thinking` コンテンツブロックとして、`text` / `tool_use` ブロックの**前に**返します。ストリーミングでは `content_block_start(thinking)` → `thinking_delta` → `content_block_stop` です。
+
+⚠️ **`signature` は付きません**（有効な署名を生成できないため。空文字や自作の署名を付けるのはより危険で、クライアントが本物の API に送り返すと 400 になります）。**段階と Web 側の思考の深さの対応は実機未検証です。** `EXTENDED_THINKING_ENABLED=false` の場合、`thinking` を送っても思考パスは使われません。
+
 ### POST /claude/v1/messages/count_tokens
 
 トークン数を推定します。

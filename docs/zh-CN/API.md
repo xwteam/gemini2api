@@ -549,6 +549,26 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 }
 ```
 
+#### 扩展思考（`thinking`）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `thinking` | object | 否 | 开启扩展思考。支持三类官方写法（见下表）。**不传该参数时行为与旧版逐字节一致** |
+
+| 写法 | 效果 |
+|------|------|
+| `{"type":"enabled","budget_tokens":N}` | 开启。`N` 按 `<2048` / `2048–4095` / `≥4096` 分成低 / 中 / 高三档 —— 这三个切点取自本服务出站给第三方 Anthropic 时用的 `{low:1024, medium:2048, high:4096}` 的反函数，保证经本服务来回转换时档位一致 |
+| `{"type":"adaptive"}` | 开启，用默认档（与不传 `reasoning_effort` 的 OpenAI 协议请求同档） |
+| `{"type":"disabled"}` / `{"type":"between_tools"}` | 不思考，行为与完全不传该参数**逐字节相同** |
+
+思考内容以 Anthropic 规范的 `thinking` 内容块回传，排在 `text` / `tool_use` 块**之前**；流式下是 `content_block_start(thinking)` → `thinking_delta` → `content_block_stop`。
+
+⚠️ 两点必须知道：
+- **不带 `signature`**。真实 Anthropic API 的 `thinking` 块恒带签名，本服务造不出合法签名，所以这个字段不发（发一个空串或自造串更坏：客户端把它回传给真 API 会 400）。
+- **档位与网页端思考深度的对应关系尚未真机证实**。把 `budget_tokens` 从 1024 调到 31999 有可能看不出思考变深。
+- 思考 token 会计进 `usage.output_tokens`（与官方计费口径一致），但那仍然是估算值，见「访问密钥用量统计」一节。
+- 全局开关 `EXTENDED_THINKING_ENABLED=false` 时，即使传了 `thinking` 也不走思考路径。
+
 ### POST /claude/v1/messages/count_tokens
 
 估算消息的 token 数。
