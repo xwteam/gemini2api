@@ -156,15 +156,37 @@ def _parse_contents(contents):
     return messages, attachments
 
 
+# 对外模型名的一句话说明。官方 /v1beta/models 的每条都带 description，有些 SDK / UI
+# 直接把它显示给用户 —— 全给空串等于那一栏集体变空白。认不出的名字（心跳发现来的新
+# family）不编描述，只说它来自账号发现，别替 Google 吹性能。
+_MODEL_DESCRIPTIONS = {
+    "gemini-pro": "Most capable model, for complex reasoning and long tasks",
+    "gemini-flash": "Fast model with low latency, for interactive use",
+    "gemini-flash-thinking": "Flash with extended reasoning enabled",
+    "gemini-flash-lite": "Lightest and fastest model; still available when Pro/Flash are rate-limited",
+    "gemini-argon": "4 Argon, for complex tasks; listed only when an account actually has it",
+}
+_DISCOVERED_DESCRIPTION = "Discovered from the account model list"
+
+
+def _describe(model: str) -> str:
+    return _MODEL_DESCRIPTIONS.get(model, _DISCOVERED_DESCRIPTION)
+
+
 @router.get("/models")
 async def list_models():
     """List available Gemini models."""
-    # 这里过去写死三条 1.5 / 2.0 时代的名字（gemini-2.0-flash-exp 连 MODEL_ALIASES 里
-    # 都没有），一条都调不通：用官方 Gemini SDK 接我们的人，列表里看不到任何一个真能用
-    # 的模型名。改成和 /v1/models、/claude/v1/models 同一个来源（账号池的公开名），
-    # 新发现的模型（如 Argon）也就自动跟上。
+    # 这里过去写死三条 1.5 / 2.0 时代的名字，而**列表里一个契约公开名都没有**：用官方
+    # Gemini SDK 接我们、先 list_models() 再从列表里挑名字的人，看不到 gemini-pro /
+    # gemini-flash 这些真正该用的名字，也永远看不到新发现的模型（如 Argon）。
+    # 所以改成和 /v1/models、/claude/v1/models 同一个来源（账号池的公开名）。
+    # 口径说明（别把这条写错）：那三条里 gemini-1.5-pro / gemini-1.5-flash 其实**是能
+    # 调通的**（MODEL_ALIASES 里有，解析到 gemini-pro / gemini-flash），只有
+    # gemini-2.0-flash-exp 连别名都没有、真的调不通。它们被从**列表**里去掉是有意的
+    # —— 列表该反映"账号池此刻真有什么"，而不是一张陈年别名表 —— 但**请求路径一个字
+    # 都没改**：这些旧名字照旧能调，只是不再被列出来（与另外三个协议的列表口径一致）。
     models = [
-        GeminiModelInfo(name=f"models/{m}", display_name=m)
+        GeminiModelInfo(name=f"models/{m}", display_name=m, description=_describe(m))
         for m in gemini_client.models
     ]
     # MODEL_WHITELIST 过滤（为空则放行全部）；按裸模型名匹配 name 去掉 `models/` 前缀

@@ -495,8 +495,32 @@ def test_the_category_falls_back_to_field_10():
     assert c._family_model["argon"] == ARGON_INTERNAL
 
 
+def test_v1beta_models_keeps_a_description_on_every_entry():
+    """官方 /v1beta/models 的每条都带 description，有些 SDK / UI 直接显示给用户。
+    全给空串等于那一栏集体变空白。"""
+    from app.routers import gemini as gr
+
+    for name in PUBLIC_MODELS + [ARGON_PUBLIC]:
+        assert gr._describe(name), name
+    assert gr._describe("gemini-5-xenon") == gr._DISCOVERED_DESCRIPTION
+
+
+def test_the_old_1_5_aliases_are_still_callable_even_though_unlisted():
+    """口径纠正：从 /v1beta/models 列表里去掉的三条里，有两条本来是**能调通的**别名。
+    列表收窄是有意的（列表该反映账号池此刻真有什么），但请求路径一个字都不许改。"""
+    from app.core.gemini_client import MODEL_ALIASES
+
+    assert MODEL_ALIASES["gemini-1.5-pro"] == "gemini-pro"
+    assert MODEL_ALIASES["gemini-1.5-flash"] == "gemini-flash"
+    assert gc._resolve_model("gemini-1.5-pro", {"pro": "gemini-3-pro-advanced"}) \
+        == "gemini-3-pro-advanced"
+    # gemini-2.0-flash-exp 连别名都没有 —— 那一条才是真的调不通
+    assert "gemini-2.0-flash-exp" not in MODEL_ALIASES
+    assert "gemini-2.0-flash-exp" not in GEMINI_MODELS
+
+
 def test_v1beta_models_lists_real_public_names(client, monkeypatch):
-    """/v1beta/models 过去写死三条 1.5/2.0 时代的名字，一条都调不通。"""
+    """/v1beta/models 过去写死三条 1.5/2.0 时代的名字，列表里一个契约公开名都没有。"""
     from app.core import account_pool as ap
 
     monkeypatch.setattr(type(ap.account_pool), "models",
@@ -508,6 +532,9 @@ def test_v1beta_models_lists_real_public_names(client, monkeypatch):
 
     assert names == [f"models/{m}" for m in PUBLIC_MODELS + [ARGON_PUBLIC]]
     assert not any("1.5" in n or "2.0-flash-exp" in n for n in names)
+    # 每条都必须带 description：官方那个端点的每条都有，有些 SDK / UI 直接显示给用户，
+    # 全是空串等于那一栏集体变空白（改动前那三条写死的名字各自带着一句说明）。
+    assert all(m["description"] for m in body["models"]), body["models"]
 
 
 # ---------------------------------------------------------------------------
