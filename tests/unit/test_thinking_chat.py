@@ -1,5 +1,5 @@
 # reasoning_effort 不再被布尔化：high → THINKING_LEVEL_HIGH 这个具体档位，
-# 下游用它决定 payload 的第 80 格与 model header 的第 15 位（见 gemini_client.parse_thinking_level）。
+# 下游用它决定 payload 的第 80 格与 model header 的第 15 位（见 gemini_client.parse_effort_request）。
 from app.core.gemini_client import THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW
 
 _AUTH = {"Authorization": "Bearer sk-test-key"}

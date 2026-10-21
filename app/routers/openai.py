@@ -331,8 +331,8 @@ async def chat_completions(req: ChatRequest, request: Request):
     # 提取图片/文件附件（多模态），纯文本时为空列表
     attachments = extract_attachments(messages_raw)
 
-    # reasoning_effort → 思考档位：low/medium/high 各走各的档，none/minimal 夹到 low、
-    # xhigh 夹到 high，认不出的非空值 → THINKING_LEVEL_DEFAULT（与旧版一致）；
+    # reasoning_effort → 思考档位：low/medium/high 各走各的档，minimal 夹到 low、xhigh 夹到
+    # high，none = 不思考，认不出的非空值 → 跟随"默认思考档位"；
     # **不传 → "默认思考档位"设置**（出厂 low）。
     # 见 gemini_client.resolve_thinking。决策拆成两个量：
     #   extended_thinking —— 发给上游的档位（False = 不思考旧路径；1/2/4 = 档位）

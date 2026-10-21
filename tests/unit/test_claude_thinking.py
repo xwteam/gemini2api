@@ -16,7 +16,7 @@ import json
 import pytest
 
 from app.core.gemini_client import (
-    THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW,
+    THINKING_FOLLOW_DEFAULT, THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW,
     THINKING_LEVEL_MEDIUM, parse_anthropic_thinking,
 )
 
@@ -79,9 +79,10 @@ def _post(client, **extra):
 # 1. 入参 → 档位
 # ---------------------------------------------------------------------------
 
-# 返回值三态（v1.6.43 起）：None = 没传（上游按"默认思考档位"、不出 thinking 块）、
-# False = 明确不要、1/2/4 = 明确要了。过去"没传"与"明确不要"都是 False —— 那时"没传"
-# 就等于不思考；现在用户要求"没传"走默认档 low，两者必须分开。
+# 返回值四态（v1.6.43 起）：None = 没传（上游按"默认思考档位"、不出 thinking 块）、
+# False = 明确不要、1/2/4 = 明确要了某一档、THINKING_FOLLOW_DEFAULT = 要了思考但没给档位
+# （跟随默认档）。过去"没传"与"明确不要"都是 False —— 那时"没传"就等于不思考；现在用户
+# 要求"没传"走默认档 low，两者必须分开。
 @pytest.mark.parametrize("payload,expected", [
     (None, None),
     ({}, None),
@@ -89,14 +90,14 @@ def _post(client, **extra):
     ({"type": "disabled"}, False),
     ({"type": "between_tools"}, False),
     ({"type": "something-new"}, None),
-    ({"type": "adaptive"}, THINKING_LEVEL_DEFAULT),
-    ({"type": "adaptive", "display": "summarized"}, THINKING_LEVEL_DEFAULT),
-    ({"type": "enabled"}, THINKING_LEVEL_DEFAULT),
-    ({"type": "enabled", "budget_tokens": None}, THINKING_LEVEL_DEFAULT),
-    ({"type": "enabled", "budget_tokens": "4096"}, THINKING_LEVEL_DEFAULT),
-    ({"type": "enabled", "budget_tokens": 0}, THINKING_LEVEL_DEFAULT),
-    ({"type": "enabled", "budget_tokens": -1}, THINKING_LEVEL_DEFAULT),
-    ({"type": "enabled", "budget_tokens": True}, THINKING_LEVEL_DEFAULT),
+    ({"type": "adaptive"}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "adaptive", "display": "summarized"}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "enabled"}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "enabled", "budget_tokens": None}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "enabled", "budget_tokens": "4096"}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "enabled", "budget_tokens": 0}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "enabled", "budget_tokens": -1}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "enabled", "budget_tokens": True}, THINKING_FOLLOW_DEFAULT),
     ({"type": "enabled", "budget_tokens": 1}, THINKING_LEVEL_LOW),
     ({"type": "enabled", "budget_tokens": 1024}, THINKING_LEVEL_LOW),
     ({"type": "enabled", "budget_tokens": 2047}, THINKING_LEVEL_LOW),
@@ -107,7 +108,47 @@ def _post(client, **extra):
     ({"type": "ENABLED", "budget_tokens": 4096}, THINKING_LEVEL_HIGH),
 ])
 def test_parse_anthropic_thinking(payload, expected):
-    assert parse_anthropic_thinking(payload) == expected
+    got = parse_anthropic_thinking(payload)
+    assert got == expected and type(got) is type(expected)
+
+
+# output_config.effort（Claude Code 的 /effort 走这里）。Claude Code 2.1.296 抓包：每个请求都带
+# thinking={"type":"adaptive","display":"omitted"} + output_config={"effort":"high"}。
+# high 是 Anthropic 的默认值（官方：设成 high 与不传完全相同）→ 跟随默认档。
+@pytest.mark.parametrize("thinking,output_config,expected", [
+    # Claude Code 出厂请求
+    ({"type": "adaptive", "display": "omitted"}, {"effort": "high"}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "adaptive"}, None, THINKING_FOLLOW_DEFAULT),
+    ({"type": "adaptive"}, {}, THINKING_FOLLOW_DEFAULT),
+    # /effort 换档
+    ({"type": "adaptive"}, {"effort": "low"}, THINKING_LEVEL_LOW),
+    ({"type": "adaptive"}, {"effort": "medium"}, THINKING_LEVEL_MEDIUM),
+    ({"type": "adaptive"}, {"effort": "xhigh"}, THINKING_LEVEL_HIGH),
+    ({"type": "adaptive"}, {"effort": "max"}, THINKING_LEVEL_HIGH),
+    ({"type": "adaptive"}, {"effort": " Low "}, THINKING_LEVEL_LOW),
+    ({"type": "adaptive"}, {"effort": "MAX"}, THINKING_LEVEL_HIGH),
+    # 认不出 / 形态不对 → 宽容，跟随默认档，绝不报错
+    ({"type": "adaptive"}, {"effort": "turbo"}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "adaptive"}, {"effort": 3}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "adaptive"}, {"effort": None}, THINKING_FOLLOW_DEFAULT),
+    ({"type": "adaptive"}, "low", THINKING_FOLLOW_DEFAULT),
+    ({"type": "adaptive"}, ["low"], THINKING_FOLLOW_DEFAULT),
+    # enabled：合法 budget 优先于 effort；budget 缺失/无效时看 effort
+    ({"type": "enabled", "budget_tokens": 1024}, {"effort": "max"}, THINKING_LEVEL_LOW),
+    ({"type": "enabled", "budget_tokens": 8192}, {"effort": "low"}, THINKING_LEVEL_HIGH),
+    ({"type": "enabled"}, {"effort": "low"}, THINKING_LEVEL_LOW),
+    ({"type": "enabled", "budget_tokens": 0}, {"effort": "medium"}, THINKING_LEVEL_MEDIUM),
+    ({"type": "enabled", "budget_tokens": "4096"}, {"effort": "high"}, THINKING_FOLLOW_DEFAULT),
+    # 明确关闭 / 没开 thinking：effort 给什么都不改变
+    ({"type": "disabled"}, {"effort": "max"}, False),
+    ({"type": "between_tools"}, {"effort": "max"}, False),
+    (None, {"effort": "max"}, None),
+    ({}, {"effort": "low"}, None),
+    ({"type": "something-new"}, {"effort": "max"}, None),
+])
+def test_output_config_effort_picks_the_level(thinking, output_config, expected):
+    got = parse_anthropic_thinking(thinking, output_config)
+    assert got == expected and type(got) is type(expected)
 
 
 @pytest.mark.parametrize("payload", [{"type": "disabled"}, {"type": "between_tools"}])
@@ -139,7 +180,8 @@ def test_the_level_constants_match_the_measured_mapping():
     """low→1 / medium→4 / high→2 来自参考实现的测试断言（gemini_thinking_test.go:20）。
     真机实测（gemini-pro，每档 2 次）：high(2) 思考 1256/562 字、42～65 秒，已证实是最深
     的一档；low(1) 411/707 字与 medium(4) 524/450 字两次采样区分不开，沿用参考实现。
-    THINKING_LEVEL_DEFAULT 是"明确要了思考但没给可认档位"时的档，保持改动前的 2。"""
+    THINKING_LEVEL_DEFAULT 只是底层编码器拿到空档位时的静态兜底，保持改动前的 2；"要了思考
+    但没给可认档位"的请求不用它，而是跟随默认思考档位（THINKING_FOLLOW_DEFAULT）。"""
     assert (THINKING_LEVEL_LOW, THINKING_LEVEL_MEDIUM, THINKING_LEVEL_HIGH) == (1, 4, 2)
     assert THINKING_LEVEL_DEFAULT == 2
 

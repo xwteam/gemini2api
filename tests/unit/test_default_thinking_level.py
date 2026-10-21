@@ -3,7 +3,8 @@
 钉四件事：
   1. 设置本身：出厂 low、off 回到不思考旧路径（发给上游的请求与改动前不传参时逐字节一致）、
      面板改了即时生效、非法值被拒；
-  2. 四个协议的参数 → 档位映射，不传 → 默认档；
+  2. 四个协议的参数 → 档位映射，不传 → 默认档；要了思考但没给档位（Claude Code 出厂的
+     adaptive + effort high、认不出的 effort……）→ 跟随默认档设置（含 off）；
   3. **协议合规红线**：客户端没要求思考、是我们按默认档替它开的，思考只给上游用，绝不回传。
      判据是"默认档 low 的响应 == 默认档 off 的响应"（逐字段，只把随机 id / 时间戳归一），
      上游的假回答**带非空思考**，才验得到那道拦截；流式与非流式都测；
@@ -19,7 +20,7 @@ import pytest
 from app.config import Settings, settings
 from app.core import gemini_client as gc
 from app.core.gemini_client import (
-    THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW, THINKING_LEVEL_MEDIUM,
+    THINKING_FOLLOW_DEFAULT, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW, THINKING_LEVEL_MEDIUM,
     default_thinking_level, parse_effort_request, parse_gemini_thinking_config,
     resolve_thinking,
 )
@@ -218,8 +219,9 @@ def test_anthropic_explicit_thinking_still_streams_a_thinking_block(gem_client, 
 @pytest.mark.parametrize("effort,expected", [
     (None, THINKING_LEVEL_LOW), ("", THINKING_LEVEL_LOW), ("  ", THINKING_LEVEL_LOW),
     ("low", 1), ("medium", 4), ("high", 2), ("HIGH", 2),
-    ("none", 1), ("minimal", 1), ("xhigh", 2),
-    ("bogus", THINKING_LEVEL_DEFAULT),
+    ("minimal", 1), ("xhigh", 2),
+    ("none", False), ("NONE", False),          # OpenAI 官方语义"不推理" → 不思考
+    ("bogus", THINKING_LEVEL_LOW),             # 认不出 → 跟随默认档（出厂 low）
 ])
 def test_openai_effort_maps_to_a_level(gem_client, monkeypatch, effort, expected):
     import app.routers.openai as oai
@@ -228,14 +230,14 @@ def test_openai_effort_maps_to_a_level(gem_client, monkeypatch, effort, expected
     if effort is not None:
         body["reasoning_effort"] = effort
     _post(gem_client, "/v1/chat/completions", body)
-    assert captured == [expected]
+    assert captured == [expected] and type(captured[0]) is type(expected)
 
 
 @pytest.mark.parametrize("reasoning,expected", [
     (None, THINKING_LEVEL_LOW),
     ({"effort": "low"}, 1), ({"effort": "medium"}, 4), ({"effort": "high"}, 2),
-    ({"effort": "none"}, 1), ({"effort": "minimal"}, 1), ({"effort": "xhigh"}, 2),
-    ({"effort": 7}, THINKING_LEVEL_DEFAULT),       # 非字符串也不 500
+    ({"effort": "none"}, False), ({"effort": "minimal"}, 1), ({"effort": "xhigh"}, 2),
+    ({"effort": 7}, THINKING_LEVEL_LOW),           # 非字符串也不 500；认不出 → 跟随默认档
     ({}, THINKING_LEVEL_LOW),
 ])
 def test_responses_effort_maps_to_a_level(gem_client, monkeypatch, reasoning, expected):
@@ -245,7 +247,7 @@ def test_responses_effort_maps_to_a_level(gem_client, monkeypatch, reasoning, ex
     if reasoning is not None:
         body["reasoning"] = reasoning
     _post(gem_client, "/v1/responses", body)
-    assert captured == [expected]
+    assert captured == [expected] and type(captured[0]) is type(expected)
 
 
 @pytest.mark.parametrize("thinking,expected", [
@@ -253,7 +255,7 @@ def test_responses_effort_maps_to_a_level(gem_client, monkeypatch, reasoning, ex
     ({"type": "enabled", "budget_tokens": 1024}, 1),
     ({"type": "enabled", "budget_tokens": 2048}, 4),
     ({"type": "enabled", "budget_tokens": 8192}, 2),
-    ({"type": "adaptive"}, THINKING_LEVEL_DEFAULT),
+    ({"type": "adaptive"}, THINKING_LEVEL_LOW),          # 没给档位 → 跟随默认档
     ({"type": "disabled"}, False),
     ({"type": "something-new"}, THINKING_LEVEL_LOW),   # 认不出 = 没传
 ])
@@ -277,15 +279,15 @@ def test_anthropic_thinking_maps_to_a_level(gem_client, monkeypatch, thinking, e
     ({"thinkingLevel": "MEDIUM"}, 4),
     ({"thinkingLevel": "HIGH"}, 2),
     ({"thinkingLevel": "MINIMAL"}, 1),
-    ({"thinkingLevel": "THINKING_LEVEL_UNSPECIFIED"}, THINKING_LEVEL_DEFAULT),
+    ({"thinkingLevel": "THINKING_LEVEL_UNSPECIFIED"}, THINKING_LEVEL_LOW),  # → 跟随默认档
     ({"thinkingBudget": 0}, False),
-    ({"thinkingBudget": -1}, THINKING_LEVEL_DEFAULT),
+    ({"thinkingBudget": -1}, THINKING_LEVEL_LOW),           # 自动 → 跟随默认档
     ({"thinkingBudget": 1024}, 1),
     ({"thinkingBudget": 2048}, 4),
     ({"thinkingBudget": 24576}, 2),
     ({"thinking_budget": 4096}, 2),                         # snake_case 也认
     ({"thinkingLevel": "low", "thinkingBudget": 24576}, 1),  # 两个都给：level 优先
-    ({"includeThoughts": True}, THINKING_LEVEL_DEFAULT),
+    ({"includeThoughts": True}, THINKING_LEVEL_LOW),        # 只要回传、没给档 → 跟随默认档
 ])
 @pytest.mark.parametrize("method", ["generateContent", "streamGenerateContent"])
 def test_gemini_thinking_config_maps_to_a_level(gem_client, monkeypatch, config, expected,
@@ -312,6 +314,124 @@ def test_gemini_thinking_config_maps_to_a_level(gem_client, monkeypatch, config,
 def test_gemini_include_thoughts_decides_whether_thoughts_are_returned(config, show):
     requested, show_flag = parse_gemini_thinking_config(config)
     assert resolve_thinking(requested, show=show_flag).show is show
+
+
+# ---------------------------------------------------------------------------
+# 2b. 要了思考、但没给出可认的档位 → 跟随默认档设置（过去写死 high）
+# ---------------------------------------------------------------------------
+# Claude Code 2.1.296 抓包原样：每个请求都带这两个字段（effort 出厂 high = Anthropic 默认值）
+_CC_THINKING = {"thinking": {"type": "adaptive", "display": "omitted"},
+                "output_config": {"effort": "high"}}
+_GEM_PATH = "/v1beta/models/gemini-flash:generateContent"
+
+NO_LEVEL_CASES = {
+    "openai-unrecognised": ("/v1/chat/completions", {**_CHAT, "reasoning_effort": "bogus"}),
+    "responses-unrecognised": ("/v1/responses", {**_RESP, "reasoning": {"effort": "bogus"}}),
+    "anthropic-adaptive": ("/v1/messages", {**_CLAUDE, "thinking": {"type": "adaptive"}}),
+    "anthropic-claude-code": ("/v1/messages", {**_CLAUDE, **_CC_THINKING}),
+    "anthropic-claude-code-stream": ("/v1/messages",
+                                     {**_CLAUDE, **_CC_THINKING, "stream": True}),
+    "anthropic-enabled-no-budget": ("/v1/messages", {**_CLAUDE, "thinking": {"type": "enabled"}}),
+    "gemini-unspecified": (_GEM_PATH, {**_NATIVE, "generationConfig": {
+        "thinkingConfig": {"thinkingLevel": "THINKING_LEVEL_UNSPECIFIED"}}}),
+    "gemini-auto-budget": (_GEM_PATH, {**_NATIVE, "generationConfig": {
+        "thinkingConfig": {"thinkingBudget": -1}}}),
+    "gemini-include-only": (_GEM_PATH, {**_NATIVE, "generationConfig": {
+        "thinkingConfig": {"includeThoughts": True}}}),
+}
+
+
+@pytest.mark.parametrize("setting,level", [
+    ("off", False), ("low", THINKING_LEVEL_LOW), ("medium", THINKING_LEVEL_MEDIUM),
+    ("high", THINKING_LEVEL_HIGH)])
+@pytest.mark.parametrize("case", sorted(NO_LEVEL_CASES))
+def test_thinking_without_a_level_follows_the_default_setting(gem_client, monkeypatch, case,
+                                                              setting, level):
+    captured = _install(monkeypatch, *_routers())
+    monkeypatch.setattr(settings, "default_thinking_level", setting)
+    path, body = NO_LEVEL_CASES[case]
+    _post(gem_client, path, body, stream=bool(body.get("stream")))
+    assert captured == [level] and type(captured[0]) is type(level)
+
+
+@pytest.mark.parametrize("setting,shown", [("off", False), ("medium", True)])
+def test_claude_code_request_shows_thinking_only_when_it_actually_thinks(gem_client, monkeypatch,
+                                                                         setting, shown):
+    """Claude Code 要了思考（adaptive）→ 真的思考了就照常出 thinking 块；默认档 off 时
+    根本不思考，也就不出（帧序列与不思考时一致，不会冒出空 thinking 块）。"""
+    _install(monkeypatch, *_routers())
+    monkeypatch.setattr(settings, "default_thinking_level", setting)
+    body = _post(gem_client, "/v1/messages", {**_CLAUDE, **_CC_THINKING, "stream": True},
+                 stream=True)
+    assert ('"thinking_delta"' in body) is shown
+    assert (THOUGHTS[:6] in body) is shown
+
+
+@pytest.mark.parametrize("effort,expected", [
+    ("low", THINKING_LEVEL_LOW), ("medium", THINKING_LEVEL_MEDIUM),
+    ("xhigh", THINKING_LEVEL_HIGH), ("max", THINKING_LEVEL_HIGH),
+    # 默认档设成 off，才分得出"跟随默认档"和任何一个写死的档位
+    ("high", False), (None, False), ("bogus", False),
+])
+def test_claude_code_effort_command_picks_the_level(gem_client, monkeypatch, effort, expected):
+    """Claude Code 里 /effort low|medium|xhigh|max 换档 → 照档；high（出厂值 = Anthropic
+    默认值）/ 没给 / 认不出 → 跟随默认档。"""
+    import app.routers.claude as cl
+    captured = _install(monkeypatch, cl)
+    monkeypatch.setattr(settings, "default_thinking_level", "off")
+    body = {**_CLAUDE, "thinking": {"type": "adaptive", "display": "omitted"}}
+    if effort is not None:
+        body["output_config"] = {"effort": effort}
+    _post(gem_client, "/v1/messages", body)
+    assert captured == [expected] and type(captured[0]) is type(expected)
+
+
+@pytest.mark.parametrize("output_config", ["high", ["low"], 5, {"effort": {"x": 1}}])
+def test_a_malformed_output_config_is_tolerated(gem_client, monkeypatch, output_config):
+    """output_config 形态不对：视同没给 effort（跟随默认档），绝不 422。"""
+    import app.routers.claude as cl
+    captured = _install(monkeypatch, cl)
+    monkeypatch.setattr(settings, "default_thinking_level", "medium")
+    _post(gem_client, "/v1/messages",
+          {**_CLAUDE, "thinking": {"type": "adaptive"}, "output_config": output_config})
+    assert captured == [THINKING_LEVEL_MEDIUM]
+
+
+def test_effort_without_thinking_counts_as_not_passed(gem_client, monkeypatch):
+    """只给 output_config.effort、没开 thinking：按"没传思考参数"处理 —— 默认档、绝不出
+    thinking 块（不能因为一个 effort 就凭空回传思考）。"""
+    import app.routers.claude as cl
+    captured = _install(monkeypatch, cl)
+    monkeypatch.setattr(settings, "default_thinking_level", "medium")
+    text = _post(gem_client, "/v1/messages", {**_CLAUDE, "output_config": {"effort": "max"}})
+    assert captured == [THINKING_LEVEL_MEDIUM]
+    assert all(b["type"] != "thinking" for b in json.loads(text)["content"])
+    assert THOUGHTS not in text
+
+
+@pytest.mark.parametrize("setting,level", [
+    ("off", None), ("low", THINKING_LEVEL_LOW), ("medium", THINKING_LEVEL_MEDIUM),
+    ("high", THINKING_LEVEL_HIGH)])
+@pytest.mark.parametrize("show,expected_show", [(None, True), (True, True), (False, False)])
+def test_follow_default_resolves_against_the_current_setting(monkeypatch, setting, level, show,
+                                                             expected_show):
+    monkeypatch.setattr(settings, "default_thinking_level", setting)
+    plan = resolve_thinking(THINKING_FOLLOW_DEFAULT, show=show)
+    if level is None:
+        assert plan == gc.THINKING_OFF
+    else:
+        assert plan == gc.ThinkingPlan(level, expected_show)
+
+
+def test_none_effort_means_no_thinking_and_nothing_returned(gem_client, monkeypatch):
+    """reasoning_effort=none：不思考（走旧路径），即使默认档是 high 也一样，响应里没有思考。"""
+    import app.routers.openai as oai
+    captured = _install(monkeypatch, oai)
+    monkeypatch.setattr(settings, "default_thinking_level", "high")
+    text = _post(gem_client, "/v1/chat/completions", {**_CHAT, "reasoning_effort": "none"})
+    assert captured == [False] and captured[0] is False
+    assert json.loads(text)["choices"][0]["message"].get("reasoning_content") is None
+    assert THOUGHTS not in text
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +482,7 @@ def test_the_master_switch_still_wins_over_everything(monkeypatch):
     assert resolve_thinking(None) == gc.THINKING_OFF
     assert resolve_thinking(THINKING_LEVEL_HIGH) == gc.THINKING_OFF
     assert parse_effort_request("high") == THINKING_LEVEL_HIGH   # 解析照旧，决策时被总闸拦下
+    assert resolve_thinking(THINKING_FOLLOW_DEFAULT) == gc.THINKING_OFF   # 跟随默认档也被拦
 
 
 @pytest.fixture
@@ -414,9 +535,10 @@ def test_a_hand_broken_overrides_file_is_ignored_on_replay(tmp_path):
 
 
 def test_settings_page_always_shows_both_thinking_controls(gem_client, monkeypatch):
-    """默认档 off 只管"没传思考参数"的请求；Claude Code / Codex 这类主动传参的客户端只有
-    总闸管得到。总闸若藏起来（旧做法：只在它已关时才露出），用户按提示把默认档改成 off
-    后照样慢，面板上又找不到能关的地方 —— 所以两个控件始终都在「思考」分组里。"""
+    """默认档 off 管的是没指定档位的请求（没传思考参数的、Claude Code 出厂的 adaptive +
+    effort high）；明确指定了档位的（Codex 选 high、budget_tokens、Claude Code /effort max）
+    只有总闸管得到。总闸若藏起来（旧做法：只在它已关时才露出），用户按提示把默认档改成
+    off 后这类请求照样慢，面板上又找不到能关的地方 —— 所以两个控件始终都在「思考」分组里。"""
     group = gem_client.get("/admin/settings", headers=_AUTH).json()["thinking"]
     assert group == {"default_thinking_level": "low", "extended_thinking_enabled": True}
     monkeypatch.setattr(settings, "extended_thinking_enabled", False)

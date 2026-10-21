@@ -172,12 +172,13 @@ async def create_message(req: ClaudeRequest, request: Request):
 
     ensure_model_allowed(req.model, resolved_model)
 
-    # thinking 入参 → 思考档位（与 /v1/chat/completions 的 reasoning_effort 同一套决策，见
-    # gemini_client.resolve_thinking）；**不传 → "默认思考档位"设置**（出厂 low）。拆成两个量：
+    # thinking（+ output_config.effort）→ 思考档位（与 /v1/chat/completions 的 reasoning_effort
+    # 同一套决策，见 gemini_client.resolve_thinking）；**不传 → "默认思考档位"设置**（出厂 low），
+    # adaptive 且 effort 是 high / 没给（Claude Code 的出厂请求）同样跟随默认档。拆成两个量：
     #   extended_thinking —— 发给上游的档位（False = 不思考旧路径；1/2/4 = 档位）
     #   show_thinking     —— 出不出 thinking 块。**只看客户端是否明确要了思考**：按默认档
     #                        替它开的思考绝不出 thinking 块，帧序列与不思考时逐字节一致。
-    _plan = resolve_thinking(parse_anthropic_thinking(req.thinking))
+    _plan = resolve_thinking(parse_anthropic_thinking(req.thinking, req.output_config))
     extended_thinking = _plan.upstream
     show_thinking = _plan.show
 

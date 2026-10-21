@@ -95,7 +95,7 @@ async def create_response(request: Request):
     if not _eff:
         _eff = str(body.get("reasoning_effort") or "").strip()
     # 与 /v1/chat/completions 同一套决策（见 gemini_client.resolve_thinking）：
-    # low/medium/high 各走各的档，none/minimal 夹到 low、xhigh 夹到 high；
+    # low/medium/high 各走各的档，minimal 夹到 low、xhigh 夹到 high，none = 不思考；
     # **不传 → "默认思考档位"设置**（出厂 low），但思考只给上游用、不出 reasoning 输出项。
     _plan = resolve_thinking(parse_effort_request(_eff))
     extended_thinking = _plan.upstream

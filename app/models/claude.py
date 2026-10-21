@@ -33,6 +33,10 @@ class ClaudeRequest(BaseModel):
     # 不传（None）时上游按"默认思考档位"走，但响应里绝不出 thinking 块，响应形状与
     # 改动前逐字节一致。
     thinking: Any | None = None
+    # Anthropic 的 output_config（effort 等）。只读其中的 effort 来定思考档位（Claude Code 的
+    # /effort 走这里，见 gemini_client.parse_anthropic_thinking）。同 thinking 一样用 Any：
+    # 坏形态视同没给，绝不 422。
+    output_config: Any | None = None
 
     @field_validator("system", mode="before")
     @classmethod

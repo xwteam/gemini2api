@@ -14,10 +14,11 @@ import pytest
 from curl_cffi.requests import RequestsError
 
 from app.core import gemini_client as gc
-from app.core.gemini_client import (MODEL_HEADER_KEY, THINKING_LEVEL_DEFAULT,
-                                    THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW,
-                                    THINKING_LEVEL_MEDIUM, _build_model_header_thinking,
-                                    parse_thinking_level, thinking_level_of)
+from app.core.gemini_client import (MODEL_HEADER_KEY, THINKING_FOLLOW_DEFAULT,
+                                    THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH,
+                                    THINKING_LEVEL_LOW, THINKING_LEVEL_MEDIUM,
+                                    _build_model_header_thinking, parse_effort_request,
+                                    thinking_level_of)
 
 _AUTH = {"Authorization": "Bearer sk-test-key"}
 
@@ -266,26 +267,33 @@ def test_timeout_detector():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "effort,level",
+    "effort,requested",
     [
         ("low", 1),
         ("medium", 4),
         ("high", 2),
         # 客户端常带的别名，夹到合法档位
-        ("none", 1),
         ("minimal", 1),
         ("xhigh", 2),
         (" XHigh ", 2),
         ("LOW", 1),
-        # 空值 / 认不出的值 → 默认档（= 改动前写死的那个档），绝不抛错
-        ("", THINKING_LEVEL_DEFAULT),
-        (None, THINKING_LEVEL_DEFAULT),
-        ("deep_think", THINKING_LEVEL_DEFAULT),
-        ("3", THINKING_LEVEL_DEFAULT),
+        # none = OpenAI 官方的"不推理" → 不思考（不是夹到 low）
+        ("none", False),
+        (" None ", False),
+        # 空值 = 没传（默认档、不回传）
+        ("", None),
+        ("   ", None),
+        (None, None),
+        # 认不出的非空值 → 跟随默认档设置（不再写死 high），绝不抛错
+        ("deep_think", THINKING_FOLLOW_DEFAULT),
+        ("3", THINKING_FOLLOW_DEFAULT),
+        (3, THINKING_FOLLOW_DEFAULT),
     ],
 )
-def test_parse_thinking_level(effort, level):
-    assert parse_thinking_level(effort) == level
+def test_parse_effort_request(effort, requested):
+    got = parse_effort_request(effort)
+    # 类型也要对：False == 0、True == 1，只比 == 分不出"不思考"和档位
+    assert got == requested and type(got) is type(requested)
 
 
 def test_level_constants_match_the_reference_mapping():
@@ -343,7 +351,9 @@ def test_default_path_is_byte_for_byte_unchanged():
 
 @pytest.mark.parametrize(
     "effort,expected",
-    [("low", 1), ("medium", 4), ("high", 2), ("minimal", 1), ("xhigh", 2), ("weird", 2)],
+    [("low", 1), ("medium", 4), ("high", 2), ("minimal", 1), ("xhigh", 2),
+     ("none", False),          # OpenAI 官方"不推理" → 不思考
+     ("weird", 1)],            # 认不出 → 跟随默认思考档位（出厂 low）
 )
 def test_chat_completions_forwards_the_level(gem_client, monkeypatch, effort, expected):
     import app.routers.openai as oai

@@ -1,8 +1,8 @@
 import json
 
 # reasoning_effort 不再被布尔化：high → THINKING_LEVEL_HIGH 这个具体档位，
-# 下游用它决定 payload 的第 80 格与 model header 的第 15 位（见 gemini_client.parse_thinking_level）。
-from app.core.gemini_client import THINKING_LEVEL_DEFAULT, THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW
+# 下游用它决定 payload 的第 80 格与 model header 的第 15 位（见 gemini_client.parse_effort_request）。
+from app.core.gemini_client import THINKING_LEVEL_HIGH, THINKING_LEVEL_LOW
 
 _AUTH = {"Authorization": "Bearer sk-test-key"}
 
@@ -138,5 +138,5 @@ def test_responses_non_string_effort_enables_thinking_without_500(gem_client, mo
         "model": "gemini-flash", "input": "hi", "reasoning": {"effort": 5},
     }, headers=_AUTH)
     assert r.status_code == 200
-    # 认不出的档位值回默认档（绝不 500、也不关掉思维链）
-    assert captured["ext"] == THINKING_LEVEL_DEFAULT
+    # 认不出的档位值跟随默认思考档位（出厂 low；绝不 500、也不关掉思维链）
+    assert captured["ext"] == THINKING_LEVEL_LOW
