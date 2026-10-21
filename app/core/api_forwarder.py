@@ -92,7 +92,7 @@ def _upstream_reason(body, limit: int = 200) -> str:
             err = parsed["error"]
     except (TypeError, ValueError):
         pass
-    parts = [f"{k}={err[k]}" for k in ("type", "code") if err.get(k)]
+    parts = [f"{k}={' '.join(str(err[k]).split())[:60]}" for k in ("type", "code") if err.get(k)]
     if getattr(settings, "log_bodies_enabled", False):
         parts.append(" ".join(str(err.get("message") or body).split())[:limit])
     return " ".join(parts)
@@ -366,7 +366,7 @@ async def run_failover(candidates, attempt, pool, cooldown):
             return ok, None
         status = getattr(failure, "status_code", None)
         is_rejected = status in REQUEST_REJECTED and not getattr(failure, "gateway_error", False)
-        logger.warning(f"[thirdparty] {entry_name(entry)} 失败（HTTP {status}），换下一个")
+        logger.warning(f"[thirdparty] {entry_name(entry)} 失败（HTTP {status}）")
         failures.append(failure)
         if is_rejected:
             rejected.append(entry.id)
