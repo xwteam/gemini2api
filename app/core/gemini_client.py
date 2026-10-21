@@ -307,7 +307,12 @@ _ANTHROPIC_BUDGET_HIGH = 4096
 
 
 def _budget_level(budget) -> int | ThinkingRequest:
-    """正整数 budget → 档位；无效 budget → THINKING_FOLLOW_DEFAULT（跟随默认档）。"""
+    """正整数 budget → 档位；无效 budget → THINKING_FOLLOW_DEFAULT（跟随默认档）。
+
+    整数值的浮点（有的 SDK 把 1024 序列化成 1024.0）照整数认，与 Gemini 解析器同口径。
+    """
+    if isinstance(budget, float) and budget.is_integer():
+        budget = int(budget)
     if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
         return THINKING_FOLLOW_DEFAULT
     if budget >= _ANTHROPIC_BUDGET_HIGH:
@@ -317,10 +322,10 @@ def _budget_level(budget) -> int | ThinkingRequest:
     return THINKING_LEVEL_LOW
 
 
-# Anthropic 的 output_config.effort → 档位。官方文档：effort 设成 "high" 与不传完全相同
-# （high 就是默认值），所以 high 视同"没给档位"、跟随默认档。这不是理论情况：Claude Code
-# 每个请求都带 thinking:{"type":"adaptive"} + output_config.effort（出厂 high，2.1.296 抓包
-# 实测），用户在 Claude Code 里 /effort 换成 low / medium / xhigh / max 才会真正改到这里。
+# Anthropic 的 output_config.effort → 档位。Claude Code 每个请求都带
+# thinking:{"type":"adaptive"} + output_config.effort，出厂值是 high（2.1.296 抓包实测，
+# 不换档时每个请求都是 high），所以 high 视同"没专门选档"、跟随默认档；用户在 Claude Code
+# 里 /effort 换成 low / medium / xhigh / max 才会真正改到这里（同样抓包实测）。
 # xhigh / max 夹到本仓最高的 high。
 _ANTHROPIC_EFFORT_LEVELS = {
     "low": THINKING_LEVEL_LOW,
@@ -344,7 +349,7 @@ def parse_anthropic_thinking(thinking, output_config=None) -> int | bool | Think
                                    只给 effort 不开 thinking 也算没传）
     - disabled / between_tools  → False（effort 给了什么都不思考）
     - adaptive                  → 档位看 output_config.effort：low / medium 照档，xhigh / max →
-                                   high；high（官方默认值，等于没传）/ 没给 → THINKING_FOLLOW_DEFAULT
+                                   high；high（Claude Code 出厂值，视同没专门选档）/ 没给 → THINKING_FOLLOW_DEFAULT
                                    （跟随默认思考档位，出厂 low，面板设成 off 就不思考）
     - enabled + 合法 budget     → 按切点分档（budget 是专管思考的参数，优先于 effort）；
                                    budget 缺失/无效 → 同 adaptive
@@ -463,6 +468,10 @@ def thinking_level_of(extended_thinking) -> int:
     已有的参数上，账号池一行都不用改（它的选号/冷却/failover/自愈是另一条红线），
     调用方的真假判断也逐字节不变。
     """
+    if isinstance(extended_thinking, ThinkingRequest):
+        # 哨兵必须先经 resolve_thinking 落档；走到这里是调用方漏了那一步。静默兜底会把
+        # "跟随默认档"变成写死的 high（正是这个哨兵要修掉的老症状），所以直接报错。
+        raise TypeError(f"{extended_thinking!r} must be resolved by resolve_thinking() first")
     if extended_thinking is True:
         return THINKING_LEVEL_DEFAULT
     try:

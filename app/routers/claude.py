@@ -178,6 +178,9 @@ async def create_message(req: ClaudeRequest, request: Request):
     #   extended_thinking —— 发给上游的档位（False = 不思考旧路径；1/2/4 = 档位）
     #   show_thinking     —— 出不出 thinking 块。**只看客户端是否明确要了思考**：按默认档
     #                        替它开的思考绝不出 thinking 块，帧序列与不思考时逐字节一致。
+    # thinking.display 刻意不看：Claude Code 不论设置如何都发 "omitted"（2.1.296 抓包，
+    # 打开 showThinkingSummaries 也一样），照官方语义压掉思考文本的话 Claude Code 用户就
+    # 永远看不到思考。客户端要了思考，多给思考文本不违反协议。
     _plan = resolve_thinking(parse_anthropic_thinking(req.thinking, req.output_config))
     extended_thinking = _plan.upstream
     show_thinking = _plan.show

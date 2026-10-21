@@ -78,7 +78,7 @@ v1.6.4부터 각 API는 두 가지 경로 형식을 지원합니다:
 - **기본값 `low`**: 클라이언트가 **수준을 지정하지 않으면**(사고 파라미터를 전혀 보내지 않은 경우와, 사고는 요청했지만 몇 단계인지 밝히지 않은 경우) "기본 사고 수준"(환경 변수 `DEFAULT_THINKING_LEVEL` 또는 패널의 "설정 → 사고", 저장 즉시 적용·재시작 불필요)을 사용합니다. 출고 기본값은 `low`.
   - ⚠️ **속도 비용**: 실측상 기본 `low`는 사고하지 않을 때보다 **요청당 평균 약 5초 더 걸립니다**(flash 간단한 질문: 6.5 / 8.8초 → 8.6 / 16.6초). 속도가 가장 중요하면 기본값을 **`off`**로 설정하세요(사고 안 함·가장 빠름. 이전 버전에서 파라미터 없이 보낼 때와 업스트림 요청이 완전히 같음). 앞단 프록시에 첫 바이트 타임아웃이 있는 경우(EdgeOne 무료 15초 등) 비스트리밍 요청에 특히 주의하세요.스트리밍에도 비용이 있습니다: 사고를 요청하지 않은 요청은 기본값으로 켠 사고를 반환하지 않으므로 **본문은 사고가 끝난 뒤에 시작됩니다**(그동안 keep-alive 프레임을 보내므로 프록시가 연결을 끊지 않습니다). 추론이 필요한 질문에서 `gemini-pro`의 `low`는 실측 총 36~47초였습니다. 첫 토큰까지의 시간이 중요하면 `off`를 쓰세요. ⚠️ `off`(그리고 기본 수준 자체)는 **수준을 지정하지 않은** 요청에 적용됩니다: 사고 파라미터를 보내지 않은 요청과, 사고는 요청했지만 몇 단계인지 밝히지 않은 요청(Claude Code의 기본 설정 요청이 바로 이런 경우이므로 Claude Code도 기본 수준을 따릅니다). 클라이언트가 **수준을 명시적으로 지정한** 경우(Codex / Cursor가 low/medium/high를 고른 경우, Anthropic이 `budget_tokens`를 보낸 경우, Claude Code의 `/effort max` 등)에는 기본 수준이 적용되지 않습니다. 모든 사고를 끄려면(진짜 가장 빠름) 아래 마스터 스위치(`EXTENDED_THINKING_ENABLED=false`)를 끄세요.
   - 클라이언트가 **사고를 전혀 요청하지 않은** 경우, 기본 수준으로 켠 사고는 **생성에만 쓰이고 절대 반환되지 않습니다**: `reasoning_content` / `thinking` 블록 / 사고 part가 추가되지 않으며 사고하지 않은 응답과 필드 단위로 동일합니다(엄격한 클라이언트도 오류가 나지 않음). 사고 내용은 클라이언트가 **사고를 요청한** 경우(수준 지정 여부와 무관)에만 반환합니다(네이티브 Gemini는 여전히 `includeThoughts`만 봅니다). 기본 수준이 `off`이면 사고는 요청했지만 수준을 밝히지 않은 요청도 사고하지 않으므로 반환할 사고가 없습니다.
-- **Claude Code**(최신 버전): 모든 요청에 `adaptive` + `effort: high`(high는 Anthropic의 기본값)가 붙으므로 별도 설정 없이 여기의 기본 수준(출고 `low`, 속도 우선)을 따릅니다. 특정 세션에서 더 깊이 생각하게 하려면 Claude Code에서 `/effort max`(또는 `xhigh`)를 실행하세요 → high. `/effort low` / `medium`도 해당 수준으로 처리됩니다.
+- **Claude Code**(최신 버전): 모든 요청에 `adaptive` + `effort: high`(high는 Claude Code의 출고 설정으로, 바꾸지 않으면 매 요청이 이 값)가 붙으므로 별도 설정 없이 여기의 기본 수준(출고 `low`, 속도 우선)을 따릅니다. 특정 세션에서 더 깊이 생각하게 하려면 Claude Code에서 `/effort max`(또는 `xhigh`)를 실행하세요 → high. `/effort low` / `medium`도 해당 수준으로 처리됩니다.
 - **마스터 스위치** `EXTENDED_THINKING_ENABLED=false`: 클라이언트가 명시적으로 요청해도 항상 사고하지 않습니다. 이것이 **진짜 가장 빠른** 모드입니다. 패널의 "설정 → 사고 → '사고 허용(마스터 스위치)'"에 항상 표시되며 저장하면 즉시 적용됩니다. 기본 사고 수준과의 역할 분담: 기본 수준은 수준을 지정하지 않은 요청(Claude Code의 기본 설정 요청 포함)만, 마스터 스위치는 수준을 명시한 클라이언트까지 적용됩니다.
 - 패널의 "모델 테스트" 페이지는 기존 "사고" 체크박스 대신 **수준 선택**(낮음 / 중간 / 높음, 기본 낮음)을 사용합니다. 선택한 수준은 `reasoning_effort`로 전송되고 사고 과정은 답변 위에 표시됩니다. "기본 수준(파라미터 없음)" 항목도 있습니다: `reasoning_effort`를 보내지 않아 일반 클라이언트와 같은 경로를 타므로 설정의 기본 사고 수준(`off` 포함)의 실제 속도를 측정할 수 있습니다(사고 내용은 규정대로 반환되지 않음).
 
@@ -88,7 +88,7 @@ v1.6.4부터 각 API는 두 가지 경로 형식을 지원합니다:
 |------|------|------|
 | OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`. `minimal` → low, `xhigh` → high. `none` → 사고 안 함. 인식할 수 없는 값 → 기본 수준을 따름(오류 없음) |
 | OpenAI `/v1/responses` | `reasoning.effort`(또는 최상위 `reasoning_effort`) | 위와 같음 |
-| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`: `N<2048` → low, `2048–4095` → medium, `≥4096` → high. `{"type":"adaptive"}` 또는 잘못된 budget → `output_config.effort`를 봄: `low` / `medium`은 해당 수준, `xhigh` / `max` → high, `high`(공식 기본값으로 지정하지 않은 것과 같음) 또는 없음 → 기본 수준을 따름. `{"type":"disabled"}` → 사고 안 함. 인식할 수 없는 `type`은 보내지 않은 것으로 처리 |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`: `N<2048` → low, `2048–4095` → medium, `≥4096` → high. `{"type":"adaptive"}` 또는 잘못된 budget → `output_config.effort`를 봄: `low` / `medium`은 해당 수준, `xhigh` / `max` → high, `high`(Claude Code의 출고 설정, 명시적 선택이 없는 것으로 간주) 또는 없음 → 기본 수준을 따름. `{"type":"disabled"}` → 사고 안 함. 인식할 수 없는 `type`은 보내지 않은 것으로 처리 |
 | Gemini 네이티브 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`: `LOW` / `MEDIUM` / `HIGH`(`MINIMAL` → low, 미지정 → 기본 수준을 따름). `thinkingBudget`: `0` → 사고 안 함, `-1`(자동) → 기본 수준을 따름, `>0`은 2048 / 4096 기준으로 구분. 둘 다 주면 `thinkingLevel` 우선. `includeThoughts: true`만 주면 → 기본 수준을 따름. `includeThoughts: true`일 때만 응답에서 사고를 반환(`"thought": true` part) |
 
 ## OpenAI 호환 API
@@ -501,7 +501,7 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 | `output_config` | object | ❌ | 그 안의 `effort`만 읽으며, `thinking`과 함께 수준을 정합니다(사용법은 아래 `adaptive` 줄 참고). `thinking` 없이 `output_config.effort`만 보내면 효과가 없습니다(사고 파라미터를 보내지 않은 것으로 처리). 형태가 올바르지 않으면(객체가 아니거나 `effort`를 인식할 수 없음) 지정하지 않은 것으로 보며 오류를 내지 않습니다 |
 
 - `{"type":"enabled","budget_tokens":N}`: 켜기. `N`은 `<2048` / `2048–4095` / `>=4096` 기준으로 낮음／중간／높음 3단계에 대응합니다. 유효한 `budget_tokens`가 있으면 그것으로 수준이 정해지며 `output_config.effort`보다 우선합니다.
-- `{"type":"adaptive"}`: 켜기. 수준은 `output_config.effort`를 보고 정합니다: `low` / `medium`은 해당 수준, `xhigh` / `max` → high, `high`(공식 기본값) 또는 없음 → 기본 사고 수준을 따릅니다. `budget_tokens`가 없거나 잘못된 경우도 같음.
+- `{"type":"adaptive"}`: 켜기. 수준은 `output_config.effort`를 보고 정합니다: `low` / `medium`은 해당 수준, `xhigh` / `max` → high, `high`(Claude Code의 출고 설정, 명시적 선택이 없는 것으로 간주) 또는 없음 → 기본 사고 수준을 따릅니다. `budget_tokens`가 없거나 잘못된 경우도 같음.
 - `{"type":"disabled"}` / `{"type":"between_tools"}`: 사고하지 않음(명시적 끄기. 기본 수준이 적용되지 않으며 `output_config.effort`가 무엇이든 무시됨).
 
 사고 내용은 Anthropic 규격의 `thinking` 콘텐츠 블록으로, `text` / `tool_use` 블록**앞에** 반환됩니다. 스트리밍에서는 `content_block_start(thinking)` → `thinking_delta` → `content_block_stop` 순서입니다.

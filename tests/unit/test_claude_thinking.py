@@ -114,7 +114,7 @@ def test_parse_anthropic_thinking(payload, expected):
 
 # output_config.effort（Claude Code 的 /effort 走这里）。Claude Code 2.1.296 抓包：每个请求都带
 # thinking={"type":"adaptive","display":"omitted"} + output_config={"effort":"high"}。
-# high 是 Anthropic 的默认值（官方：设成 high 与不传完全相同）→ 跟随默认档。
+# high 是 Claude Code 的出厂值（不换档时每个请求都是它）→ 视同没专门选档，跟随默认档。
 @pytest.mark.parametrize("thinking,output_config,expected", [
     # Claude Code 出厂请求
     ({"type": "adaptive", "display": "omitted"}, {"effort": "high"}, THINKING_FOLLOW_DEFAULT),
@@ -149,6 +149,24 @@ def test_parse_anthropic_thinking(payload, expected):
 def test_output_config_effort_picks_the_level(thinking, output_config, expected):
     got = parse_anthropic_thinking(thinking, output_config)
     assert got == expected and type(got) is type(expected)
+
+
+@pytest.mark.parametrize("budget,expected", [
+    (1024.0, THINKING_LEVEL_LOW), (2048.0, THINKING_LEVEL_MEDIUM), (8192.0, THINKING_LEVEL_HIGH),
+    (1024.5, THINKING_FOLLOW_DEFAULT), (0.0, THINKING_FOLLOW_DEFAULT),
+])
+def test_integer_valued_float_budgets_count_as_integers(budget, expected):
+    """有的 SDK 把 1024 序列化成 1024.0：照整数认（与 Gemini 解析器同口径），带小数的不是合法 token 数。"""
+    got = parse_anthropic_thinking({"type": "enabled", "budget_tokens": budget})
+    assert got == expected and type(got) is type(expected)
+
+
+def test_the_sentinel_is_never_silently_turned_into_a_level():
+    """THINKING_FOLLOW_DEFAULT 必须先经 resolve_thinking 落档；直接拿去取档位要当场报错，
+    不能静默落成写死的 high（这个哨兵要修掉的正是那个老症状）。"""
+    from app.core.gemini_client import thinking_level_of
+    with pytest.raises(TypeError):
+        thinking_level_of(THINKING_FOLLOW_DEFAULT)
 
 
 @pytest.mark.parametrize("payload", [{"type": "disabled"}, {"type": "between_tools"}])

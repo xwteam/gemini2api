@@ -70,7 +70,7 @@ v1.6.4 以降、各 API は 2 種類のパスに対応しています。
 - **既定は `low`**：クライアントが**レベルを指定しない**場合（思考パラメータをまったく送らない場合と、思考は要求したがレベルを示さない場合）は「既定の思考レベル」（環境変数 `DEFAULT_THINKING_LEVEL`、またはパネルの「設定 → 思考」。保存すると即時反映、再起動不要）を使います。出荷時は `low`。
   - ⚠️ **速度のコスト**：実測では既定の `low` は思考なしより**1 リクエストあたり平均約 5 秒遅く**なります（flash の簡単な質問：6.5 / 8.8 秒 → 8.6 / 16.6 秒）。速度を最優先するなら既定を **`off`** にしてください（思考なし・最速。旧版でパラメータを付けなかったときと上流へのリクエストが完全に同じ）。前段プロキシに初回バイトのタイムアウトがある場合（EdgeOne 無料版の 15 秒など）は非ストリーミングリクエストに特に注意してください。ストリーミングにもコストがあります：思考を要求していないリクエストでは既定値で有効にした思考を返さないため、**本文は思考が終わってから始まります**（その間はキープアライブを送るのでプロキシに切断されません）。推論が必要な質問では `gemini-pro` の `low` は実測で合計 36～47 秒でした。最初のトークンまでの時間が重要なら `off` を使ってください。⚠️ `off`（および既定レベルそのもの）が対象とするのは**レベルが指定されていない**リクエストです：思考パラメータを送らないものと、思考は要求したがレベルを示さないもの（Claude Code の初期設定のリクエストがこれに当たるため、Claude Code も既定レベルに従います）。クライアントが**明示的にレベルを指定した**場合（Codex / Cursor が low/medium/high を選んだ場合、Anthropic が `budget_tokens` を送った場合、Claude Code の `/effort max` など）、既定レベルは効きません。すべての思考を止める（本当に最速にする）には下のマスタースイッチ（`EXTENDED_THINKING_ENABLED=false`）をオフにしてください。
   - クライアントが**思考を一切要求していない**場合、既定レベルで有効にした思考は**生成にのみ使い、決して返しません**：`reasoning_content` / `thinking` ブロック / 思考 part は追加されず、思考なしのレスポンスとフィールド単位で同一です（厳格なクライアントもエラーになりません）。思考内容を返すのは、クライアントが**思考を要求した**場合（レベルを指定したかどうかを問いません）だけです（ネイティブ Gemini は引き続き `includeThoughts` だけを見ます）。既定レベルが `off` のときは、思考は要求したがレベルを示さないリクエストも思考しないため、返すべき思考はありません。
-- **Claude Code**（最新版）：すべてのリクエストに `adaptive` + `effort: high`（high は Anthropic の既定値）が付くため、追加の設定なしでここの既定レベル（出荷時 `low`、速度優先）に従います。あるセッションでより深く考えさせたいときは、Claude Code で `/effort max`（または `xhigh`）を実行します → high。`/effort low` / `medium` もそのレベルで扱われます。
+- **Claude Code**（最新版）：すべてのリクエストに `adaptive` + `effort: high`（high は Claude Code の出荷時設定で、変更しない限り毎回これ）が付くため、追加の設定なしでここの既定レベル（出荷時 `low`、速度優先）に従います。あるセッションでより深く考えさせたいときは、Claude Code で `/effort max`（または `xhigh`）を実行します → high。`/effort low` / `medium` もそのレベルで扱われます。
 - **マスタースイッチ** `EXTENDED_THINKING_ENABLED=false`：クライアントが明示的に要求しても常に思考しません。これが**本当に最速**のモードです。パネルの「設定 → 思考 →「思考を許可（マスタースイッチ）」」に常に表示され、保存すると即座に反映されます。既定の思考レベルとの役割分担：既定レベルはレベルを指定しないリクエスト（Claude Code の初期設定のリクエストを含む）が対象、マスタースイッチはレベルを明示したクライアントも対象です。
 - パネルの「モデルテスト」ページは、従来の「思考」チェックボックスの代わりに**レベル選択**（低 / 中 / 高、既定は低）になりました。選んだレベルは `reasoning_effort` として送られ、思考過程は回答の上に表示されます。 「既定レベル（パラメータなし）」も選べます：`reasoning_effort` を送らず通常のクライアントと同じ経路を通るので、設定の既定の思考レベル（`off` を含む）の実際の速度を測れます（思考内容は規定どおり返されません）。
 
@@ -80,7 +80,7 @@ v1.6.4 以降、各 API は 2 種類のパスに対応しています。
 |------|------|------|
 | OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`。`minimal` → low、`xhigh` → high。`none` → 思考なし。認識できない値 → 既定レベルに従う（エラーにしません） |
 | OpenAI `/v1/responses` | `reasoning.effort`（またはトップレベルの `reasoning_effort`） | 同上 |
-| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low、`2048–4095` → medium、`≥4096` → high。`{"type":"adaptive"}` または無効な budget → `output_config.effort` を見る：`low` / `medium` はそのレベル、`xhigh` / `max` → high、`high`（公式の既定値で、指定なしと同じ）または未指定 → 既定レベルに従う。`{"type":"disabled"}` → 思考なし。認識できない `type` は未指定と同じ扱い |
+| Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low、`2048–4095` → medium、`≥4096` → high。`{"type":"adaptive"}` または無効な budget → `output_config.effort` を見る：`low` / `medium` はそのレベル、`xhigh` / `max` → high、`high`（Claude Code の出荷時設定で、明示的な選択なしとみなす）または未指定 → 既定レベルに従う。`{"type":"disabled"}` → 思考なし。認識できない `type` は未指定と同じ扱い |
 | Gemini ネイティブ `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low、未指定 → 既定レベルに従う）。`thinkingBudget`：`0` → 思考なし、`-1`（自動）→ 既定レベルに従う、`>0` は 2048 / 4096 を境に段階分け。両方指定した場合は `thinkingLevel` を優先。`includeThoughts: true` だけを指定した場合 → 既定レベルに従う。`includeThoughts: true` のときだけ思考をレスポンスで返します（`"thought": true` の part） |
 
 ## OpenAI 互換 API
@@ -508,7 +508,7 @@ curl -X POST http://localhost:5918/claude/v1/messages \
 | `output_config` | object | ❌ | その中の `effort` だけを読み、`thinking` と組み合わせてレベルを決めます（使い方は下の `adaptive` の行）。`thinking` なしで `output_config.effort` だけを送っても効果はありません（思考パラメータを送らなかったものとして扱います）。形が正しくない場合（オブジェクトでない、`effort` を認識できない）は指定なしと同じ扱いで、エラーにはしません |
 
 - `{"type":"enabled","budget_tokens":N}`：有効。`N` は `<2048` / `2048–4095` / `>=4096` で低／中／高の 3 段階に対応します。有効な `budget_tokens` があればそれでレベルが決まり、`output_config.effort` より優先されます。
-- `{"type":"adaptive"}`：有効。レベルは `output_config.effort` を見て決めます：`low` / `medium` はそのレベル、`xhigh` / `max` → high、`high`（公式の既定値）または未指定 → 既定の思考レベルに従います。`budget_tokens` がない／無効な場合も同様。
+- `{"type":"adaptive"}`：有効。レベルは `output_config.effort` を見て決めます：`low` / `medium` はそのレベル、`xhigh` / `max` → high、`high`（Claude Code の出荷時設定で、明示的な選択なしとみなす）または未指定 → 既定の思考レベルに従います。`budget_tokens` がない／無効な場合も同様。
 - `{"type":"disabled"}` / `{"type":"between_tools"}`：思考しません（明示的なオフ。既定レベルは適用されず、`output_config.effort` が何であっても無視されます）。
 
 思考内容は Anthropic 仕様の `thinking` コンテンツブロックとして、`text` / `tool_use` ブロックの**前に**返します。ストリーミングでは `content_block_start(thinking)` → `thinking_delta` → `content_block_stop` です。

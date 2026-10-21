@@ -423,6 +423,83 @@ def test_follow_default_resolves_against_the_current_setting(monkeypatch, settin
         assert plan == gc.ThinkingPlan(level, expected_show)
 
 
+# 每条路由 × 默认档 off / low：off 时上游不思考、响应里一个思考字都不出；low 时上游走 1 档、
+# 客户端要了思考就回传。（独立审查的探针矩阵收编进来）
+_TOOLS_ANTH = [{"name": "get_weather", "description": "w", "input_schema": {"type": "object"}}]
+FOLLOW_ROUTES = {
+    "anthropic": ("/v1/messages", {**_CLAUDE, **_CC_THINKING}, False),
+    "anthropic-stream": ("/v1/messages", {**_CLAUDE, **_CC_THINKING, "stream": True}, True),
+    "anthropic-buffered-tools": ("/v1/messages",
+                                 {**_CLAUDE, **_CC_THINKING, "stream": True, "tools": _TOOLS_ANTH}, True),
+    "openai": ("/v1/chat/completions", {**_CHAT, "reasoning_effort": "bogus"}, False),
+    "openai-stream": ("/v1/chat/completions", {**_CHAT, "reasoning_effort": "bogus", "stream": True}, True),
+    "openai-stream-tools": ("/v1/chat/completions", {**_CHAT, "reasoning_effort": "bogus", "stream": True,
+                                                     "tools": _TOOLS_OAI}, True),
+    "responses": ("/v1/responses", {**_RESP, "reasoning": {"effort": "bogus"}}, False),
+    "responses-stream": ("/v1/responses", {**_RESP, "reasoning": {"effort": "bogus"}, "stream": True}, True),
+    "gemini": (_GEM_PATH, {**_NATIVE, "generationConfig": {"thinkingConfig": {"includeThoughts": True}}},
+               False),
+    "gemini-stream": ("/v1beta/models/gemini-flash:streamGenerateContent",
+                      {**_NATIVE, "generationConfig": {"thinkingConfig": {"includeThoughts": True}}}, True),
+}
+# OpenAI 流式带工具（buffered）这条路径历来不回传 reasoning_content（旧设计，对合规是安全的）
+_NO_ECHO_BY_DESIGN = {"openai-stream-tools"}
+
+
+@pytest.mark.parametrize("case", sorted(FOLLOW_ROUTES))
+def test_follow_default_off_thinks_nowhere_and_returns_nothing(gem_client, monkeypatch, case):
+    path, body, stream = FOLLOW_ROUTES[case]
+    captured = _install(monkeypatch, *_routers())
+    monkeypatch.setattr(settings, "default_thinking_level", "off")
+    out = _post(gem_client, path, body, stream=stream)
+    assert captured and all(x is False for x in captured), captured
+    assert THOUGHTS[:6] not in out
+    assert not [s for s in _json_strings(out) if THOUGHTS[:6] in s]
+
+
+@pytest.mark.parametrize("case", sorted(FOLLOW_ROUTES))
+def test_follow_default_low_thinks_at_low_and_returns_it(gem_client, monkeypatch, case):
+    path, body, stream = FOLLOW_ROUTES[case]
+    captured = _install(monkeypatch, *_routers())
+    monkeypatch.setattr(settings, "default_thinking_level", "low")
+    out = _post(gem_client, path, body, stream=stream)
+    assert captured[:1] == [THINKING_LEVEL_LOW], captured
+    assert (THOUGHTS[:6] in out) is (case not in _NO_ECHO_BY_DESIGN)
+
+
+def test_claude_code_request_under_off_is_byte_identical_to_no_thinking(gem_client, monkeypatch):
+    """默认档 off 时，Claude Code 的出厂请求与完全不带思考参数的请求逐字节一致（流式与非流式）。"""
+    _install(monkeypatch, *_routers())
+    monkeypatch.setattr(settings, "default_thinking_level", "off")
+    for extra, stream in (({"stream": True}, True), ({}, False)):
+        a = _post(gem_client, "/v1/messages", {**_CLAUDE, **_CC_THINKING, **extra}, stream=stream)
+        b = _post(gem_client, "/v1/messages", {**_CLAUDE, **extra}, stream=stream)
+        assert _norm(a) == _norm(b)
+
+
+@pytest.mark.parametrize("output_config", [None, "x", 1, 1.5, True, [], [1], {"effort": None},
+                                           {"effort": {"a": [1]}}, {"effort": 7},
+                                           {"format": {"type": "json_schema"}}])
+def test_odd_output_config_shapes_never_422_including_count_tokens(gem_client, monkeypatch,
+                                                                   output_config):
+    _install(monkeypatch, *_routers())
+    body = {**_CLAUDE, "thinking": {"type": "adaptive"}, "output_config": output_config}
+    for path in ("/v1/messages/count_tokens", "/v1/messages"):
+        r = gem_client.post(path, json=body, headers=_AUTH)
+        assert r.status_code == 200, (path, r.text)
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/v1/chat/completions", {**_CHAT, "reasoning_effort": "none", "stream": True}),
+    ("/v1/responses", {**_RESP, "reasoning": {"effort": "none"}, "stream": True}),
+])
+def test_none_effort_on_streams_means_no_thinking(gem_client, monkeypatch, path, body):
+    captured = _install(monkeypatch, *_routers())
+    monkeypatch.setattr(settings, "default_thinking_level", "high")
+    out = _post(gem_client, path, body, stream=True)
+    assert captured == [False] and THOUGHTS[:6] not in out
+
+
 def test_none_effort_means_no_thinking_and_nothing_returned(gem_client, monkeypatch):
     """reasoning_effort=none：不思考（走旧路径），即使默认档是 high 也一样，响应里没有思考。"""
     import app.routers.openai as oai
