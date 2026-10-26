@@ -648,3 +648,29 @@ def test_an_error_without_fallback_keeps_the_resume_point(wired):
     assert r.status_code == 504, r.text
     assert _stored(w).gemini_conv_id == before
     assert _stored(w).account_id == f"account-{idx}"
+
+
+@pytest.mark.parametrize("mode", ["nonstream", "stream", "buffered"])
+def test_a_gemini_answer_without_a_resume_point_drops_the_stale_one(wired, mode):
+    """Gemini 答了这一轮、响应里却没有可用的续接元数据（比如谷歌改了 id 格式）：旧的续接点已经
+    落后于这一轮，留着它下一轮就会从更早的地方只发最后一句。清掉，下一轮发完整历史。"""
+    w = wired
+    first, idx = _first_turn(w)
+    original = first._answer
+
+    def no_metadata(*a, **k):
+        result = original(*a, **k)
+        return {**result, "conversation_id": ""}
+
+    first._answer = no_metadata
+    kw = {"stream": mode != "nonstream", "tools": _TOOLS if mode == "buffered" else None}
+    _chat(w, [U1, A1, U2], **kw)
+    assert first.calls[-1]["conv"], "前提不成立：第二轮本该续接"
+    assert (_stored(w).gemini_conv_id, _stored(w).account_id) == ("", "")
+
+    first._answer = original
+    marks = _call_marks(w)
+    _chat(w, [U1, A1, U2, {"role": "assistant", "content": "a2"}, U3])
+    new_calls = _calls_since(w, marks)
+    assert [c["conv"] for c in new_calls] == [""]
+    assert new_calls[0]["prompt"].startswith("Human: u1")

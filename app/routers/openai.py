@@ -200,10 +200,11 @@ async def _maybe_fallback_stream(request, req: ChatRequest, messages_raw: list, 
 
 
 async def _forget_resume_point(conv) -> None:
-    """这一轮是第三方兜底答的：清掉会话的续接点，下一轮发完整历史、新开会话。
+    """这一轮答完了、存储里却记不下它的续接点：清掉旧的，下一轮发完整历史、新开会话。
 
-    续接点（[cid, rid, rcid] + 账号）只记 Gemini 那条会话答到了哪一轮。兜底答的这一轮 Gemini
-    那边根本没见过；下一轮若还从旧的续接点只发最后一句，这一轮的问答就静默丢了。
+    续接点（[cid, rid, rcid] + 账号）只记 Gemini 那条会话答到了哪一轮。两种情况会让它落后：
+    这一轮是第三方兜底答的（Gemini 那边根本没见过这一轮），或 Gemini 答了但响应里没有可用的
+    续接元数据。下一轮若还从旧的续接点只发最后一句，这一轮的问答就静默丢了。
     报错（没有兜底）不清：客户端多半原样重试这一轮，从原来的续接点接着走正好。
     """
     if conv is None or not getattr(conv, "gemini_conv_id", ""):
@@ -500,6 +501,9 @@ async def chat_completions(req: ChatRequest, request: Request):
         conv.add_message("user", last_user)
         conv.add_message("assistant", text)
         await conversation_store.update(conv)
+    else:
+        # Gemini 答了这一轮却没给出可用的续接点：旧的续接点已经落后，作废（见 _forget_resume_point）
+        await _forget_resume_point(conv)
 
     if has_tools:
         async def _regenerate_for_tools() -> str:
@@ -776,6 +780,9 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
         conv.account_id = new_account_id
         conv.add_message("assistant", full_text)
         await conversation_store.update(conv)
+    elif not new_conv_id:
+        # Gemini 答了这一轮却没给出可用的续接点：旧的续接点已经落后，作废
+        await _forget_resume_point(conv)
 
     # 按-key 用量落账。OpenAI 流式过去从头到尾不出现 usage/estimate_tokens（四个协议里
     # 唯一的真空区）。这里**只在内部记账**，绝不往 SSE 里加 usage 帧 —— 那是线上协议的
@@ -900,6 +907,9 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
         conv.account_id = result.get("account_id") or ""
         conv.add_message("assistant", text)
         await conversation_store.update(conv)
+    elif not new_conv_id:
+        # Gemini 答了这一轮却没给出可用的续接点：旧的续接点已经落后，作废
+        await _forget_resume_point(conv)
 
     if has_tools:
         # 此刻只发过 role 首帧 + keepalive，还没发任何 content 块，重试是安全的。
