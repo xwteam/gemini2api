@@ -425,6 +425,34 @@ def test_request_fingerprint():
     assert request_fingerprint("\ud800", "") != request_fingerprint("\ud801", "")
 
 
+def test_same_request_as_pins_the_fingerprint_of_the_first_attempt():
+    """路由对同一个客户端请求的改写重试（续接失败 → 改发完整历史）prompt 与 conversation_id 都变了，
+    在 same_request_as 里发就沿用第一次尝试的指纹（I.3：一个客户端请求只 +1）。"""
+    assert mb.attempt_fingerprint("full history", "") == request_fingerprint("full history", "")
+    with mb.same_request_as("q2", '["c_1", "r_1", "rc_1"]'):
+        assert mb.attempt_fingerprint("full history", "") == request_fingerprint("q2", '["c_1", "r_1", "rc_1"]')
+    assert mb.attempt_fingerprint("full history", "") == request_fingerprint("full history", "")
+
+
+def test_a_task_created_inside_same_request_as_keeps_the_pinned_fingerprint():
+    """路由的重试都包成 task 跑（保活）：task 建在块里就继承它，块结束之后照样有效；块外不受影响。"""
+    import asyncio
+
+    async def main():
+        async def attempt():
+            await asyncio.sleep(0)
+            return mb.attempt_fingerprint("full history", "")
+
+        with mb.same_request_as("q2", "c1"):
+            task = asyncio.create_task(attempt())
+        outside = mb.attempt_fingerprint("full history", "")
+        return await task, outside
+
+    inside, outside = asyncio.run(main())
+    assert inside == request_fingerprint("q2", "c1")
+    assert outside == request_fingerprint("full history", "")
+
+
 # ---------------------------------------------------------------------------
 # 配置：非法值回退默认并 WARNING，服务照样起得来（C.4 / I.12）
 # ---------------------------------------------------------------------------

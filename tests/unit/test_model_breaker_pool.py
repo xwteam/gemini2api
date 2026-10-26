@@ -18,7 +18,7 @@ from curl_cffi.requests import RequestsError
 
 from app.core import gemini_client as gc
 from app.core.account_pool import Account, AccountPool, AccountStatus
-from app.core.model_breaker import model_breaker, request_fingerprint
+from app.core.model_breaker import model_breaker, request_fingerprint, same_request_as
 
 PHRASE = "I seem to be encountering an error. Can I try something else for you?"
 
@@ -210,6 +210,22 @@ def test_the_conversation_id_is_part_of_the_fingerprint(spy):
     _gen_err(pool, "继续", conversation_id='["c_1", "r_1", null]')
     _gen_err(pool, "继续", conversation_id='["c_2", "r_2", null]')
     assert _state() == "open"
+
+
+def test_a_rewritten_retry_of_the_same_request_keeps_the_first_fingerprint(spy):
+    """路由对同一个客户端请求的改写重试（续接失败 → 改发完整历史）在 same_request_as 里发：池记的
+    指纹仍是第一次尝试的，计数只 +1（I.3）。池换号照旧每次尝试各记一次。"""
+    resume = '["c_1", "r_1", "rc_1"]'
+    pool = _pool(_Client([_failure(), _failure(), _failure()]), _Client([_failure()]))
+    _gen_err(pool, "q2", conversation_id=resume, account_id="account-0")
+    with same_request_as("q2", resume):
+        _gen_err(pool, "Human: q1\n\nAssistant: a1\n\nHuman: q2")
+
+    failures = [c for c in spy if c[0] == "failure"]
+    assert len(failures) == 3, "续接一次 + 完整历史换号两次，每次尝试各记一次"
+    assert {f[2] for f in failures} == {request_fingerprint("q2", resume)}
+    snap = model_breaker.snapshot()["flash"]
+    assert (snap["state"], snap["consecutive_failures"]) == ("closed", 1)
 
 
 def test_a_non_empty_answer_is_a_success_and_closes_the_breaker(spy):

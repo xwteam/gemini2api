@@ -404,3 +404,105 @@ def test_probe_timeout_is_the_requests_real_budget_plus_acquire_plus_30(world, m
     gate.check()
     st = model_breaker._families["flash-lite"]
     assert st.probe_timeout == pytest.approx(180 + 60 + 30), "生图意图取大的预算 + acquire_timeout + 30"
+
+
+# ---------------------------------------------------------------------------
+# 一个客户端请求只 +1：续接失败后改发完整历史，沿用第一次尝试的指纹（I.3）
+# ---------------------------------------------------------------------------
+
+_TRIPLES = {
+    "thread-1": ["c_9a1b2c3d4e5f6789", "r_0011223344556677", "rc_8899aabbccddeeff"],
+    "thread-2": ["c_1111222233334444", "r_5555666677778888", "rc_9999aaaabbbbcccc"],
+}
+_RESUMED_TURN = [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"},
+                 {"role": "user", "content": "q2"}]
+
+
+class _AlwaysThePhrase:
+    """假的 GeminiWebClient：每次尝试都回失败套话（流式在任何输出之前）。"""
+
+    def __init__(self):
+        self._healthy = True
+        self._heal_lock = asyncio.Lock()
+        self.calls = []
+
+    @property
+    def is_healthy(self):
+        return self._healthy
+
+    async def generate(self, prompt, model, conversation_id="", attachments=None, gem_id=None,
+                       extended_thinking=False):
+        self.calls.append((prompt, conversation_id))
+        raise gc.GeminiFailureReply(PHRASE)
+
+    async def generate_stream(self, prompt, model, conversation_id="", attachments=None,
+                              gem_id=None, extended_thinking=False):
+        self.calls.append((prompt, conversation_id))
+        raise gc.GeminiFailureReply(PHRASE)
+        yield  # pragma: no cover - 保留 async generator 形状
+
+
+@pytest.fixture
+def resumed(gem_client, monkeypatch, tmp_path):
+    """真账号池（两个账号，每次都回套话）+ 真会话存储：两段对话都有有效的续接点、记在 account-0。"""
+    import app.core.conversation_store as store_module
+    import app.routers.openai as oai
+    from app.core.account_pool import Account, AccountPool, AccountStatus
+    from app.core.conversation_store import ConversationStore
+
+    monkeypatch.setattr(store_module, "DATA_DIR", tmp_path / "conversations")
+    store = ConversationStore()
+    monkeypatch.setattr(oai, "conversation_store", store)
+    ups = [_AlwaysThePhrase(), _AlwaysThePhrase()]
+    pool = AccountPool()
+    pool._accounts = [Account(id=f"account-{i}", psid=f"psid-{i}", psidts="", label=f"account-{i}",
+                              status=AccountStatus.ACTIVE, client=u) for i, u in enumerate(ups)]
+    pool._max_concurrent = 8
+    pool._acquire_timeout = 1.0
+    monkeypatch.setattr(oai, "gemini_client", pool)
+
+    async def seed():
+        for conv_id, triple in _TRIPLES.items():
+            conv = await store.create(conv_id, "gemini-flash")
+            conv.gemini_conv_id = json.dumps(triple)
+            conv.account_id = "account-0"
+            await store.update(conv)
+
+    asyncio.run(seed())
+    return SimpleNamespace(http=gem_client, ups=ups)
+
+
+def _resumed_chat(r, mode, conversation_id="thread-1"):
+    body = {"model": "gemini-flash", "stream": mode != "nonstream", "conversation_id": conversation_id,
+            "messages": _RESUMED_TURN}
+    if mode == "buffered":
+        body["tools"] = _TOOLS
+    if mode == "nonstream":
+        resp = r.http.post("/v1/chat/completions", json=body, headers=_AUTH)
+        assert resp.status_code == 502, resp.text
+        return
+    with r.http.stream("POST", "/v1/chat/completions", json=body, headers=_AUTH) as resp:
+        text = "".join(resp.iter_text())
+    assert [e["type"] for e in _errors(text)] == ["api_error"], text
+
+
+@pytest.mark.parametrize("mode", ["nonstream", "stream", "buffered"])
+def test_a_resumed_request_retried_with_the_full_history_counts_once(resumed, mode):
+    """续接失败（套话不是超时）→ 路由改发完整历史：prompt 与 conversation_id 都变了，按公式是另一个
+    指纹。过去一个客户端请求就凑够默认阈值 2、自己把熔断打开了 —— 之后 60 秒所有开了兜底的 flash
+    chat 请求都被送去第三方。I.3 / 文档：同一请求的换号、重试、客户端重发只算一个。"""
+    _resumed_chat(resumed, mode)
+
+    calls = [c for u in resumed.ups for c in u.calls]
+    assert any(conv for _, conv in calls), ("前提：先按续接点发过", calls)
+    assert any(not conv and "Human: q1" in prompt for prompt, conv in calls), \
+        ("前提：续接失败后改发了完整历史", calls)
+    snap = model_breaker.snapshot()["flash"]
+    assert (snap["state"], snap["consecutive_failures"]) == ("closed", 1), snap
+
+
+@pytest.mark.parametrize("mode", ["nonstream", "stream", "buffered"])
+def test_two_different_resumed_requests_still_count_as_two(resumed, mode):
+    _resumed_chat(resumed, mode, "thread-1")
+    _resumed_chat(resumed, mode, "thread-2")
+    assert model_breaker.snapshot()["flash"]["state"] == "open"

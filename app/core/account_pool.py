@@ -13,7 +13,7 @@ from app.core.gemini_client import (
     is_timeout_error, model_family,
 )
 from app.core import keepalive_modes
-from app.core.model_breaker import model_breaker, request_fingerprint
+from app.core.model_breaker import attempt_fingerprint, model_breaker
 from app.core.access_context import current_bound_account_ids
 from app.core.fallback import is_empty_result
 from app.config import settings
@@ -1071,14 +1071,15 @@ class AccountPool:
     # 模型熔断的记录点放在池里（规格 C.5 / I.3）：一次上游尝试的结果（成功 / 换号 / 不换号的失败）
     # 都在这里落地，池手里也正好有 model、prompt 与 conversation_id。client 层的同号快速重试不单独
     # 记；路由层的「退回不思考」「完整历史」重试是新的上游尝试，照常各记各的（同一请求的指纹相同，
-    # 计数只 +1）。每次尝试只记一个结果（规格 I.6）。
+    # 计数只 +1：退回不思考是同一个 prompt；完整历史换了 prompt，路由在 same_request_as 里发它，
+    # 这里经 attempt_fingerprint 沿用第一次尝试的指纹）。每次尝试只记一个结果（规格 I.6）。
     def _breaker_failure(self, model: str, prompt: str, conversation_id: str,
                          started_at: float, exc: Exception) -> None:
         if not _breaker_counts(exc):
             return
         model_breaker.record_failure(
             self.family_of(model), started_at=started_at,
-            fingerprint=request_fingerprint(prompt, conversation_id),
+            fingerprint=attempt_fingerprint(prompt, conversation_id),
             reason=_error_summary(exc),
         )
 

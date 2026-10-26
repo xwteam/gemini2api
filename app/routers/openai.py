@@ -25,7 +25,7 @@ from app.core.gemini_client import (GEMINI_MODELS, GENERATION_ERRORS, MODEL_ALIA
                                     generate_with_thinking_fallback, is_timeout_error,
                                     parse_conversation_metadata, parse_effort_request,
                                     resolve_thinking, should_retry_without_thinking)
-from app.core.model_breaker import family_label, model_breaker
+from app.core.model_breaker import family_label, model_breaker, same_request_as
 from app.core.thinking_stream import HiddenThoughts, drop_thought_events
 from app.core.stream import split_into_chunks, format_sse, iter_with_keepalive, SSE_KEEPALIVE_INTERVAL, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.openai import (
@@ -648,16 +648,19 @@ async def chat_completions(req: ChatRequest, request: Request):
             # 这一步是新开会话：不带续接参数、不钉会话的账号（钉住的账号可能正是失败的原因），
             # 只钉 Gem 的账号。也接住「钉的账号真发时才报 unavailable」的竞态（见 _resume_target）。
             if gemini_conv_id and not is_timeout_error(err):
+                # 同一个客户端请求的改写重试：熔断沿用第一次尝试的指纹，一个请求只 +1（规格 I.3）
+                first_attempt = (prompt, gemini_conv_id)
                 prompt = build_prompt_from_messages(messages_raw)
                 if has_tools:
                     tools_raw = [t.model_dump() for t in req.tools]
                     prompt = build_tool_prompt(prompt, tools_raw, req.tool_choice)
                 try:
                     # 新开会话：历史里的附件（图片 / 文件）也要一起发（真流式 / buffered 同口径）
-                    result = await generate_with_thinking_fallback(
-                        gemini_client, prompt, resolved_model, "", attachments,
-                        gem_id=gem_id, account_id=gem_account_id,
-                        extended_thinking=_full_history_thinking(err, extended_thinking))
+                    with same_request_as(*first_attempt):
+                        result = await generate_with_thinking_fallback(
+                            gemini_client, prompt, resolved_model, "", attachments,
+                            gem_id=gem_id, account_id=gem_account_id,
+                            extended_thinking=_full_history_thinking(err, extended_thinking))
                     gemini_conv_id = ""
                     account_id = gem_account_id
                 except Exception as e3:
@@ -925,10 +928,12 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                 logger.warning(f"extended-thinking stream failed, retrying normal: {e}")
                 retry_args = (prompt, gemini_conv_id, account_id, False)
         if retry_args is not None:
-            # 重试是一整轮非流式生成：用 task + keepalive 续心跳，别制造一段远超保活间隔的死寂
-            retry_task = asyncio.create_task(generate_with_thinking_fallback(
-                gemini_client, retry_args[0], model, retry_args[1], attachments,
-                gem_id=gem_id, account_id=retry_args[2], extended_thinking=retry_args[3]))
+            # 重试是一整轮非流式生成：用 task + keepalive 续心跳，别制造一段远超保活间隔的死寂。
+            # 完整历史重试换了 prompt：熔断沿用第一次尝试的指纹（规格 I.3），task 要建在块里。
+            with same_request_as(prompt, gemini_conv_id):
+                retry_task = asyncio.create_task(generate_with_thinking_fallback(
+                    gemini_client, retry_args[0], model, retry_args[1], attachments,
+                    gem_id=gem_id, account_id=retry_args[2], extended_thinking=retry_args[3]))
             try:
                 async for ping in _sse_keepalive_during(retry_task):
                     yield ping
@@ -1087,10 +1092,12 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
             if has_tools and req is not None and req.tools:
                 full_prompt = build_tool_prompt(full_prompt, [t.model_dump() for t in req.tools],
                                                 req.tool_choice)
-            retry_task = asyncio.create_task(generate_with_thinking_fallback(
-                gemini_client, full_prompt, model, "", attachments,
-                gem_id=gem_id, account_id=gem_account_id,
-                extended_thinking=_full_history_thinking(e, extended_thinking)))
+            # 同一个客户端请求的改写重试：熔断沿用第一次尝试的指纹（规格 I.3），task 要建在块里
+            with same_request_as(prompt, gemini_conv_id):
+                retry_task = asyncio.create_task(generate_with_thinking_fallback(
+                    gemini_client, full_prompt, model, "", attachments,
+                    gem_id=gem_id, account_id=gem_account_id,
+                    extended_thinking=_full_history_thinking(e, extended_thinking)))
             try:
                 async for ping in _sse_keepalive_during(retry_task):
                     yield ping

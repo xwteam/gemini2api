@@ -8,10 +8,11 @@
 
 每个模型族（flash / flash-lite / pro / argon / 心跳发现的其它族）一个状态机，进程内全局、不持久化：
 
-  closed     计数：窗口内「疑似故障」失败的**不同请求**个数（I.3：同一请求的换号、思考重试、客户端
-             重发都只 +1，指纹见 request_fingerprint）。距上一次计入的失败超过 WINDOW 才从 1 重新
-             计 —— 按「这次失败尝试的开始时刻」判断（I.2：失败要满一个预算才记得下来，pro 的预算 300
-             秒 = 默认窗口，按记下的时刻判，pro 在顺序流量下永远凑不齐两次）。够 THRESHOLD → open。
+  closed     计数：窗口内「疑似故障」失败的**不同请求**个数（I.3：同一请求的换号、思考重试、续接失败后
+             改发完整历史、客户端重发都只 +1，指纹见 request_fingerprint / same_request_as）。距上一次
+             计入的失败超过 WINDOW 才从 1 重新计 —— 按「这次失败尝试的开始时刻」判断（I.2：失败要满一个
+             预算才记得下来，pro 的预算 300 秒 = 默认窗口，按记下的时刻判，pro 在顺序流量下永远凑不齐
+             两次）。够 THRESHOLD → open。
   open       开放期内 should_bypass 为真：开了兜底的 /v1/chat/completions 请求直接走兜底。期间记到的
              失败只更新 last_reason / last_failure_at（不续期、不翻倍）。到期转 half_open。
   half_open  放行恰好一个探测请求（第一个调用者占住探测位，其它调用者照样绕开）。这一轮里第一个计入的
@@ -35,6 +36,8 @@ import hashlib
 import itertools
 import logging
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple
@@ -75,6 +78,30 @@ def request_fingerprint(prompt: str, conversation_id: str = "") -> str:
     """
     raw = f"{prompt or ''}\0{conversation_id or ''}".encode("utf-8", "surrogatepass")
     return hashlib.sha256(raw).hexdigest()[:16]
+
+
+# 路由对同一个客户端请求的「改写重试」—— 续接失败后改发完整历史（openai.py 的非流式 / buffered /
+# 真流式三处）—— prompt 与 conversation_id 都变了，按公式是另一个指纹：一个请求就能凑够默认阈值 2、
+# 自己把熔断打开（之后一个开放期里开了兜底的请求全被送去第三方）。所以这类重试在 same_request_as
+# 里发，池记失败时沿用第一次尝试的指纹。用 ContextVar 而不是给池加参数：池、
+# generate_with_thinking_fallback 与所有测试替身的签名都不用动。路由的重试多半包成 task 跑（保活），
+# task 建立时复制当时的上下文 —— task 要建在块里面，块结束之后它照样带着这个指纹。
+_SAME_REQUEST: ContextVar[str | None] = ContextVar("model_breaker_same_request", default=None)
+
+
+@contextmanager
+def same_request_as(prompt: str, conversation_id: str = ""):
+    """块里（含块里建的 task）发出的上游尝试，熔断一律按 (prompt, conversation_id) 那次尝试的指纹计数。"""
+    token = _SAME_REQUEST.set(request_fingerprint(prompt, conversation_id))
+    try:
+        yield
+    finally:
+        _SAME_REQUEST.reset(token)
+
+
+def attempt_fingerprint(prompt: str, conversation_id: str = "") -> str:
+    """池记失败时用的指纹：在 same_request_as 里就是那次尝试的，否则按公式现算。"""
+    return _SAME_REQUEST.get() or request_fingerprint(prompt, conversation_id)
 
 
 def family_label(family: str) -> str:
