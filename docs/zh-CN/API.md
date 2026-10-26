@@ -97,6 +97,7 @@ cat .env | grep API_KEY
 | 429 | `rate_limit_error` | 请求过于频繁 |
 | 500 | `server_error` | 服务器错误 |
 | 503 | `service_unavailable_error` | 无可用账号 |
+| 504 | `timeout_error` | 生成超时（上游迟迟不出结果，按超时预算掐断），见[超时](#超时) |
 
 ## 🧠 模型与思考档位
 
@@ -195,8 +196,17 @@ curl http://localhost:5918/openai/v1/models \
 | `max_tokens` | number | 否 | 最大输出 token 数 |
 | `tools` | array | 否 | 函数调用工具列表 |
 | `tool_choice` | string | 否 | 工具选择策略，`auto`/`required`/`none` |
-| `conversation_id` | string | 否 | 对话 ID，用于维护上下文 |
+| `conversation_id` | string | 否 | 对话 ID，用于多轮续接（规则见下方「多轮续接」） |
 | `reasoning_effort` | string | 否 | 思考档位 `low` / `medium` / `high`（见 [🧠 模型与思考档位](#-模型与思考档位)）。不传 = 默认档（出厂 `low`），且不回传 `reasoning_content` |
+
+**多轮续接（`conversation_id`）**：同一个 `conversation_id` 的后续轮次接着上游 Gemini 的同一个会话往下聊，只发最新一条用户消息，并带上上一轮记下的续接元数据（`[cid, rid, rcid]`）。网页版的会话属于具体某个账号，所以后续轮次**钉在服务上一轮的那个账号上**。下面任一情况都**自动改发完整历史、新开一个会话**（成功后记下新会话与账号，下一轮照常续接），绝不只发最后一句而悄悄丢掉上下文：
+
+- 那个账号不可用：已过期、被删除、不在本次访问密钥绑定的账号里，或（池里有多个账号时）正好满载；
+- 记下的续接元数据用不了（含升级前存下、没记账号的旧会话：第一轮发完整历史，之后恢复续接）；
+- 上一轮是第三方兜底回答的，或上游那一轮没给出续接点；
+- 用的是 Gem 模型，且 Gem 绑定的账号与会话记录的账号不一致（以 Gem 为准）。
+
+谷歌那边会话真过期、续接请求失败时，仍会自动用完整历史重试一次（超时除外，见[超时](#超时)）。
 
 **多模态 content 格式**：
 
@@ -1662,9 +1672,16 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 
 疑似生图的请求与 `GENERATE_TIMEOUT_IMAGE`（默认 180 秒）**取大**。超时不再重试三遍——失败就是失败。
 
+超时回 **504**，错误类型 `timeout_error`，用各协议自己的错误体：OpenAI / Gemini 原生 / Responses 是 `{"error": {..., "type": "timeout_error"}}`，Anthropic 是 `{"type": "error", "error": {"type": "timeout_error", ...}}`（过去是纯文本的 `500 Internal Server Error`，SDK 解析不了、也不会按超时重试）。流式请求（含带工具的伪流式）已经回过 200，超时是协议内的错误事件：OpenAI 的 error 帧 `type` 为 `timeout_error`、`code` 为 `504`；Anthropic 的 `error` 事件与 Gemini 原生 NDJSON 的错误行 `type` 为 `timeout_error`；Responses 的 `response.failed` 里 `error.code` 为 `timeout_error`。
+
+- 开了 `FALLBACK_ENABLED` 时，`/v1/chat/completions` 在还没向客户端发出正文前会先尝试第三方兜底，兜到了就不报错；另外三个协议没有第三方兜底，直接回上面的错误。
+- 超时不会退回不思考重试，也不会用完整 prompt 重试：这一轮的预算已经花完，再试只会让客户端再等一整轮。
+- 超时是谷歌那边卡住、不是 cookie 失效：不计入账号的连续失败，不会因此把账号标成 `expired`（只记一次错误、短暂冷却）。
+
 > [!IMPORTANT]
 > 非流式路径在生成返回之前**连接上是零字节输出**，所以这是**首字节**超时而不是空闲超时。
 > **pro 非流式最长要干等 300 秒，会超过常见前置代理的首字节上限**（EdgeOne 免费版 15 秒，不少反向代理默认 60 秒），这时客户端拿到的是代理的 504 而不是本服务的错误体。
+> 本服务自己的超时同样是 504，但带上面的 JSON 错误体（`timeout_error`），据此可以和代理的 504 区分开。
 > 有前置代理的部署建议对这类请求直接用 `stream: true`；流式路径受自己的包线约束（单 chunk 120 秒 / 整条 180 秒），不受上表影响。
 
 ## 获取帮助

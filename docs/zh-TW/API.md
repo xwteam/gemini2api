@@ -155,9 +155,18 @@ curl http://localhost:5918/openai/v1/models \
 | `stream` | boolean | ❌ | 是否流式輸出（預設 false） |
 | `temperature` | number | ❌ | 溫度參數，0-2（預設 0.7） |
 | `max_tokens` | number | ❌ | 最大回應 token 數 |
-| `conversation_id` | string | ❌ | 對話 ID，用於維持上下文 |
+| `conversation_id` | string | ❌ | 對話 ID，用於多輪續接（規則見下方「多輪續接」） |
 | `tools` | array | ❌ | 函數定義陣列 |
 | `tool_choice` | string | ❌ | 工具選擇策略（auto/required/none） |
+
+**多輪續接（`conversation_id`）**：同一個 `conversation_id` 的後續輪次接著上游 Gemini 的同一個對話往下聊，只送最新一則使用者訊息，並帶上上一輪記下的續接中繼資料（`[cid, rid, rcid]`）。網頁版的對話屬於某個特定帳號，所以後續輪次**釘在服務上一輪的那個帳號上**。下列任一情況都**自動改送完整歷史、新開一個對話**（成功後記下新對話與帳號，下一輪照常續接），絕不只送最後一句而悄悄丟掉上下文：
+
+- 那個帳號不可用：已過期、被刪除、不在本次存取金鑰綁定的帳號裡，或（池中有多個帳號時）剛好滿載；
+- 記下的續接中繼資料用不了（含升級前存下、沒記帳號的舊對話：第一輪送完整歷史，之後恢復續接）；
+- 上一輪是第三方兜底回答的，或上游那一輪沒給出續接點；
+- 用的是 Gem 模型，且 Gem 綁定的帳號與對話記錄的帳號不一致（以 Gem 為準）。
+
+谷歌那邊對話真的過期、續接請求失敗時，仍會自動用完整歷史重試一次（超時除外，見[超時](#超時)）。
 
 **多模態 content 格式**：
 
@@ -1267,6 +1276,7 @@ curl http://localhost:5918/health
 | 403 | 禁止（API Key 無效） |
 | 500 | 伺服器錯誤 |
 | 503 | 服務不可用（無可用帳號） |
+| 504 | 生成超時（`timeout_error`：上游遲遲不出結果，依超時預算掐斷），見[超時](#超時) |
 
 **錯誤回應格式：**
 ```json
@@ -1305,9 +1315,16 @@ curl http://localhost:5918/health
 
 疑似生圖的請求與 `GENERATE_TIMEOUT_IMAGE`（預設 180 秒）**取大**。超時不再重試三遍 —— 失敗就是失敗。
 
+超時回 **504**，錯誤類型 `timeout_error`，用各協議自己的錯誤內文：OpenAI / Gemini 原生 / Responses 是 `{"error": {..., "type": "timeout_error"}}`，Anthropic 是 `{"type": "error", "error": {"type": "timeout_error", ...}}`（過去是純文字的 `500 Internal Server Error`，SDK 解析不了、也不會依超時重試）。流式請求（含帶工具的偽流式）已經回過 200，超時是協議內的錯誤事件：OpenAI 的 error 幀 `type` 為 `timeout_error`、`code` 為 `504`；Anthropic 的 `error` 事件與 Gemini 原生 NDJSON 的錯誤行 `type` 為 `timeout_error`；Responses 的 `response.failed` 裡 `error.code` 為 `timeout_error`。
+
+- 開了 `FALLBACK_ENABLED` 時，`/v1/chat/completions` 在還沒向用戶端送出內文前會先嘗試第三方兜底，兜到了就不報錯；另外三個協議沒有第三方兜底，直接回上面的錯誤。
+- 超時不會退回不思考重試，也不會用完整 prompt 重試：這一輪的預算已經花完，再試只會讓用戶端再等一整輪。
+- 超時是谷歌那邊卡住、不是 cookie 失效：不計入帳號的連續失敗，不會因此把帳號標成 `expired`（只記一次錯誤、短暫冷卻）。
+
 > [!IMPORTANT]
 > 非流式路徑在生成回傳之前**連線上是零位元組輸出**，所以這是**首位元組**超時而不是閒置超時。
 > **pro 非流式最長要乾等 300 秒，會超過常見前置代理的首位元組上限**（EdgeOne 免費版 15 秒，不少反向代理預設 60 秒），這時用戶端拿到的是代理的 504 而不是本服務的錯誤內文。
+> 本服務自己的超時同樣是 504，但帶上面的 JSON 錯誤內文（`timeout_error`），據此可以和代理的 504 區分開。
 > 有前置代理的部署建議對這類請求直接用 `stream: true`；流式路徑受自己的包線約束（單 chunk 120 秒／整條 180 秒），不受上表影響。
 
 ## 最佳實踐

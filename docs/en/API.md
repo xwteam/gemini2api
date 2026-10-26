@@ -164,7 +164,16 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 | `top_p` | number | No | Nucleus sampling 0-1 (default: 1.0) |
 | `tools` | array | No | Function definitions for tool calling |
 | `tool_choice` | string | No | `auto`, `required`, or function name |
-| `conversation_id` | string | No | Maintain context across requests |
+| `conversation_id` | string | No | Multi-turn continuation (rules in "Multi-turn continuation" below) |
+
+**Multi-turn continuation (`conversation_id`):** later turns with the same `conversation_id` continue the same upstream Gemini conversation: only the newest user message is sent, together with the continuation metadata recorded on the previous turn (`[cid, rid, rcid]`). A Gemini web conversation belongs to one account, so later turns are **pinned to the account that served the previous turn**. In any of the cases below the gateway **resends the full history as a new conversation** instead (and records the new conversation and account on success, so the next turn resumes normally) — it never sends just the last message and silently drops the context:
+
+- that account is unavailable: expired, removed, outside the access key's bound accounts, or (with more than one account in the pool) at capacity;
+- the recorded metadata is unusable (including conversations stored before the upgrade, which have no account recorded: their first turn resends the full history, then continuation resumes);
+- the previous turn was answered by the third-party fallback, or the upstream returned no continuation point for it;
+- a Gem model is used and the Gem's bound account differs from the conversation's account (the Gem wins).
+
+When Google has really expired the conversation and the continuation request fails, the gateway still retries once with the full history (except on timeouts, see [Timeouts](#timeouts)).
 
 **Multimodal Content Format:**
 
@@ -1554,6 +1563,7 @@ All error responses follow this format:
 | 403 | Forbidden | Access denied |
 | 500 | Internal Error | Server error |
 | 503 | Service Unavailable | No healthy accounts available |
+| 504 | Gateway Timeout | Generation timed out (`timeout_error`); see [Timeouts](#timeouts) |
 
 ### Common Error Types
 
@@ -1564,6 +1574,7 @@ All error responses follow this format:
 | `no_available_accounts` | All accounts unhealthy | Refresh cookies, check account status |
 | `rate_limit_exceeded` | Too many requests | Wait before retrying |
 | `invalid_request` | Malformed request | Check request format and parameters |
+| `timeout_error` | Generation timed out (Google stalled; cut at the timeout budget) | Retry later or use streaming; with `FALLBACK_ENABLED` the chat endpoint tries the third-party fallback first |
 
 ## Rate Limiting
 
@@ -1609,7 +1620,14 @@ The generation timeout for non-streaming (`stream: false`) requests is **tiered 
 
 Requests that look like image generation take the **larger** of the tier above and `GENERATE_TIMEOUT_IMAGE` (default 180 s). A timeout is no longer retried three times — a failure is a failure.
 
+A timeout returns **504** with error type `timeout_error`, in each protocol's own error body: OpenAI / Gemini native / Responses use `{"error": {..., "type": "timeout_error"}}`, Anthropic uses `{"type": "error", "error": {"type": "timeout_error", ...}}` (it used to be a plain-text `500 Internal Server Error` that SDKs could not parse and would not retry as a timeout). Streaming requests (including the buffered tool-calling streams) have already answered 200, so the timeout arrives as an in-protocol error event: the OpenAI error frame has `type` `timeout_error` and `code` `504`; the Anthropic `error` event and the Gemini native NDJSON error line have `type` `timeout_error`; in Responses, `response.failed` carries `error.code` `timeout_error`.
+
+- With `FALLBACK_ENABLED` on, `/v1/chat/completions` tries the third-party fallback first, as long as no content has been sent to the client yet; the other three protocols have no third-party fallback and return the error above directly.
+- A timeout is not retried without thinking and not retried with the full prompt: the turn's budget is already spent, and a retry would only make the client wait another full round.
+- A timeout means Google stalled, not that the cookie died: it does not count toward the account's consecutive failures and never marks the account `expired` (it records one error and a short cooldown).
+
 > [!IMPORTANT]
 > On the non-streaming path the connection emits **zero bytes** until generation returns, so this is a **time-to-first-byte** timeout, not an idle timeout.
 > **A non-streaming pro request can sit silent for up to 300 seconds, which exceeds the first-byte limit of common front proxies** (15 seconds on the EdgeOne free tier, 60 seconds by default on many reverse proxies); the client then receives the proxy's 504 instead of this service's error body.
+> This service's own timeout is also a 504, but it carries the JSON error body above (`timeout_error`), which tells it apart from a proxy's 504.
 > Behind a front proxy, prefer `stream: true` for these requests. The streaming path has its own envelope (120 s per chunk / 180 s overall) and is unaffected by the table above.
