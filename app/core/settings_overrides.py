@@ -56,6 +56,12 @@ EDITABLE_FIELDS = {
     "log_bodies_enabled",
 }
 
+# 能被持久化 / 回放、但不在设置页里编辑的字段（各有自己的面板入口）。
+# fallback_enabled：API 管理页的「Gemini 失败时第三方兜底」开关（v1.6.49 起也走这里；过去只写
+# 容器内镜像层的 /app/.env，升级重建容器后被宿主机 .env 的值顶回去）。
+EXTRA_PERSISTED_FIELDS = {"fallback_enabled"}
+PERSISTED_FIELDS = EDITABLE_FIELDS | EXTRA_PERSISTED_FIELDS
+
 # 字段声明类型，用于类型校验与 JSON 数值收敛。
 FIELD_TYPES = {
     "refresh_interval": int,
@@ -78,6 +84,7 @@ FIELD_TYPES = {
     "chat_cleanup_skip_pinned": bool,
     "extended_thinking_enabled": bool,
     "default_thinking_level": str,
+    "fallback_enabled": bool,
     "log_bodies_enabled": bool,
 }
 
@@ -176,14 +183,14 @@ def load_overrides(path: _PathLike = None) -> Dict[str, Any]:
     if not isinstance(data, dict):
         logger.warning(f"Ignoring settings overrides at {target}: expected a JSON object")
         return {}
-    return {k: v for k, v in data.items() if k in EDITABLE_FIELDS}
+    return {k: v for k, v in data.items() if k in PERSISTED_FIELDS}
 
 
 def save_overrides(updates: Dict[str, Any], path: _PathLike = None) -> None:
     """把面板改动合并进持久化文件（原子写）。只接受白名单内字段。"""
     target = _resolve(path)
     merged = load_overrides(target)
-    accepted = {k: v for k, v in updates.items() if k in EDITABLE_FIELDS}
+    accepted = {k: v for k, v in updates.items() if k in PERSISTED_FIELDS}
     if not accepted:
         return
     merged.update(accepted)

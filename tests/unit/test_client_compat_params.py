@@ -2,7 +2,7 @@
 
 1. Gemini 路径不再丢 developer 消息（Codex / OpenAI 新版 SDK 用它代替 system），旧版 function 角色当工具结果；
 2. 常用采样 / 格式参数（top_p、stop、response_format……）转给第三方模型与兜底，过去被 pydantic 直接丢弃；
-   developer 转 system；Anthropic 上游合并全部 system、带 temperature / top_p / stop_sequences；
+   developer 转 system；Anthropic 上游合并全部 system、只带 stop_sequences（temperature / top_p 不带）；
 3. 多账号文件默认放进挂载卷 data/，旧默认位置有文件时启动复制过来；容器里配置在 data/ 外时告警。
 """
 import asyncio
@@ -262,4 +262,12 @@ def test_env_psid_that_matches_no_loaded_account_is_pointed_out(monkeypatch, cap
         with caplog.at_level(logging.WARNING):
             pool._warn_if_env_psid_unused("data/accounts.json")
         assert any("GEMINI_PSID in .env is not used" in r.getMessage() for r in caplog.records) is expected, env_value
+
+
+def test_a_non_utf8_legacy_file_does_not_abort_startup(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ap, "_DOCKERENV", tmp_path / "no-dockerenv")
+    monkeypatch.setattr(ap.settings, "accounts_file", "data/accounts.json")
+    (tmp_path / "accounts.json").write_bytes(b"\xff\xfe not utf-8")
+    assert str(ap._prepare_accounts_file()) == "accounts.json"
 

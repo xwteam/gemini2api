@@ -172,8 +172,11 @@ def test_overrides_live_under_the_bind_mounted_data_dir():
 # --------------------------------------------------------------------------
 
 def test_tables_agree_with_each_other_and_with_settings_model():
-    assert set(so.FIELD_TYPES) == so.EDITABLE_FIELDS
-    unknown = so.EDITABLE_FIELDS - set(Settings.model_fields)
+    # 能持久化的 = 设置页可编辑的 + 各有自己面板入口的（如 API 管理页的兜底开关）
+    assert so.PERSISTED_FIELDS == so.EDITABLE_FIELDS | so.EXTRA_PERSISTED_FIELDS
+    assert not (so.EDITABLE_FIELDS & so.EXTRA_PERSISTED_FIELDS)
+    assert set(so.FIELD_TYPES) == so.PERSISTED_FIELDS
+    unknown = so.PERSISTED_FIELDS - set(Settings.model_fields)
     assert not unknown, f"这些字段不在 Settings 上，回放时会被丢弃: {sorted(unknown)}"
 
 

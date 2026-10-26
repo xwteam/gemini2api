@@ -70,7 +70,7 @@ def _prepare_accounts_file() -> Path:
                 atomic_write_text(path, legacy.read_text(encoding="utf-8"))
                 logger.warning(f"Accounts file moved to the new default {path} (copied from {legacy}; "
                                f"the old file is kept but no longer read)")
-            except OSError as e:
+            except (OSError, UnicodeError) as e:
                 # 这一次先从旧文件读；之后面板一保存就写到新位置，下次启动读新文件
                 logger.error(f"Could not copy {legacy} to {path}, reading the old file this time: {e}")
                 return legacy

@@ -59,3 +59,42 @@ def test_patch_fallback_persist_failure_rolls_back(client, monkeypatch):
     r = client.patch("/admin/api-keys/fallback", json={"enabled": True}, headers=_AUTH)
     assert r.status_code == 500
     assert settings.fallback_enabled is False   # 写盘失败 → 内存回滚，不留半更新
+
+
+# ---------------------------------------------------------------------------
+# v1.6.49：开关写进 data/settings-overrides.json（挂载卷、启动回放、优先级高于环境变量）。
+# 过去只写 .env —— 容器里那是镜像层的 /app/.env，升级重建容器后被宿主机 .env 的值顶回去
+# （10-26 中转站：面板 22:13 关掉兜底，宿主机 .env 仍是 true，下一次部署就会悄悄重新打开）。
+# ---------------------------------------------------------------------------
+
+def test_patch_fallback_persists_into_the_overrides_file(client, monkeypatch):
+    from app.core import settings_overrides as so
+
+    monkeypatch.setattr(ak, "_update_env_file", lambda updates: None)
+    object.__setattr__(settings, "fallback_enabled", True)
+    r = client.patch("/admin/api-keys/fallback", json={"enabled": False}, headers=_AUTH)
+    assert r.status_code == 200
+    assert so.load_overrides()["fallback_enabled"] is False
+
+    class _Fresh:                      # 「重建容器后」的 Settings：环境变量里是 true
+        fallback_enabled = True
+
+    fresh = _Fresh()
+    so.apply_overrides(fresh)
+    assert fresh.fallback_enabled is False, "启动回放后面板的选择压过环境变量"
+
+
+def test_a_failed_env_write_rolls_the_overrides_file_back(client, monkeypatch):
+    from app.core import settings_overrides as so
+
+    before = so.load_overrides().get("fallback_enabled")
+
+    def boom(updates):
+        raise OSError("read-only .env")
+
+    monkeypatch.setattr(ak, "_update_env_file", boom)
+    object.__setattr__(settings, "fallback_enabled", True)
+    r = client.patch("/admin/api-keys/fallback", json={"enabled": False}, headers=_AUTH)
+    assert r.status_code == 500
+    assert settings.fallback_enabled is True
+    assert so.load_overrides().get("fallback_enabled") == before
