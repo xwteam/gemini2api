@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-v1.6.43-success?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.6.44-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -62,6 +62,7 @@
 
 | 日期 | 更新內容 |
 |------|----------|
+| 2026-10-26 14:01:00 | v1.6.44 - 🔄 **瀏覽器保活擴充功能重新生效**：會話被谷歌打回登入頁的帳號過去仍報 active（只把 is_healthy 設為 false），擴充功能只認 expired、一直不救，線上兩個帳號因此掉線約 37 小時；現在如實報 expired，換 cookie 成功後當場恢復。🔁 **不再和瀏覽器互相頂掉會話**：擴充功能推送 cookie 的帳號自動改為「瀏覽器保活」，伺服器不再輪換它（此前兩邊各自換 PSIDTS，後換的一方被踢下線，保活越來越短）；面板手動更新的帳號仍由伺服器輪換。配套擴充功能 v1.3.0：瀏覽器 cookie 一變就主動推送 |
 | 2026-10-21 15:29:00 | v1.6.43 - 🧠 **思考改為低 / 中 / 高三檔，對齊網頁**：四個協定都能選同樣的三檔，**預設 `low`**（面板「設定 → 思考」儲存即時生效；實測平均每個請求多約 5 秒，最看重速度就設成「關閉」）；客戶端沒提思考時依預設檔開啟的思考只用於生成、絕不回傳。⚡ **Claude Code 不再每個請求都跑最深的一檔**（它每次都送 `adaptive` + `effort: high`，上一版寫死成 high），現在跟隨預設檔，`/effort low|medium|xhigh|max` 也生效了；`reasoning_effort: none` = 不思考。🤖 **對外模型收斂為四個**：`gemini-pro` / `gemini-flash` / `gemini-flash-lite` / `gemini-argon` 自動映射網頁的 3.1 Pro / 3.8 Flash / 3.5 Flash-Lite / 4 Argon，`gemini-flash-thinking` 下線（舊名仍可呼叫）。🔌 修好「API 管理」第三方轉發（書生端硯的 deepseek / glm / kimi 等此前全部 400，被誤報成額度不足）。🧪 模型測試頁改為檔位選擇 |
 | 2026-10-21 04:30:00 | v1.6.42 - 🤖 **接上 4 Argon 並讓模型探索改由帳號驅動**：帳號心跳本來就回傳真實可用的模型清單，此前只認寫死的表、認不出的連日誌都不打就丟掉（這正是 Argon 用不了的原因），現在能自動採納、Google 換代不必再等改程式；穩定公開名契約不變，自動採納帶驗證、不合格條目仍丟棄但留日誌。💵 每把**存取金鑰的 token 用量與美元估算**（只統計不限額，介面已標註「估算」：本服務走網頁版本身不花錢，且 token 是按字元估的）。📄 **Canvas 正文不再整段遺失**（此前只留一條打不開的佔位連結）。🧼 清理 `<ctrl94>thought` 思考外洩等控制標記。🧠 **Anthropic 協定補上思考鏈**（此前 Claude Code 送的 thinking 參數被靜默丟棄、那邊使用者永遠「不思考」） |
 | 2026-10-21 00:58:00 | v1.6.41 - 🔑 新增**可分發的存取金鑰**：面板可簽發多把 key 分發給不同的人，每把獨立設定啟停／有效期／**延遲啟用**（對方首次使用才開始計時）／請求數上限／綁定帳號／限定模型；`.env` 的 API_KEY 仍全權有效，存取金鑰進不了 /admin。⚠️ `REFRESH_INTERVAL` 預設 5→30 分鐘（下限 10）：cookie 輪換迴圈此前**只在啟動失敗時才跑**，正常啟動的閘道從不輪換、幾小時後帳號必死（issue #11），現改為啟動就跑。認出 Gemini 用 **HTTP 200** 回傳的拒絕區塊（工作階段過期／限流／上下文超長／人機驗證此前被當成「空回覆」吞掉，既不標不健康也不觸發自癒）。非串流逾時按模型族分層且逾時不再重試三遍（此前 60 秒硬斷＋重試＝等 183 秒才失敗）。思考等級不再一律最高檔。帶附件恢復真串流 |
@@ -71,7 +72,6 @@
 | 2026-08-30 18:20:00 | v1.6.37 - 🩺 修復帳號池永久卡死並誤報「All accounts busy」（issue #11）：工作階段失效的帳號此前會讓每個請求空等 60 秒並回傳錯誤的 529，現改為立即回傳準確的 503 並**自動嘗試重載 cookie 自癒**；用戶端斷線不再計為帳號失敗；cookie 重載失敗不再永久封鎖健康帳號 |
 | 2026-08-28 19:40:00 | v1.6.36 - 🚨 OpenAI 串流上游錯誤不再偽裝成正常回答（改發標準 error 幀，客戶端可正確拋錯重試）；上游 4xx 錯誤類型細化；Anthropic `citations` 欄位在串流/非串流間對齊；非字串 content 不再觸發 500 |
 | 2026-08-28 17:30:00 | v1.6.35 - 🛠️ 協定一致性與健壯性大修：修復生圖意圖誤判導致**客戶端工具被靜默丟棄**（四協定共用）、上游錯誤偽裝成正常回答、`HTTPStatusError` 逃逸成裸 500（池滿改 529+Retry-After）、`/v1/responses` 與 native Gemini buffered 分支缺失的串流保活、原生 Gemini 不認官方 SDK camelCase 報文、OpenAI `tool_calls` 被丟棄、第三方 Anthropic 轉發工具迴圈第二輪硬失敗，以及 Anthropic 回應結構對齊 |
-| 2026-08-28 15:10:00 | v1.6.34 - 🧹 Anthropic 協定細節打磨：回應補上規範的 `stop_sequence` 欄位並同步五語言 API 文件；工具呼叫區塊 name 為 null 時不再渲染成 None；斷線保活守衛補異常取回；並加固工具渲染格式與斷線取消的測試覆蓋 |
 
 ---
 

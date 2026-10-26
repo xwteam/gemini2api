@@ -4,6 +4,23 @@
 
 ---
 
+## [1.6.44] - 2026-10-26
+
+### Fixed
+
+- 🔄 **浏览器保活插件重新生效**：会话已被谷歌打回登录页的账号，`/admin/status` 过去仍报 `status: "active"`（只把 `is_healthy` 置为 false），而保活插件只认 `expired`，于是一直不去救——线上两个账号因此掉线约 37 小时，插件一次都没推送。现在这类账号对外报 `expired`，`last_error` 写明 `Google session expired (login redirect)`，面板也显示为过期（此前面板不认识 `expired`，显示成灰色英文原词）。插件或面板换 cookie 成功后，账号在池内当场恢复可用，不再依赖随后的检查。账号池内部的调度与自愈逻辑不变。
+- 🔁 **服务端不再和浏览器互相顶掉会话**：1.6.41 起服务端定时调用 RotateCookies 更换 PSIDTS；而使用保活插件时，浏览器和服务端共用同一个谷歌会话，两边各自更换，后换的一方拿着被对方换掉的旧值就会 401、被踢下线（「保活时间越来越短、经常要重登」）。现在**由浏览器保活插件推送 cookie 的账号自动改为「浏览器保活」**：服务端不再轮换它，只由浏览器一方更换。
+  - 识别方式：插件 1.3.0 带 `X-Gemini2API-Keepalive` 请求头；旧版插件按 `Origin: chrome-extension://` 识别。只在 cookie 换上成功后才记录。
+  - 面板手动「更新 Cookie」的账号仍由服务端轮换（cookie 取自无痕窗口的部署需要这样）；不用插件的部署行为不变。
+  - 保活方式按谷歌会话（PSID 哈希）记录在 `data/keepalive-modes.json`，重启不丢，不含任何 cookie 值。
+- 会话被打回登录页、且谷歌已对同一份 cookie 回过 401 时，服务端不再对它调用 RotateCookies（刷新循环、池自愈、请求内自愈都遵守）；只是 PSIDTS 过期、轮换一次就能救回的会话照常轮换，不会被晾死。
+- 仓库自带的 refresher 续期边车推送 cookie 时也带 `X-Gemini2API-Keepalive`，同样按浏览器保活处理；面板「添加账号」也按请求来源记录保活方式，删掉再加回不再继承旧记录。
+
+### Added
+
+- `/admin/status` 每个账号新增 `keepalive_mode`（`browser` / `server`）；面板账号卡片对浏览器保活的账号显示「浏览器保活」标签。
+- 配套浏览器插件 **gemini2api-plugin v1.3.0**：浏览器里的 cookie 一变化就主动推给中转站（不再等账号过期）；在 1.6.41～1.6.43 上 `is_healthy` 为 false 的账号也会救；只在确认是本浏览器负责的账号、且过了冷却后才刷新 Gemini 标签页；推送带 `X-Gemini2API-Keepalive` 请求头。建议在插件里绑定本浏览器负责的账号 ID。
+
 ## [1.6.43] - 2026-10-21
 
 ### Changed
