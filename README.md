@@ -308,7 +308,7 @@ docker compose logs -f
 
 ### 多账号配置（可选）
 
-如需使用多个 Google 账号实现负载均衡，创建 `accounts.json`：
+如需使用多个 Google 账号实现负载均衡，创建 `data/accounts.json`（放在挂载卷里，升级重建容器不会丢）：
 
 ```json
 {
@@ -330,7 +330,7 @@ docker compose logs -f
 ```
 
 > [!TIP]
-> 不创建 `accounts.json` 时，服务自动使用 `.env` 中的单账号模式。也可以通过 `POST /admin/accounts` API 在运行时动态添加账号。
+> 不创建 `data/accounts.json` 时，服务自动使用 `.env` 中的单账号模式。也可以通过 `POST /admin/accounts` API 在运行时动态添加账号。
 
 ### Cookie 自动保活
 

@@ -128,7 +128,7 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 | `conversation_id` | string | ❌ | 대화 컨텍스트 ID (멀티턴 이어가기, 규칙은 아래 "멀티턴 이어가기" 참고) |
 | `tools` | array | ❌ | 함수 호출 도구 정의 |
 
-**서드파티 모델에 전달하는 파라미터**(v1.6.49부터): `temperature`, `top_p`, `stop`, `presence_penalty`, `frequency_penalty`, `seed`, `response_format`, `max_tokens` / `max_completion_tokens`, `parallel_tool_calls`, `stream_options`(스트리밍일 때만)를 서드파티 모델과 서드파티 폴백에 그대로 전달합니다. Gemini 웹에는 이런 설정이 없으므로 Gemini 경로에서는 무시합니다. `developer` 역할은 `system`으로 처리합니다(Gemini 경로에서는 프롬프트에 포함하고, 서드파티에는 `system`으로 보냄).
+**서드파티 모델에 전달하는 파라미터**(v1.6.49부터): `temperature`, `top_p`, `stop`, `presence_penalty`, `frequency_penalty`, `seed`, `response_format`, `max_tokens` / `max_completion_tokens`, `parallel_tool_calls`, `stream_options`(스트리밍일 때만)를 OpenAI 호환 서드파티 모델과 서드파티 폴백에 그대로 전달합니다(빈 값은 보내지 않고, `parallel_tool_calls`는 도구가 있을 때만 보냄. Anthropic 계열 업스트림에는 `stop`만 전달하며, 새 Claude는 `temperature`와 `top_p`를 함께 받지 않으므로 이 둘은 보내지 않음). Gemini 웹에는 이런 설정이 없으므로 Gemini 경로에서는 무시합니다. `developer` 역할은 `system`으로 처리합니다(Gemini 경로에서는 프롬프트에 포함하고, 서드파티에는 `system`으로 보냄).
 
 **멀티턴 이어가기(`conversation_id`)**: 같은 `conversation_id`의 이후 턴은 업스트림 Gemini의 같은 대화를 이어 갑니다. 최신 사용자 메시지만 보내고, 직전 턴에서 기록한 이어가기 메타데이터(`[cid, rid, rcid]`)를 함께 보냅니다. Gemini 웹의 대화는 특정 계정에 속하므로 이후 턴은 **직전 턴을 처리한 계정에 고정**됩니다. 스트리밍 요청도 똑같이 이어 가지만 스트리밍 응답에는 `conversation_id`가 담기지 않으므로 클라이언트가 직접 붙여야 합니다(비스트리밍에서 붙이지 않으면 서버가 하나 만들어 응답의 `conversation_id` 필드로 돌려줍니다). 아래 중 하나에 해당하면 **자동으로 전체 기록을 다시 보내 새 대화를 시작**합니다(성공하면 새 대화와 계정을 기록하고 다음 턴은 정상적으로 이어 감). 마지막 한 문장만 보내 조용히 컨텍스트를 잃는 일은 없습니다:
 

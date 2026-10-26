@@ -262,7 +262,7 @@ docker compose logs -f
 
 ### Multi-Account Configuration (Optional)
 
-To use multiple Google accounts for load balancing, create `accounts.json`:
+To use multiple Google accounts for load balancing, create `data/accounts.json` (inside the mounted volume, so it survives container recreation on upgrade):
 
 ```json
 {
@@ -284,7 +284,7 @@ To use multiple Google accounts for load balancing, create `accounts.json`:
 ```
 
 > [!TIP]
-> Without `accounts.json`, the service automatically uses single-account mode from `.env`. You can also dynamically add accounts via `POST /admin/accounts` API at runtime.
+> Without `data/accounts.json`, the service automatically uses single-account mode from `.env`. You can also dynamically add accounts via `POST /admin/accounts` API at runtime.
 
 ### Cookie Auto-Keep-Alive
 

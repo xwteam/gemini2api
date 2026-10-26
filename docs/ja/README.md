@@ -262,7 +262,7 @@ docker compose logs -f
 
 ### マルチアカウント設定（オプション）
 
-複数の Google アカウントで負荷分散を使用するには、`accounts.json` を作成：
+複数の Google アカウントで負荷分散を使用するには、`data/accounts.json` を作成（マウントされたボリューム内なので、アップグレードでコンテナを作り直しても消えません）：
 
 ```json
 {
@@ -284,7 +284,7 @@ docker compose logs -f
 ```
 
 > [!TIP]
-> `accounts.json` がない場合、サービスは `.env` の単一アカウントモードを自動使用。実行時に `POST /admin/accounts` API でアカウントを動的追加することも可能。
+> `data/accounts.json` がない場合、サービスは `.env` の単一アカウントモードを自動使用。実行時に `POST /admin/accounts` API でアカウントを動的追加することも可能。
 
 ### Cookie 自動保持
 

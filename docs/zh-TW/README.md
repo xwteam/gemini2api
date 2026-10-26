@@ -263,7 +263,7 @@ docker compose logs -f
 
 ### 多帳號設定（可選）
 
-如需使用多個 Google 帳號實現負載均衡，建立 `accounts.json`：
+如需使用多個 Google 帳號實現負載均衡，建立 `data/accounts.json`（放在掛載卷裡，升級重建容器不會丟）：
 
 ```json
 {
@@ -285,7 +285,7 @@ docker compose logs -f
 ```
 
 > [!TIP]
-> 不建立 `accounts.json` 時，服務自動使用 `.env` 中的單帳號模式。也可以透過 `POST /admin/accounts` API 在執行時動態新增帳號。
+> 不建立 `data/accounts.json` 時，服務自動使用 `.env` 中的單帳號模式。也可以透過 `POST /admin/accounts` API 在執行時動態新增帳號。
 
 ### Cookie 自動保活
 
