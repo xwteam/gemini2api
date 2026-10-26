@@ -88,8 +88,8 @@ async def get_fallback():
 
 @router.patch("/fallback")
 async def set_fallback(req: FallbackToggleRequest):
-    """开/关 Gemini→第三方 兜底：更新内存 settings + 落盘 .env，实时生效（无需重启）。
-    仅影响"兜底"，不影响第三方直连与 /v1/models。"""
+    """开/关 Gemini→第三方 兜底：更新内存 settings + 落盘（data/settings-overrides.json 与 .env），
+    实时生效（无需重启）、升级重建容器不丢。仅影响"兜底"，不影响第三方直连与 /v1/models。"""
     old = bool(getattr(settings, "fallback_enabled", False))
     # 与设置页同一套持久化（见 app.core.settings_overrides）：先写 data/settings-overrides.json
     # （挂载卷、启动时回放、优先级高于环境变量），再写 .env。过去只写 .env —— 容器里那是镜像层的
@@ -100,7 +100,7 @@ async def set_fallback(req: FallbackToggleRequest):
         env_before = _read_file_snapshot(ENV_PATH)
     except Exception as e:
         logger.error(f"Failed to snapshot settings before the fallback toggle: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to persist fallback setting: {e}")
+        raise HTTPException(status_code=500, detail="Failed to persist fallback setting (see server log)")
     object.__setattr__(settings, "fallback_enabled", req.enabled)
     try:
         settings_overrides.save_overrides({"fallback_enabled": req.enabled})
@@ -109,7 +109,7 @@ async def set_fallback(req: FallbackToggleRequest):
         _rollback_persisted_files(((ENV_PATH, env_before), (overrides_path, overrides_before)))
         object.__setattr__(settings, "fallback_enabled", old)  # 回滚，避免内存改了盘没改
         logger.error(f"Failed to persist fallback toggle: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to persist fallback setting: {e}")
+        raise HTTPException(status_code=500, detail="Failed to persist fallback setting (see server log)")
     return {"success": True, "enabled": req.enabled}
 
 

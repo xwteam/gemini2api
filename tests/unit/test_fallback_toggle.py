@@ -84,10 +84,13 @@ def test_patch_fallback_persists_into_the_overrides_file(client, monkeypatch):
     assert fresh.fallback_enabled is False, "启动回放后面板的选择压过环境变量"
 
 
-def test_a_failed_env_write_rolls_the_overrides_file_back(client, monkeypatch):
+def test_a_failed_env_write_rolls_the_overrides_file_back(client, monkeypatch, tmp_path):
+    import json
     from app.core import settings_overrides as so
 
-    before = so.load_overrides().get("fallback_enabled")
+    path = tmp_path / "overrides.json"
+    path.write_text(json.dumps({"fallback_enabled": True, "default_thinking_level": "low"}))
+    monkeypatch.setattr(so, "OVERRIDES_PATH", path)
 
     def boom(updates):
         raise OSError("read-only .env")
@@ -96,5 +99,7 @@ def test_a_failed_env_write_rolls_the_overrides_file_back(client, monkeypatch):
     object.__setattr__(settings, "fallback_enabled", True)
     r = client.patch("/admin/api-keys/fallback", json={"enabled": False}, headers=_AUTH)
     assert r.status_code == 500
+    assert "tmp" not in r.text and "read-only" not in r.text, "报错不回显路径 / 异常细节"
     assert settings.fallback_enabled is True
-    assert so.load_overrides().get("fallback_enabled") == before
+    assert json.loads(path.read_text()) == {"fallback_enabled": True, "default_thinking_level": "low"}, \
+        "覆盖文件要回滚到改之前（过去的写法会把 false 留在文件里）"
