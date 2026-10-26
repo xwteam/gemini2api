@@ -394,10 +394,43 @@ function updatePlaygroundModels(modelsSet) {
 // Accounts
 // ============================================================================
 
+// 模型熔断横幅（v1.6.46 规格 C.7 / I.14）：任一模型族 open / half_open、且熔断开关开着时，
+// 在账号页顶部提示一行。open 显示绝对时间（loadAccounts 不轮询，倒计时只是打开页面那一刻的
+// 快照）；half_open 单独一句（此时没有剩余时间可说）；MODEL_BREAKER_ENABLED=false 时谷歌照常调、
+// 不绕开，所以不显示。族名、last_reason 都来自后端，照样转义。
+function _modelBreakerBanner(breakers) {
+    if (!breakers || typeof breakers !== 'object') return '';
+    const lines = [];
+    for (const [family, b] of Object.entries(breakers)) {
+        if (!b || b.enabled === false) continue;
+        let text;
+        if (b.state === 'open') {
+            text = t('accounts.breakerOpen')
+                .replace('{family}', () => family)
+                .replace('{time}', () => formatDate(b.retry_at));
+        } else if (b.state === 'half_open') {
+            text = t('accounts.breakerHalfOpen').replace('{family}', () => family);
+            if (b.probe_in_flight) text += ` (${t('accounts.breakerProbing')})`;
+        } else {
+            continue;
+        }
+        const reason = b.last_reason
+            ? `<div class="breaker-reason">${escapeHtml(t('accounts.breakerLastReason'))}: ${escapeHtml(String(b.last_reason))}</div>`
+            : '';
+        lines.push(`<div class="breaker-line"><div>${escapeHtml(text)}</div>${reason}</div>`);
+    }
+    if (!lines.length) return '';
+    return `<div class="breaker-banner" role="status"><i class="fas fa-exclamation-triangle"></i><div>${lines.join('')}</div></div>`;
+}
+
 async function loadAccounts() {
     try {
         const data = await apiCall('GET', '/admin/accounts');
         const accounts = data.accounts || [];
+
+        // 熔断横幅读的就是这个端点的 model_breakers（/admin/status 与 /admin/accounts 共用同一份）
+        const breakerBanner = document.getElementById('modelBreakerBanner');
+        if (breakerBanner) breakerBanner.innerHTML = _modelBreakerBanner(data.model_breakers);
 
         const container = document.getElementById('accountsList');
         if (!container) return;

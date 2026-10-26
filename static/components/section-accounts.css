@@ -10,6 +10,33 @@
     margin: 0;
 }
 
+/* 模型熔断横幅：谷歌某个模型族故障中、开了兜底的请求暂时直接走兜底 */
+.breaker-banner {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    margin-bottom: 1.5rem;
+    padding: 0.875rem 1rem;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--warning-color);
+    background: var(--warning-15);
+    color: var(--text-primary);
+}
+
+.breaker-banner > i {
+    color: var(--warning-color);
+    margin-top: 0.2rem;
+}
+
+.breaker-line + .breaker-line {
+    margin-top: 0.5rem;
+}
+
+.breaker-reason {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+}
+
 .accounts-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

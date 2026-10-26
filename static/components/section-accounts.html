@@ -1,4 +1,4 @@
-<link rel="stylesheet" href="components/section-accounts.css?v=3">
+<link rel="stylesheet" href="components/section-accounts.css?v=4">
 <!-- Accounts Section -->
 <section id="accounts" class="section" aria-labelledby="accounts-title">
     <div class="section-header">
@@ -7,6 +7,9 @@
             <i class="fas fa-plus"></i> <span data-i18n="accounts.add">添加账号</span>
         </button>
     </div>
+
+    <!-- 模型熔断横幅（谷歌某个模型族故障中时显示，见 app.js 的 _modelBreakerBanner） -->
+    <div id="modelBreakerBanner" aria-live="polite"></div>
 
     <!-- Accounts Grid -->
     <div id="accountsList" class="accounts-grid">

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app.config import APP_VERSION, mask_secret
 from app.core import keepalive_modes
 from app.core.account_pool import account_pool
+from app.core.model_breaker import model_breaker
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -22,11 +23,16 @@ _start_time = time.time()
 
 def _masked_status() -> dict:
     """VULN-003：在响应层对 psid（Google 登录态 Cookie）脱敏，不改 account_pool 内部数据。
-    get_status() 每次返回新 dict，可安全就地掩码。保留字段，仅掩码值。"""
+    get_status() 每次返回新 dict，可安全就地掩码。保留字段，仅掩码值。
+
+    model_breakers：模型熔断各族的状态（v1.6.46 规格 C.7）。加在这里而不是只加在 admin_status 上：
+    /admin/status（仪表盘）与 /admin/accounts（账号页 loadAccounts，横幅显示在那一页）共用它（I.7）。
+    """
     status = account_pool.get_status()
     for acc in status.get("accounts", []):
         if acc.get("psid"):
             acc["psid"] = mask_secret(acc["psid"])
+    status["model_breakers"] = model_breaker.snapshot()
     return status
 
 
