@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from app.core.gemini_client import (
     GeminiWebClient, HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG,
+    is_timeout_error,
 )
 from app.core import keepalive_modes
 from app.core.access_context import current_bound_account_ids
@@ -647,11 +648,12 @@ class AccountPool:
             # 自愈成功 → 直接拿到槽位；失败/超预算 → 下一轮走上面的 NO_HEALTHY_ACCOUNT_MSG 分支。
 
     async def release(self, account: Account, success: bool, cooldown: bool = False, *,
-                      error: str = "", empty: bool = False):
-        """error / empty 都是 keyword-only 且有默认值，既有调用点行为逐字节不变。
+                      error: str = "", empty: bool = False, reason: str = "5xx rate-limit"):
+        """error / empty / reason 都是 keyword-only 且有默认值，既有调用点行为逐字节不变。
 
         error：_error_summary() 出来的安全摘要。
         empty：这次生成上游返回了 200 但没产出任何内容（见 _is_empty_generation）。
+        reason：cooldown 那条日志里写的冷却原因（默认就是原来那句 5xx 限流）。
         """
         async with self._cond:
             account.active_requests = max(0, account.active_requests - 1)
@@ -696,7 +698,7 @@ class AccountPool:
                 account.error_count += 1
                 account.cooldown_until = asyncio.get_event_loop().time() + settings.failover_cooldown
                 logger.warning(
-                    f"Account {account.id} cooled down for {settings.failover_cooldown}s (5xx rate-limit)"
+                    f"Account {account.id} cooled down for {settings.failover_cooldown}s ({reason})"
                 )
             else:
                 account.error_count += 1
@@ -708,6 +710,22 @@ class AccountPool:
             # notify_all 会让所有等待者一起醒来争抢同一个空位，落败者再重新 wait，
             # 在高并发满载时造成无谓的反复唤醒/竞争）
             self._cond.notify(1)
+
+    async def _release_failed(self, account: Account, exc: Exception):
+        """一次不换号重试的失败怎么记账（generate / generate_stream 共用）。
+
+        生成超时（GenerationTimedOut、真流式等不到下一个 chunk 的 TimeoutError、curl code 28）
+        是谷歌那边卡住，不是 cookie 失效：照 5xx 限流那条瞬时故障口径记账 —— 记一次错误、
+        短暂冷却，不累计 consecutive_failures、不标 EXPIRED。过去它走的是下面那条「连败 3 次
+        即 EXPIRED」的通道，谷歌卡一阵子就能把单账号池整个打掉。
+        也不换号重试（_is_retryable 不认超时）：这一轮的预算已经花完，再试只会让客户端再等一整轮。
+        其它失败照旧。
+        """
+        if is_timeout_error(exc):
+            await self.release(account, success=False, cooldown=True, error=_error_summary(exc),
+                               reason="generation timeout")
+            return
+        await self.release(account, success=False, error=_error_summary(exc))
 
     async def release_disconnected(self, account: Account):
         """中性释放：客户端断连/请求被取消时只归还槽位，不计成功也不计失败（issue #11 F6）。
@@ -1022,7 +1040,7 @@ class AccountPool:
                         account.status = AccountStatus.EXPIRED
                     logger.warning(f"Account {account.id} got {e}; failing over (tried={len(tried)})")
                     continue
-                await self.release(account, success=False, error=_error_summary(e))
+                await self._release_failed(account, e)
                 released = True
                 raise
             finally:
@@ -1104,7 +1122,7 @@ class AccountPool:
                     logger.warning(f"Account {account.id} got {e} before first chunk; stream failing over (tried={len(tried)})")
                     failover = True
                 else:
-                    await self.release(account, success=False, error=_error_summary(e))
+                    await self._release_failed(account, e)
                     released = True
                     raise
             finally:
