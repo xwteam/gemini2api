@@ -392,6 +392,138 @@ def test_pinned_account_failing_at_send_time_falls_back_to_the_full_history(wire
     assert _stored(w).account_id == f"account-{1 - idx}"
 
 
+# ---------------------------------------------------------------------------
+# 钉住的账号真发时才不可用（预判之后被抢满 / 过期）：PinnedAccountUnavailable
+# ---------------------------------------------------------------------------
+# account_pinnable 只是快照。它说能钉、真发时 acquire 却拿不到这个账号时，池子当场报错（不打上游）。
+# 过去这条报错是普通 RuntimeError：先被当成思考失败、钉着同一个账号退回不思考再试一次（必然再失败），
+# 然后完整历史重试写死不思考 —— 这一轮白白丢了思考档位；它若也失败，classify_error 拿到「Pinned gem
+# account」文案回 500，会话场景的日志还写成 gem。
+
+
+def _record_pool_calls(w, monkeypatch):
+    """记录路由调了几次账号池（generate / generate_stream），各钉的哪个账号、什么思考档位。"""
+    seen = []
+    real_generate, real_stream = w.pool.generate, w.pool.generate_stream
+
+    async def generate(*a, **k):
+        seen.append(("generate", k.get("account_id"), k.get("extended_thinking")))
+        return await real_generate(*a, **k)
+
+    def generate_stream(*a, **k):
+        seen.append(("generate_stream", k.get("account_id"), k.get("extended_thinking")))
+        return real_stream(*a, **k)
+
+    monkeypatch.setattr(w.pool, "generate", generate)
+    monkeypatch.setattr(w.pool, "generate_stream", generate_stream)
+    return seen
+
+
+def test_a_pinned_account_that_is_unavailable_raises_a_dedicated_error():
+    from app.core.gemini_client import PinnedAccountUnavailable
+
+    pool = _pool([_Client("a"), _Client("b")])
+    pool.accounts[0].active_requests = pool._max_concurrent    # 被抢满
+
+    async def run():
+        with pytest.raises(PinnedAccountUnavailable) as plain:
+            await pool.generate("p", "gemini-flash", account_id="account-0")
+        with pytest.raises(PinnedAccountUnavailable) as gem:
+            await pool.generate("p", "gemini-flash", gem_id="gem-1", account_id="account-0")
+        with pytest.raises(PinnedAccountUnavailable) as streamed:
+            async for _ in pool.generate_stream("p", "gemini-flash", account_id="account-0"):
+                pass
+        return plain.value, gem.value, streamed.value
+
+    plain, gem, streamed = asyncio.run(run())
+    assert isinstance(plain, RuntimeError), "仍是 RuntimeError：既有的 except / 映射照常接得住"
+    # 会话钉号不再写成 gem；Gem 钉号的文案逐字不变
+    assert str(plain) == "Pinned account 'account-0' unavailable (expired/busy/cooldown)"
+    assert str(gem) == "Pinned gem account 'account-0' unavailable (expired/busy/cooldown)"
+    assert str(streamed) == str(plain)
+    assert [a.active_requests for a in pool.accounts] == [pool._max_concurrent, 0], "槽位不能漏"
+
+
+def test_pinned_account_unavailable_is_a_503_and_not_a_thinking_failure():
+    from app.core.gemini_client import (PinnedAccountUnavailable, classify_error,
+                                        should_retry_without_thinking)
+
+    exc = PinnedAccountUnavailable("Pinned account 'account-0' unavailable (expired/busy/cooldown)")
+    assert classify_error(exc) == (503, "api_error", None)
+    assert should_retry_without_thinking(exc, 2) is False
+    # 零回归：别的 RuntimeError 照旧
+    assert classify_error(RuntimeError("boom")) == (500, "api_error", None)
+    assert should_retry_without_thinking(RuntimeError("boom"), 2) is True
+
+
+@pytest.mark.parametrize("mode", ["nonstream", "stream", "buffered"])
+def test_a_pin_lost_at_send_time_goes_straight_to_the_full_history_and_keeps_thinking(
+        wired, monkeypatch, mode):
+    w = wired
+    first, idx = _first_turn(w)
+    other = w.ups[1 - idx]
+    w.pool.accounts[idx].status = AccountStatus.EXPIRED                       # 真发时已经不可用
+    monkeypatch.setattr(w.pool, "account_pinnable", lambda account_id: True)  # 预判时还能钉
+    seen = _record_pool_calls(w, monkeypatch)
+
+    kw = {"stream": mode != "nonstream", "tools": _TOOLS if mode == "buffered" else None}
+    _chat(w, [U1, A1, U2], **kw)
+
+    pinned = [c for c in seen if c[1] == f"account-{idx}"]
+    assert len(pinned) == 1, f"钉着同一个不可用的账号退回不思考再试，只会原样失败: {seen}"
+    assert len(seen) == 2, seen
+    thinking = pinned[0][2]
+    assert thinking, "前提不成立：这一轮本该走思考路径（默认档）"
+    call = other.calls[-1]
+    assert call["conv"] == "", "改发完整历史 = 新开会话，不带续接参数"
+    if mode == "buffered":
+        assert "Human: u1" in call["prompt"] and "Human: u2" in call["prompt"]
+    else:
+        assert call["prompt"] == FULL_HISTORY
+    assert call["thinking"] == thinking, "完整历史重试把这一轮的思考档位丢了"
+    assert _stored(w).account_id == f"account-{1 - idx}"
+
+
+def test_the_kept_thinking_level_still_falls_back_when_thinking_itself_fails(wired, monkeypatch):
+    """保留思考档位的完整历史重试，若思考路径自己失败，照常退回不思考（不把这一轮变成硬失败）。"""
+    w = wired
+    first, idx = _first_turn(w)
+    other = w.ups[1 - idx]
+    w.pool.accounts[idx].status = AccountStatus.EXPIRED
+    monkeypatch.setattr(w.pool, "account_pinnable", lambda account_id: True)
+    original = other._answer
+
+    def reject_thinking(prompt, conversation_id, gem_id, extended_thinking, stream):
+        if extended_thinking:
+            other.calls.append({"prompt": prompt, "conv": conversation_id, "gem_id": gem_id,
+                                "thinking": extended_thinking, "stream": stream})
+            raise HTTPStatusError(400, "thinking payload rejected")
+        return original(prompt, conversation_id, gem_id, extended_thinking, stream)
+
+    other._answer = reject_thinking
+    body = _chat(w, [U1, A1, U2])
+
+    assert body["choices"][0]["message"]["content"] == f"answer from {other.tag}"
+    assert [bool(c["thinking"]) for c in other.calls] == [True, False], other.calls
+    assert all(c["prompt"] == FULL_HISTORY and c["conv"] == "" for c in other.calls)
+
+
+def test_a_gem_pinned_account_that_is_unavailable_is_a_503(wired):
+    """Gem 钉住的账号不可用：不再白退一次不思考，回 503 而不是 500，文案照旧写 gem。"""
+    w = wired
+    w.pool.accounts[1].status = AccountStatus.EXPIRED
+    w.app.state.gem_mapping.set("my-gem", {"gem_id": "gem-1", "base_model": "gemini-pro",
+                                           "account_id": "account-1"})
+
+    r = w.http.post("/v1/chat/completions", json={"model": "my-gem", "messages": [U1]},
+                    headers=_AUTH)
+
+    assert r.status_code == 503, r.text
+    assert r.json()["error"]["type"] == "api_error"
+    assert "Pinned gem account 'account-1'" in r.json()["error"]["message"]
+    assert [u.calls for u in w.ups] == [[], []]
+
+
 def test_google_rejecting_the_resume_retries_with_the_full_history(wired):
     """「续接失败 → 用完整 prompt 重试」保留：谷歌那边会话真过期时照旧补救，且存新会话。"""
     w = wired

@@ -456,7 +456,14 @@ def parse_gemini_thinking_config(config) -> tuple[int | bool | ThinkingRequest |
 
 
 def should_retry_without_thinking(exc: BaseException, extended_thinking) -> bool:
-    """这次失败是否该退回不思考重试：走了思考路径，且是 THINKING_RETRYABLE_ERRORS。"""
+    """这次失败是否该退回不思考重试：走了思考路径，且是 THINKING_RETRYABLE_ERRORS。
+
+    钉住的账号当场不可用（PinnedAccountUnavailable）除外：池子在 acquire 就判了它不可用、根本没
+    打上游，跟思考 payload 无关 —— 钉着同一个账号退回不思考再试只会原样失败，还把这一轮白白降成
+    不思考。
+    """
+    if isinstance(exc, PinnedAccountUnavailable):
+        return False
     return bool(extended_thinking) and isinstance(exc, THINKING_RETRYABLE_ERRORS)
 
 
@@ -568,6 +575,17 @@ NO_HEALTHY_ACCOUNT_MSG = "No healthy account (session expired, cookie refresh re
 BOUND_ACCOUNT_UNAVAILABLE_MSG = "Access key bound account(s) unavailable"
 
 
+class PinnedAccountUnavailable(RuntimeError):
+    """请求钉在某个账号上（Gem 绑定，或多轮续接钉回会话的账号），acquire 却拿不到它：
+    过期 / 满载 / 冷却中（池里有别的账号时，钉住的账号满载不排队，当场判不可用）。
+
+    仍是 RuntimeError，既有的 except 与路由收尾照常接得住。单独成类是为了两件事：
+    - 它不是思考 payload 的问题：should_retry_without_thinking 不为它退回不思考；
+    - classify_error 映射成 503（过去这条文案落到 RuntimeError 的兜底 500，像是服务端 bug）。
+    多轮续接的竞态（预判能钉、真发时被抢满）由路由改发完整历史兜住，并保留这一轮的思考档位。
+    """
+
+
 def classify_error(exc: Exception) -> tuple[int, str, int | None]:
     """把 generate()/generate_stream() 抛出的异常统一映射成
     (http_status, error_type, retry_after_seconds)。
@@ -595,6 +613,9 @@ def classify_error(exc: Exception) -> tuple[int, str, int | None]:
         return 504, "timeout_error", None
     if isinstance(exc, RuntimeError):
         msg = str(exc)
+        if isinstance(exc, PinnedAccountUnavailable):
+            # 钉住的那个账号此刻用不了（同 BOUND_ACCOUNT_UNAVAILABLE_MSG：请求必须用的账号不可用）
+            return 503, "api_error", None
         # 先判"会话失效"再判"池打满"：前者槽位是空的，重试不会好转，529 是误导（issue #11）。
         if NO_HEALTHY_ACCOUNT_MSG in msg:
             return 503, "api_error", None

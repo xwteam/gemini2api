@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from app.core.gemini_client import (
     GeminiWebClient, HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG,
-    is_timeout_error,
+    PinnedAccountUnavailable, is_timeout_error,
 )
 from app.core import keepalive_modes
 from app.core.access_context import current_bound_account_ids
@@ -83,6 +83,17 @@ def _with_account_id(result, account: "Account"):
     if isinstance(result, dict):
         return {**result, "account_id": account.id}
     return result
+
+
+def _pinned_unavailable(account_id: str, gem_id) -> PinnedAccountUnavailable:
+    """钉住的账号拿不到时的报错（generate / generate_stream 共用）。
+
+    Gem 钉号的文案逐字不变；多轮续接钉回会话账号（没有 gem_id）时不再写成 "gem"，免得运维去查 Gem。
+    """
+    kind = "gem account" if gem_id else "account"
+    return PinnedAccountUnavailable(
+        f"Pinned {kind} '{account_id}' unavailable (expired/busy/cooldown)"
+    )
 
 
 def _error_summary(exc: Exception) -> str:
@@ -1041,9 +1052,7 @@ class AccountPool:
                 # 锁定账号场景：其它账号已被全部 exclude，acquire 报「无更多账号可故障切换」
                 # 其实是绑定账号本身不可用（expired/busy/cooldown），换更准确的文案。
                 if account_id:
-                    raise RuntimeError(
-                        f"Pinned gem account '{account_id}' unavailable (expired/busy/cooldown)"
-                    )
+                    raise _pinned_unavailable(account_id, gem_id)
                 raise
             t0 = time.time()
             released = False
@@ -1103,9 +1112,7 @@ class AccountPool:
                     raise last_err
                 # 锁定账号场景：其它账号已被全部 exclude，真实原因是绑定账号本身不可用
                 if account_id:
-                    raise RuntimeError(
-                        f"Pinned gem account '{account_id}' unavailable (expired/busy/cooldown)"
-                    )
+                    raise _pinned_unavailable(account_id, gem_id)
                 raise
             t0 = time.time()
             emitted_any = False

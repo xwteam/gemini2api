@@ -18,7 +18,8 @@ from app.core.access_context import (
 from app.core.api_forwarder import empty_upstream_error, forward_to_provider, open_stream, run_failover
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
-from app.core.gemini_client import (GEMINI_MODELS, GENERATION_ERRORS, MODEL_ALIASES, _resolve_model,
+from app.core.gemini_client import (GEMINI_MODELS, GENERATION_ERRORS, MODEL_ALIASES,
+                                    PinnedAccountUnavailable, _resolve_model,
                                     classify_error, encode_conversation_metadata,
                                     generate_with_thinking_fallback, is_timeout_error,
                                     parse_conversation_metadata, parse_effort_request,
@@ -293,6 +294,16 @@ def _resume_target(conv, gem_account_id: str | None) -> tuple[str, str | None]:
     return "", gem_account_id
 
 
+def _full_history_thinking(err: BaseException, extended_thinking):
+    """「续接失败 → 改发完整历史」那次重试的思考档位（三条路径共用）。
+
+    钉住的账号当场不可用（PinnedAccountUnavailable：预判能钉、真发时被抢满 / 过期）跟思考无关，
+    保留这一轮的档位 —— 调用方经 generate_with_thinking_fallback 发，思考真失败时照常退回不思考。
+    别的失败照旧不思考（它们可能就是思考路径自己的失败）。
+    """
+    return extended_thinking if isinstance(err, PinnedAccountUnavailable) else False
+
+
 @router.get("/models")
 async def list_models(request: Request):
     models = with_retired_models_for_access_key(gemini_client.models)
@@ -444,9 +455,10 @@ async def chat_completions(req: ChatRequest, request: Request):
                     tools_raw = [t.model_dump() for t in req.tools]
                     prompt = build_tool_prompt(prompt, tools_raw, req.tool_choice)
                 try:
-                    result = await gemini_client.generate(prompt, resolved_model,
-                                                           gem_id=gem_id, account_id=gem_account_id,
-                                                           extended_thinking=False)
+                    result = await generate_with_thinking_fallback(
+                        gemini_client, prompt, resolved_model,
+                        gem_id=gem_id, account_id=gem_account_id,
+                        extended_thinking=_full_history_thinking(err, extended_thinking))
                     gemini_conv_id = ""
                     account_id = gem_account_id
                 except Exception as e3:
@@ -693,15 +705,16 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
             # 超时两种重试都不做（预算已经花完，再试会让客户端再等一整轮）：直接兜底 / 报错。
             # 会话重试是新开会话：完整历史、不带续接参数、不钉会话的账号（只钉 Gem 的）。
             if gemini_conv_id and messages_raw and not is_timeout_error(e):
-                retry_args = (build_prompt_from_messages(messages_raw), "", gem_account_id)
+                retry_args = (build_prompt_from_messages(messages_raw), "", gem_account_id,
+                              _full_history_thinking(e, extended_thinking))
             elif should_retry_without_thinking(e, extended_thinking):
                 logger.warning(f"extended-thinking stream failed, retrying normal: {e}")
-                retry_args = (prompt, gemini_conv_id, account_id)
+                retry_args = (prompt, gemini_conv_id, account_id, False)
         if retry_args is not None:
             # 重试是一整轮非流式生成：用 task + keepalive 续心跳，别制造一段远超保活间隔的死寂
-            retry_task = asyncio.create_task(gemini_client.generate(
-                retry_args[0], model, retry_args[1], attachments,
-                gem_id=gem_id, account_id=retry_args[2], extended_thinking=False))
+            retry_task = asyncio.create_task(generate_with_thinking_fallback(
+                gemini_client, retry_args[0], model, retry_args[1], attachments,
+                gem_id=gem_id, account_id=retry_args[2], extended_thinking=retry_args[3]))
             try:
                 async for ping in _sse_keepalive_during(retry_task):
                     yield ping
@@ -846,10 +859,10 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
             if has_tools and req is not None and req.tools:
                 full_prompt = build_tool_prompt(full_prompt, [t.model_dump() for t in req.tools],
                                                 req.tool_choice)
-            retry_task = asyncio.create_task(
-                gemini_client.generate(full_prompt, model, "", attachments,
-                                       gem_id=gem_id, account_id=gem_account_id)
-            )
+            retry_task = asyncio.create_task(generate_with_thinking_fallback(
+                gemini_client, full_prompt, model, "", attachments,
+                gem_id=gem_id, account_id=gem_account_id,
+                extended_thinking=_full_history_thinking(e, extended_thinking)))
             try:
                 async for ping in _sse_keepalive_during(retry_task):
                     yield ping
