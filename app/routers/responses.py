@@ -11,8 +11,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import ensure_model_allowed, record_token_usage
-from app.core.gemini_client import (GEMINI_MODELS, _resolve_model, parse_effort_request,
-                                    resolve_thinking)
+from app.core.gemini_client import (GEMINI_MODELS, _resolve_model, classify_error,
+                                    is_timeout_error, parse_effort_request, resolve_thinking)
 from app.core.responses_protocol import (
     parse_responses_input, build_responses_object, new_response_id, ResponsesStreamEncoder,
 )
@@ -31,6 +31,25 @@ def _error(status: int, message: str, error_type: str = "invalid_request_error",
     return JSONResponse(status_code=status, content={
         "error": {"message": message, "type": error_type, "param": param, "code": None},
     })
+
+
+def _generation_error(exc: Exception) -> JSONResponse:
+    """Gemini 生成失败的非流式错误响应。
+
+    超时 → classify_error 的 504 / timeout_error；其它失败维持原来的 502 api_error（只改超时
+    这一类，不顺手改别的错误的状态码）。
+    """
+    if is_timeout_error(exc):
+        status, err_type, _ = classify_error(exc)
+        return _error(status, str(exc), error_type=err_type)
+    return _error(502, str(exc), error_type="api_error")
+
+
+def _stream_failed(enc: ResponsesStreamEncoder, exc: Exception) -> str:
+    """流式路径的 response.failed：超时的 error.code 是 timeout_error，其它照旧 internal_error。"""
+    if is_timeout_error(exc):
+        return enc.failed(str(exc), code=classify_error(exc)[1])
+    return enc.failed(str(exc))
 
 
 def _request_params(body: dict) -> dict:
@@ -159,8 +178,9 @@ async def create_response(request: Request):
                                               gem_id=gem_id, account_id=gem_account_id,
                                               extended_thinking=extended_thinking)
     except Exception as e:
-        # 扩展思维链路径失败：先原样退回非思维链重试一次（同 chat/completions 的兜底策略）
-        if extended_thinking:
+        # 扩展思维链路径失败：先原样退回非思维链重试一次（同 chat/completions 的兜底策略）。
+        # 超时不退回（预算已经花完，再试会让客户端再等一整轮），直接回 504 timeout_error。
+        if extended_thinking and not is_timeout_error(e):
             logger.warning(f"extended-thinking request failed, retrying normal: {e}")
             show_thinking = False   # 这一轮确实没思考
             try:
@@ -168,9 +188,9 @@ async def create_response(request: Request):
                                                       gem_id=gem_id, account_id=gem_account_id,
                                                       extended_thinking=False)
             except Exception as e2:
-                return _error(502, str(e2), error_type="api_error")
+                return _generation_error(e2)
         else:
-            return _error(502, str(e), error_type="api_error")
+            return _generation_error(e)
 
     text = result.get("text", "")
     # AI 生成图片：沿用 chat/completions 的既有做法，Markdown 图片链接嵌入文字内容（design §4.3）
@@ -234,18 +254,18 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
         try:
             result = gen_task.result()
         except Exception as e:
-            # 扩展思维链路径失败：先原样退回非思维链重试一次
-            if extended_thinking:
+            # 扩展思维链路径失败：先原样退回非思维链重试一次（超时不退回，见非流式路径）
+            if extended_thinking and not is_timeout_error(e):
                 logger.warning(f"extended-thinking stream(buffered) failed, retrying normal: {e}")
                 try:
                     result = await gemini_client.generate(prompt, model, "", attachments,
                                                           gem_id=gem_id, account_id=gem_account_id,
                                                           extended_thinking=False)
                 except Exception as e2:
-                    yield enc.failed(str(e2))
+                    yield _stream_failed(enc, e2)
                     return
             else:
-                yield enc.failed(str(e))
+                yield _stream_failed(enc, e)
                 return
         text = result.get("text", "")
         thoughts = result.get("thoughts") or ""
@@ -331,8 +351,8 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
                 final_images = evt.get("images") or []
                 thoughts = evt.get("thoughts") or ""
     except Exception as e:
-        # 扩展思维链路径失败且尚未流出任何内容：退回非流式非思维链重试一次
-        if extended_thinking and not streamed_any:
+        # 扩展思维链路径失败且尚未流出任何内容：退回非流式非思维链重试一次（超时不退回）
+        if extended_thinking and not streamed_any and not is_timeout_error(e):
             logger.warning(f"extended-thinking stream failed, retrying normal: {e}")
             # 重试是一整轮非流式生成：用 task + keepalive 续心跳，别制造一段死寂
             retry_task = asyncio.create_task(gemini_client.generate(
@@ -349,14 +369,14 @@ async def _stream_gemini_response(request, prompt, model, has_tools, attachments
             try:
                 result = retry_task.result()
             except Exception as e2:
-                yield enc.failed(str(e2))
+                yield _stream_failed(enc, e2)
                 return
             full_text = result.get("text", "")
             final_images = result.get("images") or []
             if full_text:
                 yield enc.text_delta(msg_id, 0, full_text)
         else:
-            yield enc.failed(str(e))
+            yield _stream_failed(enc, e)
             return
 
     if final_images:

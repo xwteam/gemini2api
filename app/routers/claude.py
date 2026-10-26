@@ -14,7 +14,7 @@ from app.core.access_context import (
     ensure_model_allowed, filter_models_for_access_key, record_token_usage,
     with_retired_models_for_access_key,
 )
-from app.core.gemini_client import (HTTPStatusError, classify_error,
+from app.core.gemini_client import (GENERATION_ERRORS, classify_error,
                                     generate_with_thinking_fallback, parse_anthropic_thinking,
                                     resolve_thinking, should_retry_without_thinking)
 from app.core.thinking_stream import HiddenThoughts, drop_thought_events
@@ -222,20 +222,21 @@ async def create_message(req: ClaudeRequest, request: Request):
         result = await gemini_client.generate(prompt, resolved_model, "", attachments,
                                               gem_id=gem_id, account_id=gem_account_id,
                                               extended_thinking=extended_thinking)
-    except (RuntimeError, ValueError, HTTPStatusError) as e:
+    except GENERATION_ERRORS as e:
         err = e
         # 开思考 = 走另一套 payload + header（见 gemini_client._send_request），失败率与
         # 普通路径不同。先原样退回非思考重试一次再报错，别让"勾了思考"把整条请求搞挂
         # （镜像 openai.py 既有做法）。退回成功时也把 show_thinking 关掉：
-        # 这一轮确实没有思考，不该再去吐 thinking 块。
-        if extended_thinking:
+        # 这一轮确实没有思考，不该再去吐 thinking 块。超时不退回（预算已经花完），
+        # 直接按 classify_error 回 504 timeout_error。
+        if should_retry_without_thinking(e, extended_thinking):
             logger.warning(f"extended-thinking request failed, retrying normal: {e}")
             extended_thinking = False
             show_thinking = False
             try:
                 result = await gemini_client.generate(prompt, resolved_model, "", attachments,
                                                       gem_id=gem_id, account_id=gem_account_id)
-            except (RuntimeError, ValueError, HTTPStatusError) as e2:
+            except GENERATION_ERRORS as e2:
                 err = e2
         if result is None:
             status, err_type, retry_after = classify_error(err)

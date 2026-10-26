@@ -18,9 +18,9 @@ from app.core.access_context import (
 from app.core.api_forwarder import empty_upstream_error, forward_to_provider, open_stream, run_failover
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
-from app.core.gemini_client import (GEMINI_MODELS, MODEL_ALIASES, _resolve_model, HTTPStatusError,
+from app.core.gemini_client import (GEMINI_MODELS, GENERATION_ERRORS, MODEL_ALIASES, _resolve_model,
                                     classify_error, generate_with_thinking_fallback,
-                                    parse_effort_request, resolve_thinking,
+                                    is_timeout_error, parse_effort_request, resolve_thinking,
                                     should_retry_without_thinking)
 from app.core.thinking_stream import HiddenThoughts, drop_thought_events
 from app.core.stream import split_into_chunks, format_sse, iter_with_keepalive, SSE_KEEPALIVE_INTERVAL, SSE_KEEPALIVE_FRAME, sse_keepalive_during
@@ -350,23 +350,25 @@ async def chat_completions(req: ChatRequest, request: Request):
         result = await gemini_client.generate(prompt, resolved_model, gemini_conv_id, attachments,
                                               gem_id=gem_id, account_id=gem_account_id,
                                               extended_thinking=extended_thinking)
-    except (RuntimeError, ValueError, HTTPStatusError) as e:
+    except GENERATION_ERRORS as e:
         err = e
         result = None
-        # 扩展思维链路径失败：先原样退回非思维链重试一次，再走既有兜底（会话过期/第三方）
-        if extended_thinking:
+        # 扩展思维链路径失败：先原样退回非思维链重试一次，再走既有兜底（会话过期/第三方）。
+        # 超时不退回（THINKING_RETRYABLE_ERRORS 刻意不含超时：这一轮的预算已经花完）。
+        if should_retry_without_thinking(e, extended_thinking):
             logger.warning(f"extended-thinking request failed, retrying normal: {e}")
             show_thinking = False   # 这一轮确实没思考
             try:
                 result = await gemini_client.generate(prompt, resolved_model, gemini_conv_id, attachments,
                                                       gem_id=gem_id, account_id=gem_account_id,
                                                       extended_thinking=False)
-            except (RuntimeError, ValueError, HTTPStatusError) as e2:
+            except GENERATION_ERRORS as e2:
                 err = e2
 
         if result is None:
-            # Fallback: 如果 conversation_id 过期，用完整 prompt 重试
-            if gemini_conv_id:
+            # Fallback: 如果 conversation_id 过期，用完整 prompt 重试。超时不走这一步：再试会
+            # 让客户端再等一整轮；直接兜底（如开）→ 否则 504。
+            if gemini_conv_id and not is_timeout_error(err):
                 prompt = build_prompt_from_messages(messages_raw)
                 if has_tools:
                     tools_raw = [t.model_dump() for t in req.tools]
@@ -612,7 +614,8 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
         #     没有这一退回，上游拒收思考 payload 时，v1.6.42 能答的不传参流式请求会变成硬失败。
         retry_args = None
         if not streamed_any:
-            if gemini_conv_id and messages_raw:
+            # 超时两种重试都不做（预算已经花完，再试会让客户端再等一整轮）：直接兜底 / 报错。
+            if gemini_conv_id and messages_raw and not is_timeout_error(e):
                 retry_args = (build_prompt_from_messages(messages_raw), "")
             elif should_retry_without_thinking(e, extended_thinking):
                 logger.warning(f"extended-thinking stream failed, retrying normal: {e}")
@@ -750,7 +753,8 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
     try:
         result = gen_task.result()
     except Exception as e:
-        if gemini_conv_id and messages_raw:
+        # 续接失败 → 用完整 prompt 重试；超时不重试（预算已经花完），直接兜底 / 报错。
+        if gemini_conv_id and messages_raw and not is_timeout_error(e):
             full_prompt = build_prompt_from_messages(messages_raw)
             retry_task = asyncio.create_task(
                 gemini_client.generate(full_prompt, model, "", attachments,

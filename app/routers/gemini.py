@@ -12,8 +12,8 @@ from app.core.access_context import (
     ensure_model_allowed, filter_models_for_access_key, record_token_usage,
     with_retired_models_for_access_key,
 )
-from app.core.gemini_client import (HTTPStatusError, classify_error,
-                                    generate_with_thinking_fallback,
+from app.core.gemini_client import (GENERATION_ERRORS, classify_error,
+                                    generate_with_thinking_fallback, is_timeout_error,
                                     parse_gemini_thinking_config, resolve_thinking,
                                     should_retry_without_thinking)
 from app.core.thinking_stream import HiddenThoughts, drop_thought_events
@@ -190,6 +190,16 @@ def _thinking_plan(req: GeminiRequest):
     return resolve_thinking(requested, show=show)
 
 
+def _stream_error_line(exc: Exception) -> str:
+    """NDJSON 流里的错误行（buffered 与真流式共用，形态沿用原来的 {"error": {message, type}}）。
+
+    超时按 classify_error 给 timeout_error；别的失败维持原来写死的 api_error —— 只改超时这一类，
+    不顺手改其它错误在这条流里的类型。
+    """
+    err_type = classify_error(exc)[1] if is_timeout_error(exc) else "api_error"
+    return json.dumps({"error": {"message": str(exc), "type": err_type}}) + "\n"
+
+
 def _thought_part(thoughts: str) -> dict:
     """官方 wire format 的思考部分：Part.thought=true 标记这段文本是思考。"""
     return {"text": thoughts, "thought": True}
@@ -270,7 +280,8 @@ async def generate_content(model: str, req: GeminiRequest, request: Request):
         result = await generate_with_thinking_fallback(
             gemini_client, prompt, model, "", attachments,
             gem_id=gem_id, account_id=gem_account_id, extended_thinking=plan.upstream)
-    except (RuntimeError, ValueError, HTTPStatusError) as e:
+    except GENERATION_ERRORS as e:
+        # 超时也在这里接住（过去冒到 ASGI 层变成纯文本 500），按 classify_error 回 504。
         status, err_type, retry_after = classify_error(e)
         headers = {"Retry-After": str(retry_after)} if retry_after else None
         return JSONResponse(
@@ -433,7 +444,7 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
             try:
                 result = gen_task.result()
             except Exception as e:
-                yield json.dumps({"error": {"message": str(e), "type": "api_error"}}) + "\n"
+                yield _stream_error_line(e)
                 return
             response_text = result.get("text", "")
             stream_thoughts = result.get("thoughts") or ""
@@ -560,7 +571,7 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
                         yield _chunk(response_text)
 
             if failure is not None:
-                yield json.dumps({"error": {"message": str(failure), "type": "api_error"}}) + "\n"
+                yield _stream_error_line(failure)
                 return
 
         completion_tokens = estimate_tokens(response_text)

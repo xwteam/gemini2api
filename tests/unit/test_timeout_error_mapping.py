@@ -118,3 +118,435 @@ def test_other_curl_errors_keep_their_old_mapping():
 ])
 def test_non_timeout_mappings_are_unchanged(exc, expected):
     assert classify_error(exc) == expected
+
+
+# ---------------------------------------------------------------------------
+# OpenAI chat completions
+# ---------------------------------------------------------------------------
+
+def _assert_json_504(r, envelope_type_path=("error", "type")):
+    assert r.status_code == 504, r.text
+    assert r.headers["content-type"].startswith("application/json"), r.headers
+    body = r.json()
+    node = body
+    for key in envelope_type_path:
+        node = node[key]
+    assert node == "timeout_error", body
+    return body
+
+
+def test_openai_nonstream_timeout_is_a_504_json_error_and_is_not_retried(gem_client, monkeypatch):
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+    r = gem_client.post("/v1/chat/completions", json={
+        "model": "gemini-pro", "stream": False,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers=_AUTH)
+
+    body = _assert_json_504(r)
+    assert "timed out" in body["error"]["message"]
+    # 默认思考档（出厂 low）开着：超时不能触发「退回不思考再试一次」
+    assert len(calls.generate) == 1, calls.generate
+    assert calls.generate[0]["thinking"], "前提不成立：这条请求本该走思考路径"
+
+
+def test_openai_nonstream_timeout_tries_the_third_party_fallback_first(gem_client, monkeypatch):
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+    seen = {}
+
+    async def fake_fallback(request, req, messages_raw, exclude_model=""):
+        seen["hit"] = True
+        return {"id": "chatcmpl-fb", "object": "chat.completion", "created": 0, "model": "tp",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "from fallback"}}]}
+
+    monkeypatch.setattr(oai, "_fallback_result", fake_fallback)
+    r = gem_client.post("/v1/chat/completions", json={
+        "model": "gemini-pro", "stream": False,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers=_AUTH)
+
+    assert seen.get("hit") is True
+    assert r.status_code == 200, r.text
+    assert r.json()["choices"][0]["message"]["content"] == "from fallback"
+    assert len(calls.generate) == 1
+
+
+class _ConvStore:
+    """内存版 conversation_store，预置一条可续接的会话。"""
+
+    def __init__(self, records=None):
+        self.records = dict(records or {})
+
+    async def get(self, conv_id):
+        return self.records.get(conv_id)
+
+    async def create(self, conv_id, model):
+        from types import SimpleNamespace
+        conv = SimpleNamespace(id=conv_id, gemini_conv_id="", account_id="", model=model,
+                               messages=[], add_message=lambda role, content: None)
+        self.records[conv_id] = conv
+        return conv
+
+    async def update(self, conv):
+        self.records[conv.id] = conv
+
+
+def _resumable_conversation(conv_id="thread-1"):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        id=conv_id, gemini_conv_id=json.dumps(["c_abc", "r_def", "rc_ghi"]),
+        account_id="account-0", model="gemini-pro", messages=[],
+        add_message=lambda role, content: None,
+    )
+
+
+def test_openai_nonstream_timeout_in_a_resumed_conversation_is_not_retried_with_full_prompt(
+        gem_client, monkeypatch):
+    """「会话过期 → 用完整 prompt 重试」不能被超时触发：预算已经花完，再试让客户端再等一整轮。"""
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+    monkeypatch.setattr(oai, "conversation_store", _ConvStore({"thread-1": _resumable_conversation()}))
+    monkeypatch.setattr(oai.gemini_client, "account_pinnable", lambda account_id: True, raising=False)
+
+    r = gem_client.post("/v1/chat/completions", json={
+        "model": "gemini-pro", "stream": False, "conversation_id": "thread-1",
+        "messages": [{"role": "user", "content": "first"},
+                     {"role": "assistant", "content": "answer"},
+                     {"role": "user", "content": "second"}],
+    }, headers=_AUTH)
+
+    _assert_json_504(r)
+    assert len(calls.generate) == 1, calls.generate
+    assert calls.generate[0]["conv"], "前提不成立：第一次本该走续接分支"
+
+
+def test_openai_buffered_tool_stream_timeout_emits_a_timeout_error_frame(gem_client, monkeypatch):
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+    with gem_client.stream("POST", "/v1/chat/completions", json={
+        "model": "gemini-pro", "stream": True, "tools": _TOOLS_OPENAI,
+        "messages": [{"role": "user", "content": "weather?"}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    errors = [d["error"] for _, d in _sse_events(body) if isinstance(d, dict) and "error" in d]
+    assert len(errors) == 1, body
+    assert errors[0]["type"] == "timeout_error"
+    assert errors[0]["code"] == 504
+    assert len(calls.generate) == 1, calls.generate
+
+
+def test_openai_buffered_tool_stream_timeout_tries_the_fallback_first(gem_client, monkeypatch):
+    import app.routers.openai as oai
+
+    _patch_timeouts(monkeypatch, oai)
+
+    async def fake_fallback_stream(request, req, messages_raw, exclude_model, completion_id, model_name):
+        yield 'data: {"fallback": true}\n\n'
+
+    monkeypatch.setattr(oai, "_maybe_fallback_stream", fake_fallback_stream)
+    with gem_client.stream("POST", "/v1/chat/completions", json={
+        "model": "gemini-pro", "stream": True, "tools": _TOOLS_OPENAI,
+        "messages": [{"role": "user", "content": "weather?"}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    assert '"fallback": true' in body
+    assert "timeout_error" not in body
+
+
+def _drive(agen):
+    async def run():
+        return "".join([chunk async for chunk in agen])
+
+    return asyncio.run(run())
+
+
+def test_openai_buffered_timeout_with_a_conversation_is_not_retried_with_full_prompt(monkeypatch):
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+    body = _drive(oai._stream_response_buffered(
+        "prompt", "gemini-pro", False, json.dumps(["c_abc", "r_def", "rc_ghi"]), None,
+        [{"role": "user", "content": "hi"}],
+        "gemini-pro", "chatcmpl-test", None, "", None, None, None, None,
+    ))
+
+    assert len(calls.generate) == 1, calls.generate
+    errors = [d["error"] for _, d in _sse_events(body) if isinstance(d, dict) and "error" in d]
+    assert [e["type"] for e in errors] == ["timeout_error"], body
+
+
+def test_openai_real_stream_timeout_emits_a_timeout_error_frame_without_retrying(gem_client, monkeypatch):
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+    with gem_client.stream("POST", "/v1/chat/completions", json={
+        "model": "gemini-pro", "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    errors = [d["error"] for _, d in _sse_events(body) if isinstance(d, dict) and "error" in d]
+    assert len(errors) == 1, body
+    assert (errors[0]["type"], errors[0]["code"]) == ("timeout_error", 504)
+    assert len(calls.stream) == 1
+    assert calls.generate == [], "超时不该触发非流式的不思考重试"
+
+
+def test_openai_real_stream_timeout_with_a_conversation_is_not_retried_with_full_prompt(monkeypatch):
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+    body = _drive(oai._stream_response(
+        "prompt", "gemini-pro", False, json.dumps(["c_abc", "r_def", "rc_ghi"]), None,
+        [{"role": "user", "content": "hi"}], "gemini-pro",
+    ))
+
+    assert calls.generate == [], calls.generate
+    errors = [d["error"] for _, d in _sse_events(body) if isinstance(d, dict) and "error" in d]
+    assert [e["type"] for e in errors] == ["timeout_error"], body
+
+
+def test_openai_real_stream_timeout_after_partial_output_keeps_the_text_and_reports_timeout(
+        gem_client, monkeypatch):
+    """已经流出正文后再超时：既有行为不变（不兜底、不重试、已发的正文不收回），只是错误帧的
+    type 变成 timeout_error。"""
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+
+    async def partial_then_timeout(prompt, model, conversation_id="", attachments=None,
+                                   gem_id=None, account_id=None, extended_thinking=False):
+        yield {"type": "delta", "text": "partial answer"}
+        raise TimeoutError()
+
+    monkeypatch.setattr(oai.gemini_client, "generate_stream", partial_then_timeout)
+    with gem_client.stream("POST", "/v1/chat/completions", json={
+        "model": "gemini-pro", "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    assert "partial answer" in body
+    errors = [d["error"] for _, d in _sse_events(body) if isinstance(d, dict) and "error" in d]
+    assert [e["type"] for e in errors] == ["timeout_error"], body
+    assert calls.generate == []
+
+
+# ---------------------------------------------------------------------------
+# Anthropic messages
+# ---------------------------------------------------------------------------
+
+def test_claude_nonstream_timeout_is_a_504_anthropic_error_and_is_not_retried(gem_client, monkeypatch):
+    import app.routers.claude as cl
+
+    calls = _patch_timeouts(monkeypatch, cl)
+    r = gem_client.post("/v1/messages", json={
+        "model": "gemini-pro", "max_tokens": 100, "stream": False,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers=_AUTH)
+
+    body = _assert_json_504(r)
+    assert body["type"] == "error"
+    assert len(calls.generate) == 1, calls.generate
+    assert calls.generate[0]["thinking"], "前提不成立：这条请求本该走思考路径"
+
+
+def test_claude_buffered_tool_stream_timeout_emits_timeout_error_event(gem_client, monkeypatch):
+    import app.routers.claude as cl
+
+    calls = _patch_timeouts(monkeypatch, cl)
+    with gem_client.stream("POST", "/v1/messages", json={
+        "model": "gemini-pro", "max_tokens": 100, "stream": True, "tools": _TOOLS_ANTHROPIC,
+        "messages": [{"role": "user", "content": "weather?"}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    errors = [d["error"] for ev, d in _sse_events(body) if ev == "error"]
+    assert [e["type"] for e in errors] == ["timeout_error"], body
+    assert len(calls.generate) == 1, calls.generate
+
+
+def test_claude_real_stream_timeout_emits_timeout_error_event_without_retrying(gem_client, monkeypatch):
+    import app.routers.claude as cl
+
+    calls = _patch_timeouts(monkeypatch, cl)
+    with gem_client.stream("POST", "/v1/messages", json={
+        "model": "gemini-pro", "max_tokens": 100, "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    errors = [d["error"] for ev, d in _sse_events(body) if ev == "error"]
+    assert [e["type"] for e in errors] == ["timeout_error"], body
+    assert calls.generate == []
+    assert "end_turn" not in body
+
+
+# ---------------------------------------------------------------------------
+# Gemini 原生
+# ---------------------------------------------------------------------------
+
+def _ndjson_errors(body: str):
+    out = []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        if "error" in obj:
+            out.append(obj["error"])
+    return out
+
+
+def test_gemini_nonstream_timeout_is_a_504_json_error_and_is_not_retried(gem_client, monkeypatch):
+    import app.routers.gemini as ge
+
+    calls = _patch_timeouts(monkeypatch, ge)
+    r = gem_client.post("/v1beta/models/gemini-pro:generateContent", json={
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+    }, headers=_AUTH)
+
+    body = _assert_json_504(r)
+    assert "timed out" in body["error"]["message"]
+    assert len(calls.generate) == 1, calls.generate
+
+
+def test_gemini_buffered_tool_stream_timeout_emits_timeout_error_line(gem_client, monkeypatch):
+    import app.routers.gemini as ge
+
+    calls = _patch_timeouts(monkeypatch, ge)
+    with gem_client.stream("POST", "/v1beta/models/gemini-pro:streamGenerateContent", json={
+        "contents": [{"role": "user", "parts": [{"text": "weather?"}]}],
+        "tools": _TOOLS_GEMINI,
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    assert [e["type"] for e in _ndjson_errors(body)] == ["timeout_error"], body
+    assert len(calls.generate) == 1, calls.generate
+
+
+def test_gemini_real_stream_timeout_emits_timeout_error_line_without_retrying(gem_client, monkeypatch):
+    import app.routers.gemini as ge
+
+    calls = _patch_timeouts(monkeypatch, ge)
+    with gem_client.stream("POST", "/v1beta/models/gemini-pro:streamGenerateContent", json={
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    assert [e["type"] for e in _ndjson_errors(body)] == ["timeout_error"], body
+    assert calls.generate == []
+
+
+def test_gemini_stream_non_timeout_errors_keep_their_old_type(gem_client, monkeypatch):
+    """零回归：NDJSON 流里别的失败照旧是 api_error（只有超时换成 timeout_error）。"""
+    import app.routers.gemini as ge
+
+    async def boom(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                   account_id=None, extended_thinking=False):
+        raise RuntimeError("upstream exploded")
+        yield  # pragma: no cover
+
+    async def boom_generate(*a, **k):
+        raise RuntimeError("upstream exploded")
+
+    monkeypatch.setattr(ge.gemini_client, "generate_stream", boom)
+    monkeypatch.setattr(ge.gemini_client, "generate", boom_generate)
+    with gem_client.stream("POST", "/v1beta/models/gemini-pro:streamGenerateContent", json={
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    assert [e["type"] for e in _ndjson_errors(body)] == ["api_error"], body
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Responses
+# ---------------------------------------------------------------------------
+
+def _failed_events(body: str):
+    return [d["response"] for ev, d in _sse_events(body) if ev == "response.failed"]
+
+
+def test_responses_nonstream_timeout_is_a_504_json_error_and_is_not_retried(gem_client, monkeypatch):
+    import app.routers.responses as rr
+
+    calls = _patch_timeouts(monkeypatch, rr)
+    r = gem_client.post("/v1/responses", json={"model": "gemini-pro", "input": "hi"}, headers=_AUTH)
+
+    body = _assert_json_504(r)
+    assert "timed out" in body["error"]["message"]
+    assert len(calls.generate) == 1, calls.generate
+    assert calls.generate[0]["thinking"], "前提不成立：这条请求本该走思考路径"
+
+
+def test_responses_nonstream_other_failures_keep_their_old_status(gem_client, monkeypatch):
+    """零回归：Responses 非流式别的失败照旧 502 api_error。"""
+    import app.routers.responses as rr
+
+    async def boom(*a, **k):
+        raise RuntimeError("upstream exploded")
+
+    monkeypatch.setattr(rr.gemini_client, "generate", boom)
+    r = gem_client.post("/v1/responses", json={"model": "gemini-pro", "input": "hi"}, headers=_AUTH)
+    assert r.status_code == 502, r.text
+    assert r.json()["error"]["type"] == "api_error"
+
+
+def test_responses_buffered_tool_stream_timeout_fails_with_timeout_code(gem_client, monkeypatch):
+    import app.routers.responses as rr
+
+    calls = _patch_timeouts(monkeypatch, rr)
+    with gem_client.stream("POST", "/v1/responses", json={
+        "model": "gemini-pro", "input": "weather?", "stream": True, "tools": _TOOLS_RESPONSES,
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    failed = _failed_events(body)
+    assert len(failed) == 1, body
+    assert failed[0]["error"]["code"] == "timeout_error"
+    assert len(calls.generate) == 1, calls.generate
+
+
+def test_responses_real_stream_timeout_fails_with_timeout_code_without_retrying(gem_client, monkeypatch):
+    import app.routers.responses as rr
+
+    calls = _patch_timeouts(monkeypatch, rr)
+    with gem_client.stream("POST", "/v1/responses", json={
+        "model": "gemini-pro", "input": "hi", "stream": True,
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    failed = _failed_events(body)
+    assert len(failed) == 1, body
+    assert failed[0]["error"]["code"] == "timeout_error"
+    assert calls.generate == [], calls.generate
+
+
+def test_responses_stream_other_failures_keep_internal_error_code(gem_client, monkeypatch):
+    import app.routers.responses as rr
+
+    async def boom_stream(*a, **k):
+        raise RuntimeError("upstream exploded")
+        yield  # pragma: no cover
+
+    async def boom(*a, **k):
+        raise RuntimeError("upstream exploded")
+
+    monkeypatch.setattr(rr.gemini_client, "generate_stream", boom_stream)
+    monkeypatch.setattr(rr.gemini_client, "generate", boom)
+    with gem_client.stream("POST", "/v1/responses", json={
+        "model": "gemini-pro", "input": "hi", "stream": True,
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    failed = _failed_events(body)
+    assert [f["error"]["code"] for f in failed] == ["internal_error"], body

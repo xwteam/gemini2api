@@ -502,6 +502,12 @@ class HTTPStatusError(Exception):
 # 预算，再打一次只会把用户的等待时间翻倍。
 THINKING_RETRYABLE_ERRORS = (RuntimeError, ValueError, HTTPStatusError)
 
+# 路由的非流式 / buffered 路径要接住的「生成失败」= 上面那几类 + 超时。超时过去不在这里，
+# 一路冒到 ASGI 层，客户端拿到纯文本的 500 Internal Server Error（SDK 解析不了、不会按超时
+# 重试、开了兜底也不兜）。接住之后走与其它生成失败同一条收尾：兜底（如开）→ 否则按
+# classify_error 回 504 / timeout_error。
+GENERATION_ERRORS = (*THINKING_RETRYABLE_ERRORS, TimeoutError)
+
 
 class RotationResult(Enum):
     """_rotate_cookies() 的三态结果。

@@ -198,9 +198,9 @@ class ResponsesStreamEncoder:
         obj["id"] = self._response_id
         return self._send("response.completed", {"response": obj})
 
-    def failed(self, message: str) -> str:
+    def failed(self, message: str, code: str = "internal_error") -> str:
         obj = build_responses_object(model=self._model, status="failed", output=[],
                                      request_params=self._request_params,
-                                     error={"code": "internal_error", "message": message})
+                                     error={"code": code, "message": message})
         obj["id"] = self._response_id
         return self._send("response.failed", {"response": obj})
