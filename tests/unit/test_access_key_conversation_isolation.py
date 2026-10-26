@@ -9,6 +9,7 @@ conversation_store 的键完全由客户端提供（`conversation_id: "1"` 这�
 conversation_id 仍然是它自己给的那个（否则下一轮会被套两层前缀）。
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,10 @@ from app.core.access_key_store import AccessKeyStore
 
 _ENV_AUTH = {"Authorization": "Bearer sk-test-key"}  # conftest 设的 API_KEY
 _MODEL = "gemini-pro"
+
+
+def _meta(n: int) -> str:
+    return json.dumps([f"c_conv{n}", f"r_resp{n}", f"rc_cand{n}"])
 
 
 class _FakeConvStore:
@@ -31,7 +36,7 @@ class _FakeConvStore:
 
     async def create(self, conv_id, model):
         conv = SimpleNamespace(
-            id=conv_id, gemini_conv_id="", model=model, messages=[],
+            id=conv_id, gemini_conv_id="", account_id="", model=model, messages=[],
             add_message=lambda role, content: None,
         )
         self.records[conv_id] = conv
@@ -61,10 +66,13 @@ def wired(gem_client, monkeypatch, tmp_path):
         return {
             "text": f"echo[conv={conversation_id}]",
             "images": [],
-            "conversation_id": f"gemini-conv-{counter['n']}",
+            # 真实形态的续接元数据（v1.6.45：[cid, rid, rcid] JSON + 服务的账号）
+            "conversation_id": _meta(counter["n"]),
+            "account_id": "account-0",
         }
 
     monkeypatch.setattr(openai_router.gemini_client, "generate", fake_generate)
+    monkeypatch.setattr(openai_router.gemini_client, "account_pinnable", lambda account_id: True)
     return SimpleNamespace(client=gem_client, store=fresh, convs=convs, calls=calls)
 
 
@@ -92,7 +100,7 @@ def test_two_access_keys_cannot_share_a_conversation_id(wired):
     assert [c["conv"] for c in wired.calls] == ["", ""], (
         f"乙方的请求接上了甲方的上游会话: {wired.calls}"
     )
-    assert "gemini-conv-1" not in r2.text
+    assert "c_conv1" not in r2.text
     # 两把密钥各自有独立的存储键，互不可见
     assert len(wired.convs.records) == 2, f"存储键撞在一起了: {list(wired.convs.records)}"
 
@@ -103,7 +111,7 @@ def test_the_same_access_key_still_continues_its_own_conversation(wired):
     assert _chat(wired.client, alice, "1").status_code == 200
     assert _chat(wired.client, alice, "1", text="again").status_code == 200
 
-    assert [c["conv"] for c in wired.calls] == ["", "gemini-conv-1"], (
+    assert [c["conv"] for c in wired.calls] == ["", _meta(1)], (
         f"同一把密钥的多轮续接坏了: {wired.calls}"
     )
 

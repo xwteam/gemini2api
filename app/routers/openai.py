@@ -19,9 +19,10 @@ from app.core.api_forwarder import empty_upstream_error, forward_to_provider, op
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
 from app.core.gemini_client import (GEMINI_MODELS, GENERATION_ERRORS, MODEL_ALIASES, _resolve_model,
-                                    classify_error, generate_with_thinking_fallback,
-                                    is_timeout_error, parse_effort_request, resolve_thinking,
-                                    should_retry_without_thinking)
+                                    classify_error, encode_conversation_metadata,
+                                    generate_with_thinking_fallback, is_timeout_error,
+                                    parse_conversation_metadata, parse_effort_request,
+                                    resolve_thinking, should_retry_without_thinking)
 from app.core.thinking_stream import HiddenThoughts, drop_thought_events
 from app.core.stream import split_into_chunks, format_sse, iter_with_keepalive, SSE_KEEPALIVE_INTERVAL, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.openai import (
@@ -233,6 +234,38 @@ async def _dispatch_thirdparty(request, req: ChatRequest, resolved_model: str):
     return ok if ok is not None else error
 
 
+def _resume_target(conv, gem_account_id: str | None) -> tuple[str, str | None]:
+    """这一轮续不续接上一轮的 Gemini 会话 → (续接参数, 这一轮钉的账号)。
+
+    只有「存储里解析得出有效 cid」并且「能钉回记录的那个账号」才续接：返回
+    (encode_conversation_metadata 编好的 [cid, rid, rcid], 会话的账号)，调用方只发最后一条
+    用户消息。会话 id 是账号私有的，换个账号就接不上 —— v1.6.44 及以前第二轮按轮询落到哪个
+    账号算哪个。
+    否则返回 ("", gem_account_id)：调用方用 build_prompt_from_messages 发完整历史、不带续接
+    参数（等于新开一个会话），拿到结果后照常把新的 cid 与账号存回去。接不上的时候绝不只发
+    最后一句 —— 那等于静默丢掉整段上下文。
+
+    Gem 自带的账号绑定优先：Gem 钉的账号与会话记录的账号不一致时不续接（以 Gem 为准）。
+    """
+    if conv is None:
+        return "", gem_account_id
+    meta = parse_conversation_metadata(getattr(conv, "gemini_conv_id", ""))
+    if meta is None:
+        return "", gem_account_id
+    conv_account = getattr(conv, "account_id", "") or ""
+    if not conv_account:
+        reason = "no recorded account"
+    elif gem_account_id and gem_account_id != conv_account:
+        reason = f"the gem is bound to {gem_account_id}, the conversation lives on {conv_account}"
+    elif not gemini_client.account_pinnable(conv_account):
+        reason = f"account {conv_account} is unavailable"
+    else:
+        return encode_conversation_metadata(meta), conv_account
+    logger.info(f"Conversation {getattr(conv, 'id', '?')}: not resuming ({reason}); "
+                f"resending the full history as a new conversation")
+    return "", gem_account_id
+
+
 @router.get("/models")
 async def list_models(request: Request):
     models = with_retired_models_for_access_key(gemini_client.models)
@@ -285,13 +318,14 @@ async def chat_completions(req: ChatRequest, request: Request):
     messages_raw = [m.model_dump() for m in req.messages]
 
     # 对话上下文持久化：检查是否有 conversation_id
-    gemini_conv_id = ""
     conv = None
     if req.conversation_id:
         # 存储键按访问密钥隔离；回给客户端的仍是它自己给的那个 id（见 _conv_echo_id）
         conv = await conversation_store.get(scoped_conversation_id(req.conversation_id))
-        if conv and conv.gemini_conv_id:
-            gemini_conv_id = conv.gemini_conv_id
+    # 续接（只发最后一句）的前提：存储里有有效的 [cid, rid, rcid]，且钉得回记录的那个账号。
+    # 否则 gemini_conv_id 为空、发完整历史；account_id 是这一轮钉的账号（续接 = 会话的账号，
+    # 否则 = Gem 绑定的账号，没有就不钉）。完整历史重试一律只钉 Gem 的账号（gem_account_id）。
+    gemini_conv_id, account_id = _resume_target(conv, gem_account_id)
 
     # 如果有有效的 gemini_conv_id，只发最新一条用户消息
     if gemini_conv_id and messages_raw:
@@ -341,14 +375,14 @@ async def chat_completions(req: ChatRequest, request: Request):
 
     if req.stream:
         return StreamingResponse(
-            _stream_response(prompt, resolved_model, has_tools, gemini_conv_id, conv, messages_raw, req.model, attachments, _image_base(request), request, req, gem_id, gem_account_id, extended_thinking=extended_thinking, show_thinking=show_thinking),
+            _stream_response(prompt, resolved_model, has_tools, gemini_conv_id, conv, messages_raw, req.model, attachments, _image_base(request), request, req, gem_id, account_id, extended_thinking=extended_thinking, show_thinking=show_thinking, gem_account_id=gem_account_id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     try:
         result = await gemini_client.generate(prompt, resolved_model, gemini_conv_id, attachments,
-                                              gem_id=gem_id, account_id=gem_account_id,
+                                              gem_id=gem_id, account_id=account_id,
                                               extended_thinking=extended_thinking)
     except GENERATION_ERRORS as e:
         err = e
@@ -360,7 +394,7 @@ async def chat_completions(req: ChatRequest, request: Request):
             show_thinking = False   # 这一轮确实没思考
             try:
                 result = await gemini_client.generate(prompt, resolved_model, gemini_conv_id, attachments,
-                                                      gem_id=gem_id, account_id=gem_account_id,
+                                                      gem_id=gem_id, account_id=account_id,
                                                       extended_thinking=False)
             except GENERATION_ERRORS as e2:
                 err = e2
@@ -368,6 +402,8 @@ async def chat_completions(req: ChatRequest, request: Request):
         if result is None:
             # Fallback: 如果 conversation_id 过期，用完整 prompt 重试。超时不走这一步：再试会
             # 让客户端再等一整轮；直接兜底（如开）→ 否则 504。
+            # 这一步是新开会话：不带续接参数、不钉会话的账号（钉住的账号可能正是失败的原因），
+            # 只钉 Gem 的账号。也接住「钉的账号真发时才报 unavailable」的竞态（见 _resume_target）。
             if gemini_conv_id and not is_timeout_error(err):
                 prompt = build_prompt_from_messages(messages_raw)
                 if has_tools:
@@ -378,6 +414,7 @@ async def chat_completions(req: ChatRequest, request: Request):
                                                            gem_id=gem_id, account_id=gem_account_id,
                                                            extended_thinking=False)
                     gemini_conv_id = ""
+                    account_id = gem_account_id
                 except Exception:
                     fb = await _fallback_result(request, req, messages_raw, resolved_model)
                     if fb is not None:
@@ -422,6 +459,8 @@ async def chat_completions(req: ChatRequest, request: Request):
             conv_store_id = scoped_conversation_id(req.conversation_id or completion_id)
             conv = await conversation_store.create(conv_store_id, resolved_model)
         conv.gemini_conv_id = new_conv_id
+        # 记下服务这一轮的账号：下一轮要钉回它才接得上这个会话
+        conv.account_id = result.get("account_id") or ""
         last_user = messages_raw[-1].get("content", "") if messages_raw else ""
         if isinstance(last_user, list):
             last_user = str(last_user)
@@ -431,8 +470,9 @@ async def chat_completions(req: ChatRequest, request: Request):
 
     if has_tools:
         async def _regenerate_for_tools() -> str:
+            # 续接时同样钉会话的账号：带着续接参数落到别的账号就接不上
             r = await gemini_client.generate(prompt, resolved_model, gemini_conv_id, attachments,
-                                             gem_id=gem_id, account_id=gem_account_id,
+                                             gem_id=gem_id, account_id=account_id,
                                              extended_thinking=extended_thinking)
             return r.get("text", "")
 
@@ -501,7 +541,9 @@ def _usage_and_record(model: str, prompt: str, text: str, result: dict | None = 
     )
 
 
-async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, display_model: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False, show_thinking: bool = False) -> AsyncGenerator[str, None]:
+async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, display_model: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False, show_thinking: bool = False, gem_account_id=None) -> AsyncGenerator[str, None]:
+    """account_id = 这一轮钉的账号（续接 = 会话的账号）；gem_account_id = 改发完整历史时还要钉的
+    账号（只有 Gem 绑定，没有就不钉）。"""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     model_name = display_model or model
 
@@ -521,7 +563,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
         async for sse in _stream_response_buffered(
             prompt, model, has_tools, gemini_conv_id, conv, messages_raw,
             model_name, completion_id, attachments, base_url, request, req, gem_id, account_id,
-            extended_thinking=extended_thinking,
+            extended_thinking=extended_thinking, gem_account_id=gem_account_id,
         ):
             yield sse
         return
@@ -535,6 +577,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
 
     full_text = ""
     new_conv_id = ""
+    new_account_id = ""
     final_images = []
     streamed_any = False
     emitted_thoughts = ""  # 已发出的思维链前缀，用于跟已知累积 thoughts 做前缀 diff 只发增量
@@ -605,6 +648,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                 else:
                     full_text = final_text
                 new_conv_id = evt.get("conversation_id", "")
+                new_account_id = evt.get("account_id") or ""
                 final_images = evt.get("images") or []
     except Exception as e:
         # 尚未流出任何正文时，非流式不思考重试一次：
@@ -615,16 +659,17 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
         retry_args = None
         if not streamed_any:
             # 超时两种重试都不做（预算已经花完，再试会让客户端再等一整轮）：直接兜底 / 报错。
+            # 会话重试是新开会话：完整历史、不带续接参数、不钉会话的账号（只钉 Gem 的）。
             if gemini_conv_id and messages_raw and not is_timeout_error(e):
-                retry_args = (build_prompt_from_messages(messages_raw), "")
+                retry_args = (build_prompt_from_messages(messages_raw), "", gem_account_id)
             elif should_retry_without_thinking(e, extended_thinking):
                 logger.warning(f"extended-thinking stream failed, retrying normal: {e}")
-                retry_args = (prompt, gemini_conv_id)
+                retry_args = (prompt, gemini_conv_id, account_id)
         if retry_args is not None:
             # 重试是一整轮非流式生成：用 task + keepalive 续心跳，别制造一段远超保活间隔的死寂
             retry_task = asyncio.create_task(gemini_client.generate(
                 retry_args[0], model, retry_args[1], attachments,
-                gem_id=gem_id, account_id=account_id, extended_thinking=False))
+                gem_id=gem_id, account_id=retry_args[2], extended_thinking=False))
             try:
                 async for ping in _sse_keepalive_during(retry_task):
                     yield ping
@@ -637,6 +682,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                 result = retry_task.result()
                 full_text = result.get("text", "")
                 new_conv_id = result.get("conversation_id", "")
+                new_account_id = result.get("account_id") or ""
                 final_images = result.get("images") or []
             except Exception as e2:
                 # 尚未流出任何内容（只发过 role 首帧）→ 可安全改用第三方兜底（流式）
@@ -694,6 +740,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
     # 多轮续接靠 gemini_conv_id，user 消息已在请求里）
     if new_conv_id and conv:
         conv.gemini_conv_id = new_conv_id
+        conv.account_id = new_account_id
         conv.add_message("assistant", full_text)
         await conversation_store.update(conv)
 
@@ -724,8 +771,11 @@ def _err_chunk(exc: Exception) -> str:
     return format_sse(chunk) + "data: [DONE]\n\n"
 
 
-async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, model_name: str = "", completion_id: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False) -> AsyncGenerator[str, None]:
-    """非流式收集 + 切片伪流式：用于有工具调用/附件、需要完整文本的场景。"""
+async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, model_name: str = "", completion_id: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False, gem_account_id=None) -> AsyncGenerator[str, None]:
+    """非流式收集 + 切片伪流式：用于有工具调用/附件、需要完整文本的场景。
+
+    account_id = 这一轮钉的账号（续接 = 会话的账号）；gem_account_id = 改发完整历史时还要钉的
+    账号（只有 Gem 绑定，没有就不钉）。"""
     # 立即发出首帧 SSE，避免生图/工具路径在 generate() 阻塞期间零字节导致前置代理超时。
     first = StreamChunk(
         id=completion_id, model=model_name,
@@ -755,10 +805,15 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
     except Exception as e:
         # 续接失败 → 用完整 prompt 重试；超时不重试（预算已经花完），直接兜底 / 报错。
         if gemini_conv_id and messages_raw and not is_timeout_error(e):
+            # 新开会话：完整历史（带上工具说明 —— 这条路径就是为工具调用开的，丢了工具说明的
+            # 回答不会是工具调用，客户端的工具循环直接断）、不带续接参数、只钉 Gem 的账号。
             full_prompt = build_prompt_from_messages(messages_raw)
+            if has_tools and req is not None and req.tools:
+                full_prompt = build_tool_prompt(full_prompt, [t.model_dump() for t in req.tools],
+                                                req.tool_choice)
             retry_task = asyncio.create_task(
                 gemini_client.generate(full_prompt, model, "", attachments,
-                                       gem_id=gem_id, account_id=account_id)
+                                       gem_id=gem_id, account_id=gem_account_id)
             )
             try:
                 async for ping in _sse_keepalive_during(retry_task):
@@ -779,6 +834,8 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
                     return
                 yield _err_chunk(e2)
                 return
+            # 后面的工具 JSON 重试跟着这一轮的新会话走，别再拿旧的续接参数去敲原来的账号
+            prompt, gemini_conv_id, account_id = full_prompt, "", gem_account_id
         else:
             emitted = False
             async for chunk in _maybe_fallback_stream(request, req, messages_raw, model, completion_id, model_name):
@@ -807,6 +864,7 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
 
     if new_conv_id and conv:
         conv.gemini_conv_id = new_conv_id
+        conv.account_id = result.get("account_id") or ""
         conv.add_message("assistant", text)
         await conversation_store.update(conv)
 

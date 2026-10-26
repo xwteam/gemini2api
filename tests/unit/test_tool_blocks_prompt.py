@@ -65,7 +65,8 @@ def test_openai_conversation_continuation_non_str_text_no_500(gem_client, monkey
     import app.routers.openai as oai
     from app.core.conversation_store import Conversation
 
-    fake_conv = Conversation("conv-1", gemini_conv_id="gconv-1")
+    # 续接分支的前提（v1.6.45）：有效的 [cid, rid, rcid] + 钉得回记录的账号
+    fake_conv = Conversation("conv-1", gemini_conv_id='["c_1", "r_1", "rc_1"]', account_id="account-0")
     captured = {}
 
     async def fake_get(conv_id):
@@ -78,6 +79,7 @@ def test_openai_conversation_continuation_non_str_text_no_500(gem_client, monkey
 
     monkeypatch.setattr(oai.conversation_store, "get", fake_get)
     monkeypatch.setattr(oai.gemini_client, "generate", fake_generate)
+    monkeypatch.setattr(oai.gemini_client, "account_pinnable", lambda account_id: True)
 
     r = gem_client.post("/v1/chat/completions", json={
         "model": "gemini-flash",
@@ -103,7 +105,7 @@ def test_openai_conversation_continuation_image_only_latest_takes_last_user_bran
     import app.routers.openai as oai
     from app.core.conversation_store import Conversation
 
-    fake_conv = Conversation("conv-2", gemini_conv_id="gconv-2")
+    fake_conv = Conversation("conv-2", gemini_conv_id='["c_2", "r_2", "rc_2"]', account_id="account-0")
     captured = {}
 
     async def fake_get(conv_id):
@@ -116,6 +118,7 @@ def test_openai_conversation_continuation_image_only_latest_takes_last_user_bran
 
     monkeypatch.setattr(oai.conversation_store, "get", fake_get)
     monkeypatch.setattr(oai.gemini_client, "generate", fake_generate)
+    monkeypatch.setattr(oai.gemini_client, "account_pinnable", lambda account_id: True)
 
     r = gem_client.post("/v1/chat/completions", json={
         "model": "gemini-flash",

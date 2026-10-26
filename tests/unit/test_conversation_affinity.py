@@ -201,3 +201,336 @@ def test_a_full_account_is_not_pinnable_when_others_exist():
     solo = _pool([_Client("a")])
     solo.accounts[0].active_requests = solo._max_concurrent
     assert solo.account_pinnable("account-0") is True
+
+
+# ---------------------------------------------------------------------------
+# 路由：两轮对话（mock 上游 = 真账号池 + 每个账号一个假 client）
+# ---------------------------------------------------------------------------
+# 两个账号、轮询：不钉的话第二轮一定落到另一个账号（_pick_round_robin 从上次的下一个开始），
+# 所以「第二轮打到了第一轮的账号」本身就证明钉住了。
+
+_AUTH = {"Authorization": "Bearer sk-test-key"}
+U1 = {"role": "user", "content": "u1"}
+A1 = {"role": "assistant", "content": "a1"}
+U2 = {"role": "user", "content": "u2"}
+FULL_HISTORY = "Human: u1\n\nAssistant: a1\n\nHuman: u2"
+_TOOLS = [{"type": "function", "function": {
+    "name": "get_weather", "description": "w",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+}}]
+
+
+class _Upstream:
+    """假的 GeminiWebClient：每个账号有自己的会话，按真实形态回 [cid, rid, rcid]。"""
+
+    def __init__(self, tag: str):
+        self.tag = tag
+        self.calls: list[dict] = []
+        self._healthy = True
+        self._heal_lock = asyncio.Lock()
+        self._turn = 0
+        # 谷歌那边不认续接参数（会话真过期）时抛这个；新会话照常回答
+        self.reject_resume = None
+
+    @property
+    def is_healthy(self):
+        return self._healthy
+
+    def triple(self, turn: int) -> list:
+        return [f"c_{self.tag * 16}", f"r_{self.tag}{turn:015d}", f"rc_{self.tag}{turn:015d}"]
+
+    def _answer(self, prompt, conversation_id, gem_id, extended_thinking, stream):
+        self.calls.append({"prompt": prompt, "conv": conversation_id, "gem_id": gem_id,
+                           "thinking": extended_thinking, "stream": stream})
+        if conversation_id and self.reject_resume is not None:
+            raise self.reject_resume
+        self._turn += 1
+        return {"text": f"answer from {self.tag}", "images": [], "thoughts": "",
+                "conversation_id": json.dumps(self.triple(self._turn))}
+
+    async def generate(self, prompt, model, conversation_id="", attachments=None, gem_id=None,
+                       extended_thinking=False):
+        return self._answer(prompt, conversation_id, gem_id, extended_thinking, False)
+
+    async def generate_stream(self, prompt, model, conversation_id="", attachments=None,
+                              gem_id=None, extended_thinking=False):
+        result = self._answer(prompt, conversation_id, gem_id, extended_thinking, True)
+        yield {"type": "delta", "text": result["text"]}
+        yield {"type": "final", **result}
+
+
+@pytest.fixture
+def wired(gem_client, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from app.routers import openai as oai
+
+    monkeypatch.setattr(store_module, "DATA_DIR", tmp_path / "conversations")
+    store = ConversationStore()
+    monkeypatch.setattr(oai, "conversation_store", store)
+    ups = [_Upstream("a"), _Upstream("b")]
+    pool = _pool(ups)
+    pool._max_concurrent = 8
+    monkeypatch.setattr(oai, "gemini_client", pool)
+    return SimpleNamespace(http=gem_client, store=store, pool=pool, ups=ups, app=gem_client.app)
+
+
+def _chat(w, messages, *, stream=False, tools=None, model="gemini-pro", conversation_id="t1"):
+    body = {"model": model, "messages": messages, "conversation_id": conversation_id, "stream": stream}
+    if tools:
+        body["tools"] = tools
+    if stream:
+        with w.http.stream("POST", "/v1/chat/completions", json=body, headers=_AUTH) as r:
+            text = "".join(r.iter_text())
+            assert r.status_code == 200, text
+            assert '"error"' not in text, text
+            return text
+    r = w.http.post("/v1/chat/completions", json=body, headers=_AUTH)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _stored(w, conv_id="t1"):
+    return asyncio.run(w.store.get(conv_id))
+
+
+def _seed(w, gemini_conv_id, account_id="", conv_id="t1"):
+    async def run():
+        conv = await w.store.create(conv_id, "gemini-pro")
+        conv.gemini_conv_id = gemini_conv_id
+        conv.account_id = account_id
+        await w.store.update(conv)
+
+    asyncio.run(run())
+
+
+def _first_turn(w, **kw):
+    """跑第一轮，返回 (服务它的上游, 账号下标)。"""
+    _chat(w, [U1], **kw)
+    served = [i for i, u in enumerate(w.ups) if u.calls]
+    assert len(served) == 1, [u.calls for u in w.ups]
+    return w.ups[served[0]], served[0]
+
+
+def test_second_turn_is_pinned_to_the_first_turns_account_with_the_triple(wired):
+    w = wired
+    first, idx = _first_turn(w)
+    conv = _stored(w)
+    assert conv.account_id == f"account-{idx}"
+    assert json.loads(conv.gemini_conv_id) == first.triple(1)
+
+    _chat(w, [U1, A1, U2])
+
+    other = w.ups[1 - idx]
+    assert other.calls == [], "第二轮没钉住，落到了另一个账号"
+    call = first.calls[-1]
+    assert call["prompt"] == "u2", "续接只发最后一条用户消息"
+    assert call["conv"] == json.dumps(first.triple(1)), "续接参数要带三元组"
+    # 存储更新成第二轮的三元组，账号不变
+    conv = _stored(w)
+    assert json.loads(conv.gemini_conv_id) == first.triple(2)
+    assert conv.account_id == f"account-{idx}"
+
+
+def test_third_turn_continues_from_the_second_answer(wired):
+    w = wired
+    first, idx = _first_turn(w)
+    _chat(w, [U1, A1, U2])
+    _chat(w, [U1, A1, U2, {"role": "assistant", "content": "a2"}, {"role": "user", "content": "u3"}])
+    assert first.calls[-1]["conv"] == json.dumps(first.triple(2))
+    assert first.calls[-1]["prompt"] == "u3"
+    assert w.ups[1 - idx].calls == []
+
+
+def test_unavailable_account_resends_the_full_history_and_updates_the_store(wired):
+    w = wired
+    first, idx = _first_turn(w)
+    w.pool.accounts[idx].status = AccountStatus.EXPIRED
+    other = w.ups[1 - idx]
+
+    _chat(w, [U1, A1, U2])
+
+    assert len(first.calls) == 1, "过期的账号不该再被打"
+    call = other.calls[-1]
+    assert call["prompt"] == FULL_HISTORY, "接不上就必须发完整历史，不能只发最后一句"
+    assert call["conv"] == "", "新开会话不能带续接参数"
+    conv = _stored(w)
+    assert conv.account_id == f"account-{1 - idx}"
+    assert json.loads(conv.gemini_conv_id) == other.triple(1)
+
+
+def test_account_excluded_by_the_access_key_whitelist_resends_the_full_history(wired, monkeypatch):
+    w = wired
+    first, idx = _first_turn(w)
+    other_id = f"account-{1 - idx}"
+    monkeypatch.setattr(pool_module, "current_bound_account_ids", lambda: {other_id})
+
+    _chat(w, [U1, A1, U2])
+
+    assert len(first.calls) == 1
+    call = w.ups[1 - idx].calls[-1]
+    assert (call["prompt"], call["conv"]) == (FULL_HISTORY, "")
+    assert _stored(w).account_id == other_id
+
+
+def test_pinned_account_failing_at_send_time_falls_back_to_the_full_history(wired, monkeypatch):
+    """预判时还能钉、真发的时候池子报 unavailable（竞态）：同样改发完整历史、不带续接参数。"""
+    w = wired
+    first, idx = _first_turn(w)
+    w.pool.accounts[idx].status = AccountStatus.EXPIRED
+    monkeypatch.setattr(w.pool, "account_pinnable", lambda account_id: True)
+
+    _chat(w, [U1, A1, U2])
+
+    other = w.ups[1 - idx]
+    assert other.calls, "钉不住之后没有改发"
+    call = other.calls[-1]
+    assert (call["prompt"], call["conv"]) == (FULL_HISTORY, "")
+    assert _stored(w).account_id == f"account-{1 - idx}"
+
+
+def test_google_rejecting_the_resume_retries_with_the_full_history(wired):
+    """「续接失败 → 用完整 prompt 重试」保留：谷歌那边会话真过期时照旧补救，且存新会话。"""
+    w = wired
+    first, idx = _first_turn(w)
+    first.reject_resume = HTTPStatusError(400, "conversation not found")
+
+    _chat(w, [U1, A1, U2])
+
+    fresh = [c for u in w.ups for c in u.calls if c["conv"] == "" and c["prompt"] == FULL_HISTORY]
+    assert fresh, [u.calls for u in w.ups]
+    conv = _stored(w)
+    assert conv.account_id in ("account-0", "account-1")
+    served = w.ups[int(conv.account_id[-1])]
+    assert json.loads(conv.gemini_conv_id) == served.triple(served._turn)
+
+
+@pytest.mark.parametrize("stored", ["garbage", "gemini-conv-1", "[1, 2]"])
+def test_bad_stored_metadata_resends_the_full_history(wired, stored, caplog):
+    w = wired
+    _seed(w, stored, account_id="account-0")
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="app.core.gemini_client"):
+        _chat(w, [U1, A1, U2])
+
+    calls = [c for u in w.ups for c in u.calls]
+    assert [(c["prompt"], c["conv"]) for c in calls] == [(FULL_HISTORY, "")]
+    assert any("conversation metadata" in r.getMessage() for r in caplog.records)
+    conv = _stored(w)
+    assert conv.account_id and parse_triple(conv.gemini_conv_id)
+
+
+def parse_triple(value):
+    from app.core.gemini_client import parse_conversation_metadata
+    return parse_conversation_metadata(value)
+
+
+def test_old_repr_metadata_with_a_recorded_account_resumes(wired):
+    w = wired
+    a = w.ups[0]
+    _seed(w, f"['{a.triple(1)[0]}', '{a.triple(1)[1]}']", account_id="account-0")
+
+    _chat(w, [U1, A1, U2])
+
+    call = a.calls[-1]
+    assert call["prompt"] == "u2"
+    assert call["conv"] == json.dumps([a.triple(1)[0], a.triple(1)[1], None])
+    assert w.ups[1].calls == []
+
+
+def test_old_file_without_an_account_resends_the_full_history_then_records_one(wired):
+    w = wired
+    a = w.ups[0]
+    _seed(w, f"['{a.triple(1)[0]}', '{a.triple(1)[1]}']", account_id="")
+
+    _chat(w, [U1, A1, U2])
+
+    calls = [c for u in w.ups for c in u.calls]
+    assert [(c["prompt"], c["conv"]) for c in calls] == [(FULL_HISTORY, "")]
+    assert _stored(w).account_id in ("account-0", "account-1")
+
+
+def test_the_gem_binding_wins_over_the_conversation_account(wired):
+    """Gem 钉的账号和会话记录的账号冲突：以 Gem 为准，不续接（发完整历史）。"""
+    w = wired
+    a, b = w.ups
+    _seed(w, json.dumps(a.triple(1)), account_id="account-0")
+    w.app.state.gem_mapping.set("my-gem", {"gem_id": "gem-1", "base_model": "gemini-pro",
+                                           "account_id": "account-1"})
+
+    _chat(w, [U1, A1, U2], model="my-gem")
+
+    assert a.calls == []
+    call = b.calls[-1]
+    assert (call["prompt"], call["conv"], call["gem_id"]) == (FULL_HISTORY, "", "gem-1")
+    assert _stored(w).account_id == "account-1"
+
+
+def test_the_gem_binding_on_the_same_account_resumes(wired):
+    w = wired
+    a, b = w.ups
+    _seed(w, json.dumps(b.triple(1)), account_id="account-1")
+    w.app.state.gem_mapping.set("my-gem", {"gem_id": "gem-1", "base_model": "gemini-pro",
+                                           "account_id": "account-1"})
+
+    _chat(w, [U1, A1, U2], model="my-gem")
+
+    call = b.calls[-1]
+    assert (call["prompt"], call["conv"]) == ("u2", json.dumps(b.triple(1)))
+
+
+def test_real_stream_second_turn_is_pinned_and_updates_the_store(wired):
+    w = wired
+    first, idx = _first_turn(w)
+
+    _chat(w, [U1, A1, U2], stream=True)
+
+    assert w.ups[1 - idx].calls == []
+    call = first.calls[-1]
+    assert call["stream"] is True
+    assert (call["prompt"], call["conv"]) == ("u2", json.dumps(first.triple(1)))
+    conv = _stored(w)
+    assert json.loads(conv.gemini_conv_id) == first.triple(2)
+    assert conv.account_id == f"account-{idx}"
+
+
+def test_real_stream_with_an_unavailable_account_resends_the_full_history(wired):
+    w = wired
+    first, idx = _first_turn(w)
+    w.pool.accounts[idx].status = AccountStatus.EXPIRED
+
+    _chat(w, [U1, A1, U2], stream=True)
+
+    other = w.ups[1 - idx]
+    call = other.calls[-1]
+    assert (call["prompt"], call["conv"]) == (FULL_HISTORY, "")
+    assert _stored(w).account_id == f"account-{1 - idx}"
+
+
+def test_buffered_tool_stream_second_turn_is_pinned(wired):
+    w = wired
+    first, idx = _first_turn(w)
+
+    _chat(w, [U1, A1, U2], stream=True, tools=_TOOLS)
+
+    assert w.ups[1 - idx].calls == []
+    call = first.calls[-1]
+    assert call["conv"] == json.dumps(first.triple(1))
+    assert "u2" in call["prompt"] and "Human: u1" not in call["prompt"]
+    assert json.loads(_stored(w).gemini_conv_id) == first.triple(2)
+
+
+def test_buffered_full_history_retry_keeps_the_tool_definitions(wired):
+    """buffered（带工具）路径的「续接失败 → 完整 prompt 重试」此前丢了工具说明：重试的回答
+    不会是工具调用，客户端的工具循环就断了。"""
+    w = wired
+    first, idx = _first_turn(w)
+    first.reject_resume = HTTPStatusError(400, "conversation not found")
+
+    _chat(w, [U1, A1, U2], stream=True, tools=_TOOLS)
+
+    fresh = [c for u in w.ups for c in u.calls
+             if c["conv"] == "" and "Human: u1" in c["prompt"] and "Human: u2" in c["prompt"]]
+    assert fresh, [u.calls for u in w.ups]
+    assert all("get_weather" in c["prompt"] for c in fresh), fresh
