@@ -219,6 +219,49 @@ def test_the_client_does_not_wrap_an_inner_model_unavailable(monkeypatch):
     assert len(calls) == 1, "不能原样重发，也不能被包成 RuntimeError"
 
 
-def test_static_suffix_model_ids_are_404_without_auth(gem_client):
+def test_static_suffix_model_ids_are_404_without_auth(gem_client, monkeypatch):
+    import app.routers.openai as oai
+
+    async def must_not_list(request):
+        raise AssertionError("静态后缀的 id 不该去查模型列表（这条路径没过鉴权）")
+
+    monkeypatch.setattr(oai, "list_models", must_not_list)
     r = gem_client.get("/v1/models/gemini-pro.js")          # 不带鉴权：静态后缀被全局放行
     assert r.status_code == 404 and r.json()["error"]["code"] == "model_not_found"
+
+
+class _FailingStream(_Client):
+    def __init__(self, exc):
+        super().__init__(True)
+        self.exc = exc
+
+    async def generate_stream(self, *a, **kw):
+        self.calls += 1
+        raise self.exc
+        yield  # pragma: no cover
+
+
+def _drain(pool, model="gemini-argon"):
+    async def run():
+        return [e async for e in pool.generate_stream("hi", model)]
+    return asyncio.run(run())
+
+
+@pytest.mark.parametrize("order", ["5xx-first", "lacking-first"])
+def test_stream_real_upstream_error_wins_over_model_unavailable(order):
+    busy = _FailingStream(gc.HTTPStatusError(503, "unavailable"))
+    clients = (busy, _Client(False)) if order == "5xx-first" else (_Client(False), busy)
+    with pytest.raises(gc.HTTPStatusError) as ei:
+        _drain(_pool(*clients))
+    assert ei.value.status_code == 503
+
+
+def test_stream_busy_model_holder_is_a_529_and_the_lacking_attempt_is_not_counted():
+    lacking, having = _Client(False), _Client(True)
+    having._model_table = lambda: dict(gc._BASE_MODELS, **{"gemini-argon": {"id": "x", "capacity": 2}})
+    pool = _pool(lacking, having)
+    pool.accounts[1].active_requests = pool._max_concurrent
+    with pytest.raises(RuntimeError) as ei:
+        _drain(pool)
+    assert gc.classify_error(ei.value)[0] == 529
+    assert pool.accounts[0].request_count == 0 and pool.accounts[0].active_requests == 0

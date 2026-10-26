@@ -848,7 +848,8 @@ class AccountPool:
 
     def _raise_busy_if_model_holders_wait(self, last_err: Exception, model: str, tried: set) -> None:
         """换号换到没有候选（failover 时 acquire 不排队），而唯一的原因是试过的账号都没有这个模型：
-        若还有「有这个模型、只是满载或冷却中」的账号，按池忙报（529，客户端会重试），别误报 400。"""
+        若还有「有这个模型、只是满载」的账号（_find_available 照样会发冷却中的账号，走到这里的只有
+        满载），按池忙报（529，客户端会重试），别误报 400。"""
         if not isinstance(last_err, ModelUnavailable):
             return
         bound = current_bound_account_ids()
