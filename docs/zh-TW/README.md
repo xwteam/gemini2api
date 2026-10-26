@@ -631,7 +631,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `RATE_LIMIT_MAX` | ❌ | `10` | 視窗內最大請求數 |
 | `HEALTH_CHECK_ENABLED` | ❌ | `true` | 啟用定時帳號狀態檢測 |
 | `HEALTH_CHECK_INTERVAL` | ❌ | `5` | 檢測間隔（分鐘） |
-| `ACCOUNTS_FILE` | ❌ | `accounts.json` | 多帳號配置檔案路徑（不存在則使用環境變數單帳號模式） |
+| `ACCOUNTS_FILE` | ❌ | `data/accounts.json` | 多帳號配置檔案路徑（不存在則使用環境變數單帳號模式）。v1.6.49 起預設放在掛載卷 `data/` 裡，容器重建（升級）不再丟面板加的帳號；舊預設位置的 `accounts.json` 會在啟動時複製過來 |
 | `ROTATION_STRATEGY` | ❌ | `round-robin` | 輪詢策略：`round-robin`（輪詢）/ `failover`（故障轉移） |
 | `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `8` | 每帳號最大並行請求數 |
 | `ACQUIRE_TIMEOUT` | ❌ | `60.0` | 並行滿載時排隊等待可用槽位的上限（秒），等不到才報錯 |

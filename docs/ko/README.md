@@ -513,7 +513,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `RATE_LIMIT_MAX` | ❌ | `10` | 시간 창 내 최대 요청 수 |
 | `HEALTH_CHECK_ENABLED` | ❌ | `true` | 정기 계정 상태 검사 활성화 |
 | `HEALTH_CHECK_INTERVAL` | ❌ | `5` | 검사 간격(분) |
-| `ACCOUNTS_FILE` | ❌ | `accounts.json` | 다중 계정 설정 파일 경로(존재하지 않으면 환경 변수 단일 계정 모드 사용) |
+| `ACCOUNTS_FILE` | ❌ | `data/accounts.json` | 다중 계정 설정 파일 경로(존재하지 않으면 환경 변수 단일 계정 모드 사용). v1.6.49부터 기본 위치가 마운트된 `data/` 볼륨 안이라 컨테이너를 다시 만들어도(업그레이드 시) 패널에서 추가한 계정이 사라지지 않습니다. 옛 기본 위치의 `accounts.json`은 시작할 때 복사됩니다 |
 | `ROTATION_STRATEGY` | ❌ | `round-robin` | 로테이션 전략: `round-robin`(순환) / `failover`(장애 조치) |
 | `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `8` | 계정당 최대 동시 요청 수 |
 | `ACQUIRE_TIMEOUT` | ❌ | `60.0` | 동시성 만재 시 사용 가능한 슬롯을 대기열에서 기다리는 상한(초), 기다려도 없으면 오류 |

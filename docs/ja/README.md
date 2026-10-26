@@ -632,7 +632,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `RATE_LIMIT_MAX` | ❌ | `10` | ウィンドウ内の最大リクエスト数 |
 | `HEALTH_CHECK_ENABLED` | ❌ | `true` | スケジュール済みアカウントヘルスチェックを有効化 |
 | `HEALTH_CHECK_INTERVAL` | ❌ | `5` | チェック間隔（分） |
-| `ACCOUNTS_FILE` | ❌ | `accounts.json` | マルチアカウント設定ファイルのパス（存在しない場合は環境変数の単一アカウントモードを使用） |
+| `ACCOUNTS_FILE` | ❌ | `data/accounts.json` | マルチアカウント設定ファイルのパス（存在しない場合は環境変数の単一アカウントモードを使用）。v1.6.49 から既定はマウントされた `data/` ボリューム内になり、コンテナを作り直しても（アップグレード時も）パネルで追加したアカウントが消えません。旧既定位置の `accounts.json` は起動時にコピーされます |
 | `ROTATION_STRATEGY` | ❌ | `round-robin` | ローテーション戦略：`round-robin`（ラウンドロビン）/ `failover`（フェイルオーバー） |
 | `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `8` | アカウントあたりの最大並行リクエスト数 |
 | `ACQUIRE_TIMEOUT` | ❌ | `60.0` | 並行満載時に空きスロットを待つ上限（秒）。待ちきれない場合のみエラー |

@@ -159,6 +159,8 @@ curl http://localhost:5918/openai/v1/models \
 | `tools` | array | ❌ | 函數定義陣列 |
 | `tool_choice` | string | ❌ | 工具選擇策略（auto/required/none） |
 
+**轉給第三方模型的參數**（v1.6.49 起）：`temperature`、`top_p`、`stop`、`presence_penalty`、`frequency_penalty`、`seed`、`response_format`、`max_tokens` / `max_completion_tokens`、`parallel_tool_calls`、`stream_options`（只在串流時帶）原樣轉給第三方模型與第三方兜底；Gemini 網頁版沒有這些開關，Gemini 路徑忽略它們。`developer` 角色按 `system` 處理（Gemini 路徑拼進提示詞，轉第三方時改成 `system`）。
+
 **多輪續接（`conversation_id`）**：同一個 `conversation_id` 的後續輪次接著上游 Gemini 的同一個對話往下聊，只送最新一則使用者訊息，並帶上上一輪記下的續接中繼資料（`[cid, rid, rcid]`）。網頁版的對話屬於某個特定帳號，所以後續輪次**釘在服務上一輪的那個帳號上**。流式請求同樣續接，但流式回應裡不回傳 `conversation_id`，要由用戶端自己帶上（非流式不帶時服務端會產生一個，在回應的 `conversation_id` 欄位裡回給你）。下列任一情況都**自動改送完整歷史、新開一個對話**（成功後記下新對話與帳號，下一輪照常續接），絕不只送最後一句而悄悄丟掉上下文：
 
 - 那個帳號不可用：已過期、被刪除、不在本次存取金鑰綁定的帳號裡，或（池中有多個帳號時）剛好滿載；

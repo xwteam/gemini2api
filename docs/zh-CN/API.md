@@ -200,6 +200,8 @@ curl http://localhost:5918/openai/v1/models \
 | `conversation_id` | string | 否 | 对话 ID，用于多轮续接（规则见下方「多轮续接」） |
 | `reasoning_effort` | string | 否 | 思考档位 `low` / `medium` / `high`（见 [🧠 模型与思考档位](#-模型与思考档位)）。不传 = 默认档（出厂 `low`），且不回传 `reasoning_content` |
 
+**转给第三方模型的参数**（v1.6.49 起）：`temperature`、`top_p`、`stop`、`presence_penalty`、`frequency_penalty`、`seed`、`response_format`、`max_tokens` / `max_completion_tokens`、`parallel_tool_calls`、`stream_options`（只在流式时带）原样转给第三方模型与第三方兜底；Gemini 网页版没有这些开关，Gemini 路径忽略它们。`developer` 角色按 `system` 处理（Gemini 路径拼进提示词，转第三方时改成 `system`）。
+
 **多轮续接（`conversation_id`）**：同一个 `conversation_id` 的后续轮次接着上游 Gemini 的同一个会话往下聊，只发最新一条用户消息，并带上上一轮记下的续接元数据（`[cid, rid, rcid]`）。网页版的会话属于具体某个账号，所以后续轮次**钉在服务上一轮的那个账号上**。流式请求同样续接，但流式响应里不回传 `conversation_id`，要由客户端自己带上（非流式不带时服务端会生成一个，在响应的 `conversation_id` 字段里回给你）。下面任一情况都**自动改发完整历史、新开一个会话**（成功后记下新会话与账号，下一轮照常续接），绝不只发最后一句而悄悄丢掉上下文：
 
 - 那个账号不可用：已过期、被删除、不在本次访问密钥绑定的账号里，或（池里有多个账号时）正好满载；

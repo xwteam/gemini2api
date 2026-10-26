@@ -175,6 +175,8 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 | `tools` | array | ❌ | 関数定義配列 |
 | `tool_choice` | string | ❌ | 関数選択戦略 |
 
+**サードパーティモデルに転送するパラメータ**（v1.6.49 以降）：`temperature`、`top_p`、`stop`、`presence_penalty`、`frequency_penalty`、`seed`、`response_format`、`max_tokens` / `max_completion_tokens`、`parallel_tool_calls`、`stream_options`（ストリーミング時のみ）をサードパーティモデルとサードパーティのフォールバックにそのまま渡します。Gemini Web 版にはこれらの設定がないため、Gemini 経路では無視します。`developer` ロールは `system` として扱います（Gemini 経路ではプロンプトに含め、サードパーティには `system` として送ります）。
+
 **マルチターン続行（`conversation_id`）:** 同じ `conversation_id` の後続ターンは上流 Gemini の同じ会話を続けます。送るのは最新のユーザーメッセージだけで、前のターンで記録した続行メタデータ（`[cid, rid, rcid]`）を付けます。Gemini Web の会話は特定のアカウントに属するため、後続ターンは**前のターンに応答したアカウントに固定**されます。ストリーミングリクエストも同じように続行しますが、ストリーミングのレスポンスには `conversation_id` が含まれないため、クライアント自身が付けてください（非ストリーミングで付けなかった場合はサーバーが生成し、レスポンスの `conversation_id` フィールドで返します）。次のいずれかに当たる場合は**自動で全履歴を送り直し、新しい会話を始めます**（成功したら新しい会話とアカウントを記録し、次のターンは通常どおり続行）。最後の一文だけを送って黙ってコンテキストを失うことはありません：
 
 - そのアカウントが使えない：期限切れ、削除済み、このアクセスキーのバインドするアカウント外、または（プールに複数アカウントがある場合）満杯；

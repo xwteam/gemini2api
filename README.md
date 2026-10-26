@@ -746,7 +746,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `RATE_LIMIT_MAX` | ❌ | `10` | 窗口内最大请求数 |
 | `HEALTH_CHECK_ENABLED` | ❌ | `true` | 启用定时账号状态检测 |
 | `HEALTH_CHECK_INTERVAL` | ❌ | `5` | 检测间隔（分钟） |
-| `ACCOUNTS_FILE` | ❌ | `accounts.json` | 多账号配置文件路径（不存在则使用环境变量单账号模式） |
+| `ACCOUNTS_FILE` | ❌ | `data/accounts.json` | 多账号配置文件路径（不存在则使用环境变量单账号模式）。v1.6.49 起默认放在挂载卷 `data/` 里，容器重建（升级）不再丢面板加的账号；旧默认位置的 `accounts.json` 会在启动时复制过来 |
 | `ROTATION_STRATEGY` | ❌ | `round-robin` | 轮询策略：`round-robin`（轮询）/ `failover`（故障转移） |
 | `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `8` | 每账号最大并发请求数 |
 | `ACQUIRE_TIMEOUT` | ❌ | `60.0` | 并发满载时排队等待可用槽位的上限（秒），等不到才报错 |

@@ -633,7 +633,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `RATE_LIMIT_MAX` | ❌ | `10` | Max requests per window |
 | `HEALTH_CHECK_ENABLED` | ❌ | `true` | Enable scheduled account health checks |
 | `HEALTH_CHECK_INTERVAL` | ❌ | `5` | Check interval (minutes) |
-| `ACCOUNTS_FILE` | ❌ | `accounts.json` | Multi-account config file path (falls back to single-account mode from env vars if absent) |
+| `ACCOUNTS_FILE` | ❌ | `data/accounts.json` | Multi-account config file path (falls back to single-account mode from env vars if absent). Since v1.6.49 the default lives in the mounted `data/` volume, so accounts added in the panel survive container recreation (upgrades); an `accounts.json` at the old default location is copied over on startup |
 | `ROTATION_STRATEGY` | ❌ | `round-robin` | Rotation strategy: `round-robin` / `failover` |
 | `MAX_CONCURRENT_PER_ACCOUNT` | ❌ | `8` | Max concurrent requests per account |
 | `ACQUIRE_TIMEOUT` | ❌ | `60.0` | Max time (seconds) to queue for a free slot when at full concurrency before erroring |
