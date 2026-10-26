@@ -53,6 +53,8 @@ v1.6.4 以降、各 API は 2 種類のパスに対応しています。
 - **Claude**: `/v1/messages`、`/v1/messages/count_tokens`
 - **Gemini**: `/v1beta/models/{model}:generateContent`、`:streamGenerateContent`、`/v1beta/models`
 
+> **単一モデル**（v1.6.50 以降）：`GET /v1/models/{model}`（`/openai/v1` 配下も同じ）は OpenAI 形式でモデル 1 件を返します。一覧と同じ基準で判定し、一覧にないモデルは 404 `model_not_found`。OpenAI SDK の `models.retrieve` 用です。
+
 > **重要**: ベアパス `/v1/models` は OpenAI 形式を返します（1 つのパスで 2 つの形式は返せません）。Claude 形式のモデル一覧が必要な場合は `/claude/v1/models` を使用してください。
 
 ## 🧠 モデルと思考レベル

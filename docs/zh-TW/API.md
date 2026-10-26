@@ -43,6 +43,8 @@ curl -H "x-api-key: sk-your-api-key" http://localhost:5918/...
 - Claude：`/v1/messages`、`/v1/messages/count_tokens`
 - Gemini：`/v1beta/models/{model}:generateContent`、`:streamGenerateContent`、`/v1beta/models`
 
+> **單個模型**（v1.6.50 起）：`GET /v1/models/{model}`（同樣掛在 `/openai/v1` 下）按 OpenAI 格式回傳單個模型物件，口徑與列表一致；不在列表裡回 404 `model_not_found`，供 OpenAI SDK 的 `models.retrieve` 使用。
+
 > **重要：** 裸 `/v1/models` 回傳 OpenAI 格式（同一路徑無法同時回傳兩種格式）；需要 Claude 格式的模型列表請用 `/claude/v1/models`。
 
 ## 🧠 模型與思考檔位

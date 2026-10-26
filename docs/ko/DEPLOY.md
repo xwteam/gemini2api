@@ -127,7 +127,7 @@ docker compose logs -f
 
 ## 다중 계정 설정
 
-여러 Google 계정으로 부하 분산을 구현하려면 `accounts.json` 생성:
+여러 Google 계정으로 부하 분산을 구현하려면 프로젝트의 `data/` 디렉터리에 `accounts.json` 생성(즉 `data/accounts.json`; `data/`는 마운트된 볼륨이라 업그레이드로 컨테이너를 다시 만들어도 사라지지 않음):
 
 ```json
 {
@@ -150,7 +150,7 @@ docker compose logs -f
 
 ### 참고 사항
 
-- `accounts.json` 미생성 시 `.env`의 단일 계정 모드 자동 사용
+- `data/accounts.json` 미생성 시 `.env`의 단일 계정 모드 자동 사용
 - `POST /admin/accounts` API로 실행 중 동적 계정 추가 가능
 
 ### Cookie 자동 보활

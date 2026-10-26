@@ -72,6 +72,8 @@ cat .env | grep API_KEY
 - `/v1beta/models/{model}:streamGenerateContent`
 - `/v1beta/models`
 
+**单个模型**（v1.6.50 起）：`GET /v1/models/{model}`（同样挂在 `/openai/v1` 下）按 OpenAI 格式返回单个模型对象，口径与列表一致（含白名单、访问密钥可见范围）；不在列表里回 404 `model_not_found`。供 OpenAI SDK 的 `models.retrieve` 使用。
+
 **重要说明**：裸路径 `/v1/models` 返回 OpenAI 格式的模型列表（同一路径无法同时返回两种格式）。如需 Claude 格式的模型列表，请使用 `/claude/v1/models`。
 
 ## 错误响应

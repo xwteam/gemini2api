@@ -92,7 +92,7 @@ Look for these messages:
 
 For higher throughput and redundancy, configure multiple Google accounts:
 
-Create `accounts.json` in the project root:
+Create `accounts.json` in the project's `data/` directory, i.e. `data/accounts.json` (`data/` is a mounted volume, so it survives container recreation on upgrade):
 
 ```json
 {
@@ -119,7 +119,7 @@ Create `accounts.json` in the project root:
 }
 ```
 
-When `accounts.json` exists, the service uses it instead of `.env` credentials. You can still configure `API_KEY` in `.env`.
+When `data/accounts.json` exists, the service uses it instead of `.env` credentials. You can still configure `API_KEY` in `.env`.
 
 **Load Balancing Strategies:**
 - `round-robin` (default): Distributes requests evenly across accounts
@@ -326,7 +326,7 @@ kill -9 <PID>
 | `MAX_RETRIES` | 3 | Failed request retry attempts |
 | `PORT` | 5918 | Service port |
 | `LOG_LEVEL` | info | Logging level (debug/info/warning/error) |
-| `ACCOUNTS_FILE` | accounts.json | Multi-account config file path (falls back to single-account env mode if absent) |
+| `ACCOUNTS_FILE` | data/accounts.json | Multi-account config file path (falls back to single-account env mode if absent) |
 | `ROTATION_STRATEGY` | round-robin | Load balancing: round-robin or failover |
 | `MAX_CONCURRENT_PER_ACCOUNT` | 8 | Max concurrent requests per account |
 | `ACQUIRE_TIMEOUT` | 60.0 | Max seconds to queue for a free slot at full concurrency before erroring |

@@ -90,7 +90,7 @@ MAX_CONCURRENT_PER_ACCOUNT=8
 | `PORT` | サービスポート | 5918 |
 | `REFRESH_INTERVAL` | Cookie 更新間隔（分、最小 10） | 30 |
 | `MAX_RETRIES` | 失敗時の再試行回数 | 3 |
-| `ACCOUNTS_FILE` | マルチアカウント設定ファイルのパス（存在しなければ単一アカウントモード） | accounts.json |
+| `ACCOUNTS_FILE` | マルチアカウント設定ファイルのパス（存在しなければ単一アカウントモード） | data/accounts.json |
 | `ROTATION_STRATEGY` | 負荷分散戦略（round-robin/failover） | round-robin |
 | `MAX_CONCURRENT_PER_ACCOUNT` | アカウント当たりの最大並行数 | 8 |
 | `ACQUIRE_TIMEOUT` | 並行満載時に空きスロットを待つ上限（秒） | 60.0 |
@@ -152,9 +152,9 @@ SNlM0e not found
 
 複数の Google アカウントを使用して負荷分散を実現できます。
 
-### accounts.json の作成
+### data/accounts.json の作成
 
-プロジェクトルートに `accounts.json` を作成します：
+プロジェクトの `data/` ディレクトリに `accounts.json` を作成します（つまり `data/accounts.json`。`data/` はマウントされたボリュームなので、アップグレードでコンテナを作り直しても消えません）：
 
 ```json
 {
@@ -196,9 +196,9 @@ SNlM0e not found
 docker compose up -d
 ```
 
-サービスは自動的に `accounts.json` を読み込み、複数アカウントで負荷分散を開始します。
+サービスは自動的に `data/accounts.json` を読み込み、複数アカウントで負荷分散を開始します。
 
-> **ヒント**: `accounts.json` が存在しない場合、`.env` の単一アカウント設定が使用されます。
+> **ヒント**: `data/accounts.json` が存在しない場合、`.env` の単一アカウント設定が使用されます。
 
 ## 検証
 

@@ -92,7 +92,7 @@ docker compose logs -f
 
 為了提高吞吐量和冗餘性，可配置多個 Google 帳號：
 
-在專案根目錄建立 `accounts.json`：
+在專案的 `data/` 目錄下建立 `accounts.json`（即 `data/accounts.json`，`data/` 是掛載卷，升級重建容器不會丟）：
 
 ```json
 {
@@ -119,7 +119,7 @@ docker compose logs -f
 }
 ```
 
-當 `accounts.json` 存在時，服務會使用它而不是 `.env` 認證資訊。你仍可在 `.env` 中配置 `API_KEY`。
+當 `data/accounts.json` 存在時，服務會使用它而不是 `.env` 認證資訊。你仍可在 `.env` 中配置 `API_KEY`。
 
 **負載均衡策略：**
 - `round-robin`（預設）：均勻分配請求到各帳號
@@ -323,7 +323,7 @@ kill -9 <PID>
 | `MAX_RETRIES` | 3 | 失敗請求重試次數 |
 | `PORT` | 5918 | 服務連接埠 |
 | `LOG_LEVEL` | info | 日誌級別（debug/info/warning/error） |
-| `ACCOUNTS_FILE` | accounts.json | 多帳號配置檔案路徑（不存在則使用環境變數單帳號模式） |
+| `ACCOUNTS_FILE` | data/accounts.json | 多帳號配置檔案路徑（不存在則使用環境變數單帳號模式） |
 | `ROTATION_STRATEGY` | round-robin | 負載均衡：round-robin 或 failover |
 | `MAX_CONCURRENT_PER_ACCOUNT` | 8 | 每帳號最大並發請求數 |
 | `ACQUIRE_TIMEOUT` | 60.0 | 並發滿載時排隊等待可用槽位的上限（秒），等不到才報錯 |

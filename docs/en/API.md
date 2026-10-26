@@ -47,6 +47,8 @@ As of v1.6.4, each API supports two sets of paths:
 - Claude: `/v1/messages`, `/v1/messages/count_tokens`
 - Gemini: `/v1beta/models/{model}:generateContent`, `/v1beta/models/{model}:streamGenerateContent`, `/v1beta/models`
 
+**Single model** (since v1.6.50): `GET /v1/models/{model}` (also under `/openai/v1`) returns one model object in OpenAI format, using the same rules as the list (whitelist and access-key visibility); a model that is not listed gets a 404 `model_not_found`. This serves the OpenAI SDK's `models.retrieve`.
+
 **Important**: The bare `/v1/models` endpoint returns OpenAI format (a single path cannot return two formats). For the Claude-format model list, use `/claude/v1/models`.
 
 ## 🧠 Models & Thinking Levels

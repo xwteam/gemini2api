@@ -61,6 +61,8 @@ v1.6.4부터 각 API는 두 가지 경로 형식을 지원합니다:
 - `/v1beta/models`
 
 > [!IMPORTANT]
+> **단일 모델**(v1.6.50부터): `GET /v1/models/{model}`(`/openai/v1` 아래도 동일)은 OpenAI 형식으로 모델 하나를 반환합니다. 목록과 같은 기준이며, 목록에 없으면 404 `model_not_found`. OpenAI SDK의 `models.retrieve`용입니다.
+
 > 베어 `/v1/models`는 OpenAI 형식을 반환합니다(하나의 경로로 두 형식을 반환할 수 없음). Claude 형식 모델 목록이 필요하면 `/claude/v1/models`를 사용하세요.
 
 ## 🧠 모델과 사고 수준

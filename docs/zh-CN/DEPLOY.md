@@ -113,7 +113,7 @@ HEALTH_CHECK_ENABLED=true
 HEALTH_CHECK_INTERVAL=5
 
 # 可选：多账号配置文件路径（不存在则使用环境变量单账号模式）
-ACCOUNTS_FILE=accounts.json
+ACCOUNTS_FILE=data/accounts.json
 
 # 可选：轮询策略（round-robin/failover，默认 round-robin）
 ROTATION_STRATEGY=round-robin
@@ -238,9 +238,9 @@ docker compose logs gemini2api
 - 增加服务稳定性
 - 绕过单账号频率限制
 
-### 创建 accounts.json
+### 创建 data/accounts.json
 
-在项目根目录创建 `accounts.json` 文件：
+在项目的 `data/` 目录下创建 `accounts.json`（即 `data/accounts.json`，`data/` 是挂载卷，升级重建容器不会丢）：
 
 ```json
 {
@@ -279,8 +279,8 @@ docker compose logs gemini2api
 ### 启用多账号
 
 ```bash
-# 确保 accounts.json 在项目根目录
-ls -la accounts.json
+# 确保文件在 data/ 目录下
+ls -la data/accounts.json
 
 # 重启服务使配置生效
 docker compose restart
