@@ -107,6 +107,17 @@ def test_key_is_the_sha256_prefix_of_the_psid(store):
     assert km.psid_key(PSID) == _key(PSID)
 
 
+def test_a_psid_that_is_not_valid_utf8_never_raises(store):
+    """管理接口收的是 JSON，"\\ud800" 这种孤立代理项能原样进到 PSID 里。闸口在轮换热路径上，
+    查记录绝不能因此抛异常（否则一次本该失败的 reload 会变成 500）。"""
+    weird = "g.a000\ud800broken"
+
+    assert km.get_mode(weird) == "server"
+    assert km.set_mode(weird, "browser") is True
+    assert km.get_mode(weird) == "browser"
+    assert km.psid_key(PSID) == _key(PSID), "正常 PSID 的哈希不能因此改变"
+
+
 def test_key_is_the_same_digest_as_the_cookie_cache_file_name():
     """与 data/cookies/<hash>.json 同一算法 —— 运维能把两份文件对上号。"""
     jar = PersistentCookieJar.__new__(PersistentCookieJar)  # 不跑 __init__：不碰真实磁盘

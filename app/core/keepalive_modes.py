@@ -64,8 +64,12 @@ _parsed: Optional[tuple] = None
 
 
 def psid_key(psid: str) -> str:
-    """记录的键：sha256(PSID) 的前 16 个十六进制字符（与 Cookie 缓存文件名同一算法）。"""
-    return hashlib.sha256(psid.encode()).hexdigest()[:16]
+    """记录的键：sha256(PSID) 的前 16 个十六进制字符（与 Cookie 缓存文件名同一算法）。
+
+    surrogatepass：管理接口收的是 JSON，孤立代理项（"\\ud800"）能原样进到 PSID 里；严格编码会
+    在轮换闸口上抛 UnicodeEncodeError。对任何正常字符串，结果与 .encode() 逐字节相同。
+    """
+    return hashlib.sha256(psid.encode("utf-8", "surrogatepass")).hexdigest()[:16]
 
 
 def _resolve(path: _PathLike) -> Path:
