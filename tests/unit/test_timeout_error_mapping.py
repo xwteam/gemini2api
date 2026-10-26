@@ -300,6 +300,27 @@ def test_openai_real_stream_timeout_emits_a_timeout_error_frame_without_retrying
     assert calls.generate == [], "超时不该触发非流式的不思考重试"
 
 
+def test_openai_real_stream_timeout_tries_the_fallback_first(gem_client, monkeypatch):
+    """真流式还没流出正文就超时：同样先试第三方兜底，兜到了就不发错误帧。"""
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+
+    async def fake_fallback_stream(request, req, messages_raw, exclude_model, completion_id, model_name):
+        yield 'data: {"fallback": true}\n\n'
+
+    monkeypatch.setattr(oai, "_maybe_fallback_stream", fake_fallback_stream)
+    with gem_client.stream("POST", "/v1/chat/completions", json={
+        "model": "gemini-pro", "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    assert '"fallback": true' in body
+    assert "timeout_error" not in body
+    assert calls.generate == []
+
+
 def test_openai_real_stream_timeout_with_a_conversation_is_not_retried_with_full_prompt(monkeypatch):
     import app.routers.openai as oai
 
