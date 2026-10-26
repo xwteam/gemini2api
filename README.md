@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-v1.6.49-success?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.6.50-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -62,6 +62,7 @@
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2026-10-27 01:08:00 | v1.6.50 - 🧷 **对标补齐一批小加固**：混合账号池里请求落到没有该模型（如 Argon）的账号时，改为换号而不是直接报 400；附件上传遇到网络错误或 5xx 自动重试一次，不再静默丢附件；一次生成多张图时并发下载；新增 GET /v1/models/{model}（OpenAI SDK 的 models.retrieve）；部署文档的多账号说明改为 data/accounts.json |
 | 2026-10-26 23:36:00 | v1.6.49 - 🧩 **客户端兼容性一起补齐**：Codex / OpenAI 新版 SDK 发的 developer 消息（权限、沙箱说明就在里面）过去在 Gemini 路径被整段丢掉，现在按 system 拼进提示词；top_p、stop、response_format、seed 等参数过去被直接丢弃，现在转给第三方模型和兜底；面板里加的账号、面板的兜底开关都存进挂载卷 data/，升级重建容器不再丢；拒答套话再收一句「身为一个语言模型，我没办法提供这方面的帮助。」 |
 | 2026-10-26 22:04:00 | v1.6.48 - 🛠️ **Codex 等走 /v1/responses 用第三方模型时，工具调用能跑通了**：流式（Codex 恒流式）过去只转发文字，第三方模型发起的工具调用被整个丢掉，工具循环跑不起来；现在流式、非流式都会把工具调用变成 function_call 输出项。历史里的工具调用和结果也改按 OpenAI 原生格式（tool_calls + tool_call_id）发给第三方，Codex 带的 web_search 等内置工具会自动略过；Gemini 路径不受影响 |
 | 2026-10-26 21:14:00 | v1.6.47 - 🙅 **谷歌的「语言模型」拒答套话不再当成回答**：谷歌有时整段只回一句「我只是一个语言模型，无法提供这方面的帮助。」「由于程序代码的局限，我没法办到。」这类话（问的明明是「17 是质数吗」这种好答的问题，模型故障时也会出现），过去原样返回给客户端；现在和失败套话一样换号重试、可走兜底，但不计入模型熔断 |
@@ -71,7 +72,6 @@
 | 2026-10-21 15:29:00 | v1.6.43 - 🧠 **思考改为低 / 中 / 高三档，对齐网页**：四个协议都能选同样的三档，**默认 `low`**（面板「设置 → 思考」保存即时生效；实测平均每个请求多约 5 秒，最看重速度就设成「关闭」）；客户端没提思考时按默认档开的思考只用于生成、绝不回传。⚡ **Claude Code 不再每个请求都跑最深的一档**（它每次都发 `adaptive` + `effort: high`，上一版写死成 high），现在跟随默认档，`/effort low|medium|xhigh|max` 也生效了；`reasoning_effort: none` = 不思考。🤖 **对外模型收口为四个**：`gemini-pro` / `gemini-flash` / `gemini-flash-lite` / `gemini-argon` 自动映射网页的 3.1 Pro / 3.8 Flash / 3.5 Flash-Lite / 4 Argon，`gemini-flash-thinking` 下线（旧名仍可调用）。🔌 修好「API 管理」第三方转发（书生端砚的 deepseek / glm / kimi 等此前全部 400，被误报成额度不足）。🧪 模型测试页改为档位选择 |
 | 2026-10-21 04:30:00 | v1.6.42 - 🤖 **接上 4 Argon 并让模型发现变成账号驱动的**：账号心跳本来就返回真实可用的模型清单，此前只认写死的表、认不出的连日志都不打就丢掉（这正是 Argon 用不了的原因），现在能自动采纳、Google 换代不必再等改代码；稳定公开名契约不变，自动采纳带校验、不合格条目仍丢弃但留日志。💵 每把**访问密钥的 token 用量与美元估算**（只统计不限额，界面已标注「估算」：本服务走网页版本身不花钱，且 token 是按字符估的）。📄 **Canvas 正文不再整段丢失**（此前只留一条打不开的占位链接）。🧼 清理 `<ctrl94>thought` 思考泄漏等控制标记。🧠 **Anthropic 协议补上思考链**（此前 Claude Code 发的 thinking 参数被静默丢弃、那边用户永远「不思考」） |
 | 2026-10-21 00:58:00 | v1.6.41 - 🔑 新增**可分发的访问密钥**：面板可签发多把 key 分发给不同的人，每把独立设置启停／有效期／**惰性激活**（对方首次使用才开始计时）／请求数上限／绑定账号／限定模型；`.env` 的 API_KEY 仍全权有效，访问密钥进不了 /admin。⚠️ `REFRESH_INTERVAL` 默认 5→30 分钟（下限 10）：cookie 轮换循环此前**只在启动失败时才跑**，正常启动的网关从不轮换、几小时后账号必死（issue #11），现改为启动就跑。认出 Gemini 用 **HTTP 200** 返回的拒绝块（会话过期／限流／上下文超长／人机验证此前被当成「空回复」吞掉，既不标不健康也不触发自愈）。非流式超时按模型族分层且超时不再重试三遍（此前 60 秒硬掐＋重试＝等 183 秒才失败）。思考档位不再一律最高档。带附件恢复真流式 |
-| 2026-09-12 10:15:00 | v1.6.40 - 🔍 修复「模型测试页把真实错误显示成『无响应内容』」（issue #11 追加）：流式失败只能以流内 error 帧表达，而前端不认这个键，导致 503/529/500/400 全长一样；现在显示真实原因与状态码，已输出的内容不会被抹掉。账号卡片新增真实健康信息（`is_healthy`／连续失败数／最近成功时间／脱敏后的最近错误）—— 此前绿色 ACTIVE 徽章读的是池里的状态枚举而非客户端健康位，cookie 失效的账号照样显示绿色。空响应不再被当成功悄悄咽下（连续 3 次才计入错误，单次绝不降级）。启动日志明说 cookie 轮换循环有没有起来 |
 
 ---
 
