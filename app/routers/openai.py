@@ -32,7 +32,8 @@ from app.models.openai import (
     ModelList, ModelInfo, UsageInfo,
     ImageGenerationRequest, ImageData, ImageResponse,
 )
-from app.utils.tools import build_tool_prompt, parse_tool_response_with_retry, estimate_tokens, is_image_generation_intent
+from app.utils.tools import (build_tool_prompt, estimate_tokens, is_image_generation_intent,
+                             is_malformed_tool_result, parse_tool_response_with_retry)
 from app.utils.prompt import build_prompt_from_messages, extract_attachments, last_user_text
 from app.core.limiter import limiter, dynamic_rate_limit, rate_limit_exempt
 
@@ -229,6 +230,27 @@ async def _forget_resume_point(conv) -> None:
         return
     conv.gemini_conv_id = ""
     conv.account_id = ""
+    await conversation_store.update(conv)
+
+
+async def _adopt_regenerated_resume_point(conv, regenerated: dict, parsed) -> None:
+    """工具 JSON 畸形 → 重新生成了一次，且客户端拿到的是重新生成的那一版：续接点改记它。
+
+    parse_tool_response_with_retry 只在第一次畸形时才重新生成，且只有重生成的结果合法才采用它
+    （否则沿用第一次的降级结果）—— 所以「重新生成过」并且「最终结果不是畸形降级」= 用的是重生成
+    那一版。重新生成发在同一个续接点上，谷歌那边是第一次回答的兄弟分支；不改记的话，下一轮从被丢掉
+    的那条分支接着走，Gemini 看到的上一轮与客户端看到的不一致。重生成的回答没有可用的续接元数据时，
+    同样作废旧的续接点（见 _forget_resume_point）。
+    """
+    result = regenerated.get("result")
+    if conv is None or not isinstance(result, dict) or is_malformed_tool_result(parsed):
+        return
+    new_conv_id = result.get("conversation_id", "")
+    if not new_conv_id:
+        await _forget_resume_point(conv)
+        return
+    conv.gemini_conv_id = new_conv_id
+    conv.account_id = result.get("account_id") or ""
     await conversation_store.update(conv)
 
 
@@ -561,14 +583,18 @@ async def chat_completions(req: ChatRequest, request: Request):
         await _forget_resume_point(conv)
 
     if has_tools:
+        regenerated = {}
+
         async def _regenerate_for_tools() -> str:
             # 续接时同样钉会话的账号：带着续接参数落到别的账号就接不上
             r = await gemini_client.generate(prompt, resolved_model, gemini_conv_id, attachments,
                                              gem_id=gem_id, account_id=account_id,
                                              extended_thinking=extended_thinking)
+            regenerated["result"] = r
             return r.get("text", "")
 
         parsed = await parse_tool_response_with_retry(text, _regenerate_for_tools)
+        await _adopt_regenerated_resume_point(conv, regenerated, parsed)
         if parsed["type"] == "tool_calls":
             tool_calls = []
             for i, tc in enumerate(parsed["tool_calls"]):
@@ -972,10 +998,13 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
         await _forget_resume_point(conv)
 
     if has_tools:
+        regenerated = {}
+
         # 此刻只发过 role 首帧 + keepalive，还没发任何 content 块，重试是安全的。
         async def _regenerate_for_tools() -> str:
             r = await gemini_client.generate(prompt, model, gemini_conv_id, attachments,
                                              gem_id=gem_id, account_id=account_id)
+            regenerated["result"] = r
             return r.get("text", "")
 
         # 畸形工具 JSON 的重试要再跑一整轮上游 generate()——这条流早就开了（role 首帧已发），
@@ -991,6 +1020,7 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
                 parse_task.exception()   # 取回异常，避免 asyncio 在 GC 时打印 "Task exception was never retrieved"
             raise
         parsed = parse_task.result()
+        await _adopt_regenerated_resume_point(conv, regenerated, parsed)
         if parsed["type"] == "tool_calls":
             for tc in parsed["tool_calls"]:
                 call_id = f"call_{uuid.uuid4().hex[:8]}"

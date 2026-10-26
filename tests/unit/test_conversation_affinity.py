@@ -740,6 +740,66 @@ def test_a_streaming_turn_answered_by_the_fallback_creates_no_record(with_fallba
 
 
 # ---------------------------------------------------------------------------
+# 工具 JSON 畸形 → 重新生成：客户端拿到的是哪一版，续接点就记哪一版
+# ---------------------------------------------------------------------------
+# 重新生成也发在同一个续接点上（谷歌那边是第一次回答的兄弟分支）。过去续接点只在第一次回答之后记，
+# 客户端拿到重新生成的合法 tool_calls 时，存储里仍是被丢掉的那个畸形回答的 [cid, rid, rcid]：下一轮
+# 从那条分支接着走，Gemini 看到的上一轮与客户端看到的不一致。
+
+MALFORMED_TOOL_JSON = '{"tool_calls": [{"name": "get_weather", "arguments": {"city": "Par'
+VALID_TOOL_JSON = '{"tool_calls": [{"name": "get_weather", "arguments": {"city": "Paris"}}]}'
+
+
+def _script_answers(upstream, texts):
+    """让这个上游接下来的回答依次是 texts（会话元数据照常每次一个新的 rid / rcid）。"""
+    queue = list(texts)
+    original = upstream._answer
+
+    def scripted(*a, **k):
+        result = original(*a, **k)
+        return {**result, "text": queue.pop(0)} if queue else result
+
+    upstream._answer = scripted
+
+
+def _tool_names(body, mode):
+    if mode == "nonstream":
+        calls = body["choices"][0]["message"].get("tool_calls") or []
+        return [c["function"]["name"] for c in calls]
+    return ["get_weather"] if '"tool_calls"' in body and "get_weather" in body else []
+
+
+@pytest.mark.parametrize("mode", ["nonstream", "buffered"])
+def test_a_regenerated_tool_answer_moves_the_resume_point(wired, mode):
+    w = wired
+    first, idx = _first_turn(w)
+    _script_answers(first, [MALFORMED_TOOL_JSON, VALID_TOOL_JSON])
+
+    body = _chat(w, [U1, A1, U2], stream=mode != "nonstream", tools=_TOOLS)
+
+    assert _tool_names(body, mode) == ["get_weather"], body
+    regen = first.calls[-1]
+    assert regen["conv"] == json.dumps(first.triple(1)), "前提：重新生成发在同一个续接点上"
+    conv = _stored(w)
+    assert json.loads(conv.gemini_conv_id) == first.triple(3), \
+        "客户端拿到的是重新生成的那一版，续接点却还记着被丢掉的畸形回答"
+    assert conv.account_id == f"account-{idx}"
+
+
+@pytest.mark.parametrize("mode", ["nonstream", "buffered"])
+def test_a_regenerated_tool_answer_that_is_not_used_keeps_the_first_resume_point(wired, mode):
+    """重新生成仍然畸形：客户端拿到的是第一次回答的降级提示，续接点照旧记第一次回答。"""
+    w = wired
+    first, idx = _first_turn(w)
+    _script_answers(first, [MALFORMED_TOOL_JSON, MALFORMED_TOOL_JSON])
+
+    _chat(w, [U1, A1, U2], stream=mode != "nonstream", tools=_TOOLS)
+
+    assert len(first.calls) == 3, "前提：本该重新生成一次"
+    assert json.loads(_stored(w).gemini_conv_id) == first.triple(2)
+
+
+# ---------------------------------------------------------------------------
 # 新一轮不是「一条用户消息」：不续接，改发完整历史
 # ---------------------------------------------------------------------------
 # 续接只发上一轮回答之后新来的那一条用户消息。agent 的工具循环里，第二轮是 [问题, assistant(tool_calls),
