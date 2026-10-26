@@ -11,7 +11,7 @@ from app.core.settings_overrides import THINKING_DEFAULT_LEVELS, apply_overrides
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.6.45"
+APP_VERSION = "1.6.46"
 
 
 def _generate_api_key() -> str:
