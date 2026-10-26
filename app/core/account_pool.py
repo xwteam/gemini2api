@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.core.gemini_client import (
-    GeminiWebClient, HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG,
-    PinnedAccountUnavailable, is_timeout_error,
+    GeminiFailureReply, GeminiWebClient, HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG,
+    BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable, is_timeout_error,
 )
 from app.core import keepalive_modes
 from app.core.access_context import current_bound_account_ids
@@ -740,11 +740,20 @@ class AccountPool:
         短暂冷却，不累计 consecutive_failures、不标 EXPIRED。过去它走的是下面那条「连败 3 次
         即 EXPIRED」的通道，谷歌卡一阵子就能把单账号池整个打掉。
         也不换号重试（_is_retryable 不认超时）：这一轮的预算已经花完，再试只会让客户端再等一整轮。
+        谷歌的失败套话（GeminiFailureReply）同样是谷歌那边的瞬时故障（规格 H.2）：真流式里它往往在
+        思考事件之后才判出来，池这时已经不能换号（emitted_any）而走到这里；过去落进下面那条「连败
+        3 次即 EXPIRED」的通道，flash 故障期间会把账号一个个踢出轮换，连带同账号的 pro / flash-lite。
         其它失败照旧。
         """
         if is_timeout_error(exc):
             await self.release(account, success=False, cooldown=True, error=_error_summary(exc),
                                reason="generation timeout")
+            return
+        if isinstance(exc, GeminiFailureReply):
+            logger.warning(f"Account {account.id} got {exc} after the stream had started; "
+                           f"not failing over")
+            await self.release(account, success=False, cooldown=True, error=_error_summary(exc),
+                               reason="generic failure reply")
             return
         await self.release(account, success=False, error=_error_summary(exc))
 

@@ -858,6 +858,15 @@ def is_generic_failure_reply(text, images=None, prompt: str = "") -> bool:
     return True
 
 
+def _could_be_failure_reply(text) -> bool:
+    """正文开头（规范化后）是否仍可能长成某条套话 —— 真流式据此扣住正文（规格 A.5）。
+
+    空串也算「仍可能」：还没收到任何正文时本来就没有可发的东西。
+    """
+    norm = _normalize_reply(text)
+    return any(phrase.startswith(norm) for phrase in failure_reply_phrases())
+
+
 class GeminiFailureReply(HTTPStatusError):
     """谷歌回了失败套话（HTTP 200，正文是一句固定的报错）而不是回答。
 
@@ -2982,6 +2991,11 @@ class GeminiWebClient:
         last_images: list = []
         last_canvases: list = []  # Canvas 只出现在部分帧，保留最新非空（同 last_images）
         chunk_timeout = 120      # 单个 chunk 最长等待（兜底 #215 timeout 失效）
+        # 规格 A.5：回答开头（规范化后）还是某条失败套话的前缀时先扣住正文、不发增量（思考照常发）。
+        # 等整段收完再判就晚了：套话的前半句早已流给客户端，池也不能再换号。一旦分叉立即放行，
+        # 之后不再检查 —— 只影响回答开头不超过最长套话长度的那一小段。
+        holding = True
+        held = ""                # 扣住期间最新的稳定正文（流结束时还扣着、又不是套话，就补发它）
 
         session = AsyncSession(impersonate=self._current_target, timeout=180)
         try:
@@ -3039,6 +3053,13 @@ class GeminiWebClient:
                             # 计算"可安全 emit 的稳定前缀"：剥掉已完整的占位 URL，并 hold 住任何
                             # 尚未接收完整的占位 URL 尾部（避免泄露半截 googleusercontent 网址）。
                             safe = _stable_placeholder_prefix(text)
+                            if holding:
+                                if _could_be_failure_reply(safe):
+                                    held = safe
+                                    continue
+                                # 分叉了、不可能再是套话：这一帧把扣住的部分连同新增量一起发出去
+                                # （emitted 此时还是空串），之后恢复逐帧增量。
+                                holding = False
                             # 帧是累积式：safe 应是 emitted 的扩展前缀。严格 append-only：
                             # 只在 safe 以 emitted 为前缀时追加新增尾部；非累积帧（思考/重排
                             # 导致 safe 不再以 emitted 为前缀，或占位串补全后变短）则 hold 住，
@@ -3064,8 +3085,17 @@ class GeminiWebClient:
             except Exception:
                 pass
 
-        yield await self._finalize_stream(last_text, last_conv, last_images, last_thoughts,
-                                          last_canvases)
+        final = await self._finalize_stream(last_text, last_conv, last_images, last_thoughts,
+                                            last_canvases)
+        if holding:
+            # 一直扣着到流结束：整段命中套话（且无图、回声保护不成立）→ 按上游失败抛出。此时正文
+            # 一个字都没发出去，池还能换号（没发过思考的话）、路由可以兜底。判定与非流式同一个纯函数。
+            if is_generic_failure_reply(final.get("text"), last_images, prompt):
+                raise GeminiFailureReply(str(final.get("text") or "").strip())
+            # 不是套话（例如整个回答就是 "I"）：先把扣住的正文作为增量补发，再发 final。
+            if held:
+                yield {"type": "delta", "text": held}
+        yield final
 
     def _images_from_wrb(self, elem: list) -> list:
         """从单个 wrb.fr 帧提取 AI 生成图片（复用 _extract_generated_images）。"""
