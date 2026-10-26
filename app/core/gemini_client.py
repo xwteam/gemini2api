@@ -122,6 +122,17 @@ def is_timeout_error(exc: BaseException) -> bool:
 _is_timeout_error = is_timeout_error
 
 
+# libcurl 的超时报错里带着这次收到了多少字节（随包 libcurl 的两种格式：
+# "Operation timed out after %ld milliseconds with %ld bytes received" 与
+# "... with %ld out of %ld bytes received"）。熔断据此区分「卡住」与「还在慢慢生成」（规格 I.4）。
+_CURL_BYTES_RECEIVED_RE = re.compile(r"with (\d+) (?:out of \d+ )?bytes received")
+
+
+def _bytes_received(cause: BaseException | None) -> int | None:
+    m = _CURL_BYTES_RECEIVED_RE.search(str(cause or ""))
+    return int(m.group(1)) if m else None
+
+
 class GenerationTimedOut(TimeoutError):
     """我们自己把一个还在生成的回答掐断了（耗时已接近整个 POST 预算）。
 
@@ -129,11 +140,15 @@ class GenerationTimedOut(TimeoutError):
     翻三倍。连接期的超时（同样是 curl code 28，但几秒就回来）仍走通用重试 ——
     过去二者混在一条 `_is_timeout_error` 判断里，于是一次短暂的建连超时既不重试、
     也不是 5xx（account_pool 不换号），用户直接拿到 500 硬失败。
+
+    bytes_received：curl 报错里解析出的这次收到的字节数（解析不出为 None）。单个请求的超时分不清
+    是卡住还是正常的长回答，熔断只把「几乎没收到数据」的算作疑似故障（实测卡住是 39～184 字节）。
     """
 
     def __init__(self, budget: float, elapsed: float, cause: BaseException):
         self.budget = budget
         self.elapsed = elapsed
+        self.bytes_received = _bytes_received(cause)
         super().__init__(
             f"Generation timed out after {elapsed:.1f}s (budget {budget:.0f}s): {cause}"
         )
@@ -1172,6 +1187,37 @@ def _describe_discovered_model(entry: list, capacity: int) -> dict | None:
             "model_number": raw_number,
         },
     }
+
+
+def model_family(model: str, clients=()) -> str | None:
+    """请求用的模型名 → 模型族（熔断按族记账、按族绕开，规格 I.9）；认不出 → None。
+
+    依次**精确**查：别名 → 公开名表 → GEMINI_MODELS → 任一账号的 _model_table()（心跳发现的族只在
+    发现到它的账号的表里，模块级表和 _resolve_model 都看不见它）。绝不做子串匹配：gemini-flash-lite
+    不能被归到 flash。路由的绕开判断和池层的记录对「路由传给池的同一个 model 参数」调用它，两边的
+    族键才对得上。
+    """
+    if not isinstance(model, str) or not model:
+        return None
+    name = MODEL_ALIASES.get(model, model)
+    family = _PUBLIC_FAMILY.get(name)
+    if family:
+        return family
+    info = GEMINI_MODELS.get(name)
+    if info:
+        return str(info["family"])
+    for client in clients:
+        table_of = getattr(client, "_model_table", None)
+        if not callable(table_of):
+            continue
+        try:
+            table = table_of()
+        except Exception:
+            continue
+        info = table.get(name) if isinstance(table, dict) else None
+        if isinstance(info, dict) and info.get("family"):
+            return str(info["family"])
+    return None
 
 
 def _model_number(model_name: str, models: dict | None = None,

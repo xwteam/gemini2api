@@ -8,10 +8,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.core.gemini_client import (
-    GeminiFailureReply, GeminiWebClient, HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG,
-    BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable, is_timeout_error,
+    GeminiFailureReply, GeminiWebClient, GenerationStalled, GenerationTimedOut, HTTPStatusError,
+    NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable,
+    is_timeout_error, model_family,
 )
 from app.core import keepalive_modes
+from app.core.model_breaker import model_breaker, request_fingerprint
 from app.core.access_context import current_bound_account_ids
 from app.core.fallback import is_empty_result
 from app.config import settings
@@ -40,6 +42,28 @@ EXPIRED_RECOVER_COOLDOWN = 60.0
 # 连续多少次空响应才允许在面板的 Errors 上留痕（issue #11）。单次空响应太常见
 # （内容拒答、被安全策略拦下），不足以说明账号坏了，所以单次绝不降级账号。
 EMPTY_STREAK_THRESHOLD = 3
+
+# 非流式生成超时只在这次尝试几乎没收到数据时才算模型熔断的「疑似故障」（规格 I.4）。实测卡住时
+# 收到的是 39～184 字节（响应头 + 一两个空心跳帧）；一个正常的长回答超过预算时早已收到成 KB 的正文。
+BREAKER_TIMEOUT_MAX_BYTES = 1024
+
+
+def _breaker_counts(exc: Exception) -> bool:
+    """这次上游尝试的失败算不算模型族的「疑似故障」（熔断计数，规格 C.2 + I.4）。
+
+    算：谷歌的失败套话；几乎没收到数据（< 1KB，解析不出字节数时照旧算）的非流式生成超时；一次进展都
+    没有的流式无进展超时。不算：建连期超时重试用完（网络问题）、谷歌的拒绝块、4xx / 401 / 403、
+    其它 5xx、池满、客户端断连、钉住的账号不可用、空响应 —— 以及「输出过内容之后才卡住」的超时：
+    单个请求的超时分不清是卡住还是正常的慢回答（第 0 节第 3 条），两个正常的长回答不能误开熔断。
+    """
+    if isinstance(exc, GeminiFailureReply):
+        return True
+    if isinstance(exc, GenerationStalled):
+        return not exc.progressed
+    if isinstance(exc, GenerationTimedOut):
+        received = getattr(exc, "bytes_received", None)
+        return received is None or received < BREAKER_TIMEOUT_MAX_BYTES
+    return False
 
 
 def _is_5xx(exc: Exception) -> bool:
@@ -1040,6 +1064,27 @@ class AccountPool:
             "accounts": accounts_info,
         }
 
+    def family_of(self, model: str) -> str | None:
+        """模型名 → 模型族（gemini_client.model_family；心跳发现的族要看各账号自己的模型表）。"""
+        return model_family(model, (a.client for a in self._accounts if a.client is not None))
+
+    # 模型熔断的记录点放在池里（规格 C.5 / I.3）：一次上游尝试的结果（成功 / 换号 / 不换号的失败）
+    # 都在这里落地，池手里也正好有 model、prompt 与 conversation_id。client 层的同号快速重试不单独
+    # 记；路由层的「退回不思考」「完整历史」重试是新的上游尝试，照常各记各的（同一请求的指纹相同，
+    # 计数只 +1）。每次尝试只记一个结果（规格 I.6）。
+    def _breaker_failure(self, model: str, prompt: str, conversation_id: str,
+                         started_at: float, exc: Exception) -> None:
+        if not _breaker_counts(exc):
+            return
+        model_breaker.record_failure(
+            self.family_of(model), started_at=started_at,
+            fingerprint=request_fingerprint(prompt, conversation_id),
+            reason=_error_summary(exc),
+        )
+
+    def _breaker_success(self, model: str, started_at: float) -> None:
+        model_breaker.record_success(self.family_of(model), started_at=started_at)
+
     async def generate(self, prompt: str, model: str, conversation_id: str = "",
                        attachments: list | None = None, gem_id: str | None = None,
                        account_id: str | None = None, extended_thinking: bool = False) -> dict:
@@ -1064,13 +1109,18 @@ class AccountPool:
                     raise _pinned_unavailable(account_id, gem_id)
                 raise
             t0 = time.time()
+            attempt_started = model_breaker.now()
             released = False
             try:
                 result = await account.client.generate(prompt, model, conversation_id, attachments, gem_id,
                                                         extended_thinking)
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
-                await self.release(account, success=True, empty=_is_empty_generation(result))
+                empty = _is_empty_generation(result)
+                await self.release(account, success=True, empty=empty)
                 released = True
+                if not empty:
+                    # 拿到了正文 / 思考 / 图片：这个族此刻是好的（空响应既不算成功也不算失败）
+                    self._breaker_success(model, attempt_started)
                 return _with_account_id(result, account)
             except (asyncio.CancelledError, GeneratorExit):
                 # F6：客户端断连/取消不是账号失败，只归还槽位（否则点 3 次"停止"就能把
@@ -1080,6 +1130,8 @@ class AccountPool:
                 raise
             except Exception as e:
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
+                # 换号分支与 _release_failed 分支都要记（规格 I.1），所以记在分叉之前
+                self._breaker_failure(model, prompt, conversation_id, attempt_started, e)
                 if _is_retryable(e):
                     # 可重试：5xx 冷却该账号、401/403 标 expired，换下一个账号重试
                     last_err = e
@@ -1124,6 +1176,8 @@ class AccountPool:
                     raise _pinned_unavailable(account_id, gem_id)
                 raise
             t0 = time.time()
+            attempt_started = model_breaker.now()
+            breaker_recorded = False     # 这次尝试已经给熔断记过结果了（每次尝试只记一个，规格 I.6）
             emitted_any = False
             failover = False
             released = False
@@ -1140,6 +1194,11 @@ class AccountPool:
                     evt_type = evt.get("type") if isinstance(evt, dict) else None
                     if evt_type == "delta" and (evt.get("text") or "").strip():
                         saw_text = True
+                        if not breaker_recorded:
+                            # 第一个正文增量就是决定性信号：它已经过了失败套话的扣留检查（规格 A.5），
+                            # 不可能是套话。只有思考不算 —— 套话可以出现在思考之后。
+                            self._breaker_success(model, attempt_started)
+                            breaker_recorded = True
                     elif evt_type == "thoughts" and (evt.get("text") or "").strip():
                         saw_thoughts = True
                     elif evt_type == "final":
@@ -1151,6 +1210,8 @@ class AccountPool:
                 stream_empty = not saw_text and not saw_thoughts and _is_empty_generation(final_evt)
                 await self.release(account, success=True, empty=stream_empty)
                 released = True
+                if not breaker_recorded and not stream_empty:
+                    self._breaker_success(model, attempt_started)
                 return
             except (asyncio.CancelledError, GeneratorExit):
                 # F6：客户端在流中途断连（生成器被 aclose → GeneratorExit）或请求被取消，
@@ -1160,6 +1221,9 @@ class AccountPool:
                 raise
             except Exception as e:
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
+                if not breaker_recorded:
+                    # 换号分支与 _release_failed 分支都要记（规格 I.1）；已经记过成功的不再记失败
+                    self._breaker_failure(model, prompt, conversation_id, attempt_started, e)
                 # 只有「还没吐任何内容」+「可重试」+「还有别的账号」才 failover
                 if _is_retryable(e) and not emitted_any:
                     last_err = e
