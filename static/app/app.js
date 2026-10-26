@@ -304,6 +304,14 @@ function _accountHealthRow(account) {
             </div>`;
 }
 
+// 「浏览器保活」小标签（纯函数）：cookie 由浏览器保活插件推送的账号，服务端不再主动轮换
+// （浏览器和服务端共用同一个谷歌会话，两边各自轮换会互相把对方顶下线）。默认的服务端轮换
+// 不加任何东西；老后端没有 keepalive_mode 字段同样不显示。前导空格把它和前面的行内元素隔开。
+function _accountKeepaliveTag(account) {
+    if (account?.keepalive_mode !== 'browser') return '';
+    return ` <span class="badge badge-info keepalive-tag" title="${escapeAttr(t('accounts.keepaliveBrowserHint'))}">${escapeHtml(t('accounts.keepaliveBrowser'))}</span>`;
+}
+
 function renderAccountStatusGrid(accounts) {
     const container = document.getElementById('accountStatusGrid');
     if (!container) return;
@@ -318,7 +326,7 @@ function renderAccountStatusGrid(accounts) {
         <div class="provider-card">
             <div class="provider-card-header">
                 <h4>${escapeHtml(account.label || account.id)}</h4>
-                ${getStatusBadge(account.status)}
+                ${getStatusBadge(account.status)}${_accountKeepaliveTag(account)}
             </div>
             <div class="account-detail">
                 <span class="label">${t('accounts.requests')}</span>
@@ -418,7 +426,7 @@ async function loadAccounts() {
                 <div class="account-card-header">
                     <div>
                         <h4>${escapeHtml(account.label || t('accounts.unnamed'))}</h4>
-                        <span class="text-muted">ID: ${escapeHtml(String(account.id ?? ''))}</span>
+                        <span class="text-muted">ID: ${escapeHtml(String(account.id ?? ''))}</span>${_accountKeepaliveTag(account)}
                     </div>
                     ${getStatusBadge(account.status)}
                 </div>

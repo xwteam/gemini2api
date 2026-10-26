@@ -36,6 +36,9 @@ function getStatusBadge(status) {
         'active': { key: 'status.active', class: 'success' },
         'inactive': { key: 'status.inactive', class: 'secondary' },
         'error': { key: 'status.error', class: 'danger' },
+        // 会话失效（cookie 要换新的）：过去只有连挂 3 次才会出现，v1.6.44 起会话被谷歌打回
+        // 登录页也报 expired —— 浏览器保活插件就靠它去救。不认识的话中文界面会显示英文原词。
+        'expired': { key: 'status.expired', class: 'danger' },
         'disabled': { key: 'status.disabled', class: 'secondary' }
     };
 

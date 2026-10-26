@@ -52,6 +52,7 @@ def _extract_function(source: str, name: str) -> str:
 
 _APP_FUNCS = (
     "escapeHtml",
+    "_accountKeepaliveTag",
     "_accountHealthNote",
     "_accountEmptyNote",
     "_accountHealthRow",
@@ -298,3 +299,53 @@ def test_last_error_text_is_escaped(tmp_path):
     assert "&lt;img src=x onerror=alert(1)&gt;" in out["lastErrorText"][0]
     assert "<img" not in out["lastErrorText"][0]
     assert "<img" not in out["list"], "账号管理页把 last_error 原样当 HTML 插进去了"
+
+
+# --------------------------------------------------------------------------
+# 「浏览器保活」小标签（v1.6.44）：插件推送 cookie 的账号服务端不再轮换，面板要看得出来
+# --------------------------------------------------------------------------
+
+@_needs_node
+def test_browser_kept_account_shows_the_tag_on_both_pages(tmp_path):
+    out = _render([_acc(keepalive_mode="browser")], tmp_path)
+
+    for page in ("grid", "list"):
+        html = out[page]
+        assert "accounts.keepaliveBrowser" in html, f"{page} 没渲染「浏览器保活」标签"
+        # title 提示：cookie 由插件推送、服务端不主动轮换
+        assert 'title="<ATTR:accounts.keepaliveBrowserHint>"' in html, f"{page} 的标签没带 title 提示"
+
+
+@_needs_node
+def test_server_mode_and_old_backends_show_no_tag(tmp_path):
+    """服务端轮换（默认）不加噪音；老后端没有这个字段也不能误显示。"""
+    old_backend = _acc()
+    old_backend.pop("keepalive_mode", None)
+    out = _render([_acc(keepalive_mode="server"), old_backend], tmp_path)
+
+    assert "accounts.keepaliveBrowser" not in out["grid"]
+    assert "accounts.keepaliveBrowser" not in out["list"]
+
+
+@_needs_node
+def test_keepalive_tag_text_is_escaped(tmp_path):
+    out = _render([_acc(keepalive_mode="browser")], tmp_path,
+                  i18n={"accounts.keepaliveBrowser": "Br<b>owser"})
+
+    assert "Br&lt;b&gt;owser" in out["list"]
+    assert "Br<b>owser" not in out["list"], "标签文字没走 escapeHtml"
+    assert "Br<b>owser" not in out["grid"]
+
+
+@_needs_node
+def test_session_expired_account_reads_consistently(tmp_path):
+    """会话被打回登录页的账号现在对外报 expired：徽章、健康行、最近错误要说同一件事，
+    不能再出现「标着可用、但会话已失效」那行红字（那是给 active+不健康 准备的）。"""
+    out = _render([_acc(status="expired", is_healthy=False,
+                        last_error="Google session expired (login redirect)")], tmp_path)
+
+    assert "<BADGE:expired>" in out["grid"] and "<BADGE:expired>" in out["list"]
+    assert "accounts.sessionUnhealthy" in out["list"]
+    assert "accounts.healthMismatch" not in out["list"]
+    assert "text-danger" not in out["healthRow"][0]
+    assert "Google session expired (login redirect)" in out["list"]

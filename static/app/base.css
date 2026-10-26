@@ -516,6 +516,11 @@ textarea.form-control {
     color: var(--text-secondary);
 }
 
+/* 账号卡片上的「浏览器保活」标签：悬停看 title 里的说明 */
+.keepalive-tag {
+    cursor: help;
+}
+
 /* Toast 通知 */
 .toast-container {
     position: fixed;
