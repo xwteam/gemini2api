@@ -143,6 +143,23 @@ class Account:
     client: GeminiWebClient | None = field(default=None, repr=False)
 
 
+# 会话被谷歌打回登录页时，对外 last_error 为空就补上这句（见 get_status）。
+SESSION_EXPIRED_ERROR = "Google session expired (login redirect)"
+
+
+def _session_expired(a: Account) -> bool:
+    """client 已判定不健康、且原因是会话被谷歌打回登录页（GeminiWebClient.auth_expired）。
+
+    getattr 兜底：池对 client 只要求 is_healthy，没有 auth_expired 的实现一律按「不是」处理。
+    """
+    client = a.client
+    return (
+        client is not None
+        and not client.is_healthy
+        and bool(getattr(client, "auth_expired", False))
+    )
+
+
 class AccountPool:
     def __init__(self):
         self._accounts: list[Account] = []
@@ -754,6 +771,22 @@ class AccountPool:
             return True
         return False
 
+    async def mark_cookies_reloaded(self, account: Account) -> None:
+        """换上的新 cookie 已经 reload 成功：池内状态当场回到可用（持锁）。
+
+        PUT /admin/accounts/{id}/cookies 与 POST /admin/reload-cookies 成功后调用，效果与
+        check_account 判定 valid 时一致（status=ACTIVE、consecutive_failures=0），别的计数一概不动。
+        过去这一步要靠调用方随后再调一次 GET /admin/accounts/{id}/check：浏览器保活插件会调，
+        面板的「更新 Cookie」和脚本不会 —— 一个已被池标成 EXPIRED 的账号换上了好 cookie、client
+        也健康了，却仍对 _find_available 不可见，直到有人去点「检测」。
+        """
+        async with self._cond:
+            account.status = AccountStatus.ACTIVE
+            account.consecutive_failures = 0
+            logger.info(f"Account {account.id} is active again after a cookie reload")
+            # 多出了一个可用账号，唤醒所有排队者重新评估
+            self._cond.notify_all()
+
     async def remove_account(self, account_id: str) -> bool:
         for i, account in enumerate(self._accounts):
             if account.id == account_id:
@@ -877,11 +910,23 @@ class AccountPool:
         except RuntimeError:
             loop_now = 0.0
         for a in self._accounts:
+            # 对外的 status 是**派生口径**，不改池内部状态机（_find_available / 自愈 /
+            # _try_recover_expired 仍按 a.status 走）：池里还标着 ACTIVE、但会话已被谷歌打回
+            # 登录页的账号报 expired。浏览器保活插件只认 expired —— 过去这种账号一直报 active，
+            # 插件看不见、一次都不去救（线上两个账号死了 37 小时）。client 恢复健康就回到 active；
+            # 别的原因（网络抖动、5xx）造成的不健康仍报 active，由下面的 is_healthy 体现。
+            status = a.status.value
+            last_error = a.last_error
+            if _session_expired(a):
+                if a.status == AccountStatus.ACTIVE:
+                    status = AccountStatus.EXPIRED.value
+                if status == AccountStatus.EXPIRED.value and not last_error:
+                    last_error = SESSION_EXPIRED_ERROR
             accounts_info.append({
                 "id": a.id,
                 "label": a.label,
                 "psid": a.psid,
-                "status": a.status.value,
+                "status": status,
                 "request_count": a.request_count,
                 "error_count": a.error_count,
                 "active_requests": a.active_requests,
@@ -895,15 +940,16 @@ class AccountPool:
                 "consecutive_empty": a.consecutive_empty,
                 "empty_count": a.empty_count,
                 "last_success_at": a.last_success_at.isoformat() if a.last_success_at else None,
-                # 安全摘要，不含上游原文（见 _error_summary）
-                "last_error": a.last_error,
+                # 安全摘要，不含上游原文（见 _error_summary）；会话失效时补上原因（见上）
+                "last_error": last_error,
                 "last_error_at": a.last_error_at.isoformat() if a.last_error_at else None,
                 "models": self.models if a.client else [],
                 "models_count": len(self.models) if a.client else 0,
             })
         return {
             "total": self.total_count,
-            "active": self.active_count,
+            # 与上面逐个账号的对外 status 同口径：会话已失效的不算可用
+            "active": sum(1 for info in accounts_info if info["status"] == AccountStatus.ACTIVE.value),
             "strategy": self._strategy.value,
             "max_concurrent_per_account": self._max_concurrent,
             "accounts": accounts_info,

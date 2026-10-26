@@ -29,6 +29,14 @@ def _masked_status() -> dict:
     return status
 
 
+async def _after_cookie_reload(account) -> None:
+    """换 cookie 成功之后的收尾（PUT /accounts/{id}/cookies 与 POST /reload-cookies 共用）。
+
+    池内状态当场回到可用（ACTIVE + consecutive_failures=0），不再依赖调用方随后调 /check。
+    """
+    await account_pool.mark_cookies_reloaded(account)
+
+
 class ReloadCookiesRequest(BaseModel):
     psid: Optional[str] = None
     psidts: Optional[str] = None
@@ -52,6 +60,7 @@ async def reload_cookies(req: ReloadCookiesRequest = None):
             if account.client:
                 result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
                 if result.get("success"):
+                    await _after_cookie_reload(account)
                     return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
         if result is None:
             return JSONResponse(
@@ -74,6 +83,7 @@ async def reload_cookies(req: ReloadCookiesRequest = None):
                         psidts=fresh.gemini_psidts,
                     )
                     if result.get("success"):
+                        await _after_cookie_reload(account)
                         return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
             if result is None:
                 return JSONResponse(
@@ -202,6 +212,7 @@ async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
                     # 回写 accounts.json：否则面板刚救活的账号在下次重启时又拿着添加账号
                     # 那一刻的旧 cookie 起来（启动时的"配置值"就是 accounts.json 里这一份）。
                     account_pool.persist_account_cookies(account_id, req.psid, req.psidts)
+                    await _after_cookie_reload(account)
                     return {"status": "ok", "message": f"Account {account_id} cookies updated"}
                 return JSONResponse(
                     status_code=503,
