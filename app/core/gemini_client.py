@@ -5,6 +5,7 @@ import time
 import uuid
 import random
 import asyncio
+import sys
 import logging
 from enum import Enum
 from typing import NamedTuple
@@ -136,6 +137,34 @@ class GenerationTimedOut(TimeoutError):
         super().__init__(
             f"Generation timed out after {elapsed:.1f}s (budget {budget:.0f}s): {cause}"
         )
+
+
+class GenerationStalled(TimeoutError):
+    """真流式在族预算内没有进展，我们把它掐断了（v1.6.46 规格 B）。
+
+    与 GenerationTimedOut 并列（都是 TimeoutError 的子类），不继承它：GenerationTimedOut 是
+    「非流式 POST 按预算掐断」，它的计数口径（收到的字节数，见规格 I.4）这里没有；这里的口径是
+    「这次尝试有没有过进展」（progressed）。is_timeout_error 认它 —— v1.6.45 的超时口径整套生效：
+    不重试、池按瞬时故障记账、还没流出正文时 OpenAI chat 先兜底、否则协议内的 timeout_error 事件。
+
+    waited 是距上一次进展（没有进展就是距发请求）等了多少秒；keepalive_frames 是期间收到的谷歌
+    心跳帧（[{"37":[0]}]，不含任何内容）个数。
+    """
+
+    def __init__(self, budget: float, waited: float, keepalive_frames: int, progressed: bool):
+        self.budget = budget
+        self.waited = waited
+        self.keepalive_frames = keepalive_frames
+        self.progressed = progressed
+        frames = "frame" if keepalive_frames == 1 else "frames"
+        super().__init__(
+            f"Gemini stream made no progress for {waited:.0f}s "
+            f"(budget {budget:.0f}s, {keepalive_frames} keepalive {frames})"
+        )
+
+
+# 真流式 session 的 curl 超时比族预算多给的余量（秒），见 generate_stream 里的说明（规格 I.15）。
+_STREAM_CURL_TIMEOUT_MARGIN = 30.0
 
 
 class TimeoutAfterRetries(TimeoutError):
@@ -2930,7 +2959,9 @@ class GeminiWebClient:
 
         关键约束（见记忆 gemini2api-project 真流式段）：
         - curl_cffi 0.7.4 并发流式会串号（#612），故每请求用独立 session（不复用 self._http）。
-        - 流式 timeout 可能失效（#215），故用 asyncio.wait_for 兜底每个 chunk 的等待。
+        - 流式 timeout 可能失效（#215），而且会被谷歌的心跳帧重置：期限由我们自己按族预算管
+          （第一次进展 / 相邻两次进展都不能超过 budget，心跳帧不算进展），到期抛 GenerationStalled，
+          并先关掉这个独占的 session 再离开 stream 上下文（见 _abort_transport）。
         - 帧是累积式，逐帧 diff 出增量。生图/附件场景在最后帧统一处理。
         """
         if not self._healthy:
@@ -2982,6 +3013,12 @@ class GeminiWebClient:
         if extended_thinking:
             headers["x-goog-ext-525005358-jspb"] = f'["{uuid_val}",1]'
 
+        # 规格 B：真流式和非流式受同一个族预算约束（同一个函数：GENERATE_TIMEOUTS 覆盖、生图意图
+        # 取大都生效）。过去这里只有「两次收到字节之间 120 秒」的上限，谷歌排队时每 60 秒发一个
+        # 不含任何内容的心跳帧，把它一次次重置 —— 实测一条 flash 流式请求客户端干等 239.5 秒。
+        budget = _generate_timeout(resolved, prompt, self._model_table())
+        family = str((self._model_table().get(resolved) or {}).get("family") or resolved)
+
         buf = ""
         emitted = ""             # 已 yield 出去的完整文本（用于和新帧比前缀算增量）
         last_text = ""           # 最新一帧的完整文本
@@ -2990,100 +3027,201 @@ class GeminiWebClient:
         emitted_thoughts = ""    # 已 yield 出去的思维链前缀（逐帧增量用）
         last_images: list = []
         last_canvases: list = []  # Canvas 只出现在部分帧，保留最新非空（同 last_images）
-        chunk_timeout = 120      # 单个 chunk 最长等待（兜底 #215 timeout 失效）
         # 规格 A.5：回答开头（规范化后）还是某条失败套话的前缀时先扣住正文、不发增量（思考照常发）。
         # 等整段收完再判就晚了：套话的前半句早已流给客户端，池也不能再换号。一旦分叉立即放行，
         # 之后不再检查 —— 只影响回答开头不超过最长套话长度的那一小段。
         holding = True
         held = ""                # 扣住期间最新的稳定正文（流结束时还扣着、又不是套话，就补发它）
+        # 规格 B.2 / H.5：「进展」按解析值判断 —— 正文 / 思考 / 生成图片 / Canvas 与上一次见到的
+        # 非空值相比变了才算，与有没有 yield 无关（A 的扣住、占位串扣住期间到达的内容照样算），
+        # 会话元数据不算。心跳帧（_extract_text_from_wrb 返回 (None, "", "") 的 wrb.fr 帧）、
+        # 重复帧、空 chunk 都不算。
+        seen_text = None
+        seen_thoughts = ""
+        seen_images: list = []
+        seen_canvases: list = []
+        progressed = False
+        keepalive_frames = 0
 
-        session = AsyncSession(impersonate=self._current_target, timeout=180)
-        try:
-            async with session.stream(
-                "POST", GENERATE_URL,
-                data=form_data, cookies=cookies, headers=headers,
-            ) as resp:
-                try:
-                    if resp.status_code >= 400:
-                        body = await resp.atext()
-                        raise HTTPStatusError(resp.status_code, body[:200])
+        # curl_cffi 0.7.4 流式下 timeout 只等于 CONNECTTIMEOUT + LOW_SPEED（连续这么多秒一个字节
+        # 都没有才以 code 28 断开），会被心跳重置、也不可靠（#215）。过去写死 180，会先于 pro 的
+        # 300 秒期限把一个还在慢思考的请求打断（规格 I.15）；现在给到「预算 + 余量」，让下面我们
+        # 自己的期限先到，万一它还是先到了也按流式无进展超时处理。
+        session = AsyncSession(impersonate=self._current_target,
+                               timeout=budget + _STREAM_CURL_TIMEOUT_MARGIN)
+        session_closed = False
 
-                    aiter = resp.aiter_content()
-                    while True:
-                        try:
-                            chunk = await asyncio.wait_for(aiter.__anext__(), timeout=chunk_timeout)
-                        except StopAsyncIteration:
-                            break
-                        if not chunk:
-                            continue
-                        buf += chunk.decode("utf-8", "replace")
-                        frames, consumed = _scan_complete_wrb_frames(buf)
-                        if consumed:
-                            buf = buf[consumed:]
-                        for elem in frames:
-                            # 流式同样要识别 200 正文里的拒绝块（与非流式同一条识别路径）。
-                            # 注意只覆盖 _scan_complete_wrb_frames 能切出的 wrb.fr 帧；
-                            # 真·流式下拒绝块总在首帧，正常答案的增量帧也都是 wrb.fr。
-                            rejection = _extract_bard_error(elem)
-                            if rejection is not None:
-                                logger.warning(f"Upstream rejected the stream: {rejection}")
-                                raise rejection
-                            text, conv, thoughts = _extract_text_from_wrb(elem)
-                            if conv:
-                                last_conv = conv
-                            if thoughts:
-                                last_thoughts = thoughts
-                            if thoughts and len(thoughts) > len(emitted_thoughts) \
-                                    and thoughts.startswith(emitted_thoughts):
-                                t_delta = thoughts[len(emitted_thoughts):]
-                                emitted_thoughts = thoughts
-                                if t_delta:
-                                    yield {"type": "thoughts", "text": t_delta}
-                            imgs = self._images_from_wrb(elem)
-                            if imgs:
-                                last_images = imgs
-                            cvs = self._canvases_from_wrb(elem)
-                            if cvs:
-                                _warn_if_canvas_list_shrank(last_canvases, cvs)
-                                last_canvases = cvs
-                            if text is None:
-                                continue
-                            # last_text 始终存原始累积文本，供收尾 _finalize_stream 统一过滤占位串。
-                            last_text = text
-                            # 计算"可安全 emit 的稳定前缀"：剥掉已完整的占位 URL，并 hold 住任何
-                            # 尚未接收完整的占位 URL 尾部（避免泄露半截 googleusercontent 网址）。
-                            safe = _stable_placeholder_prefix(text)
-                            if holding:
-                                if _could_be_failure_reply(safe):
-                                    held = safe
-                                    continue
-                                # 分叉了、不可能再是套话：这一帧把扣住的部分连同新增量一起发出去
-                                # （emitted 此时还是空串），之后恢复逐帧增量。
-                                holding = False
-                            # 帧是累积式：safe 应是 emitted 的扩展前缀。严格 append-only：
-                            # 只在 safe 以 emitted 为前缀时追加新增尾部；非累积帧（思考/重排
-                            # 导致 safe 不再以 emitted 为前缀，或占位串补全后变短）则 hold 住，
-                            # 不发 _replace（append-only SSE 无法回退），由收尾的 final.text 兜底纠正。
-                            if safe == emitted:
-                                continue  # 没有新的稳定增量
-                            if len(safe) > len(emitted) and safe.startswith(emitted):
-                                delta = safe[len(emitted):]
-                                emitted = safe
-                                if delta:
-                                    yield {"type": "delta", "text": delta}
-                            # else: 非累积/缩短帧，本帧不 emit，等后续帧或 final 收尾
-                finally:
-                    # 无论正常结束/4xx/超时，都尝试更新 PSIDTS（流式下 resp 头部 cookie 可读），
-                    # 避免流式错误路径漏掉 Cookie 轮换（与非流式 _send_request 行为对齐）
-                    try:
-                        self._cookie_jar.update_from_response(resp)
-                    except Exception:
-                        pass
-        finally:
+        async def _abort_transport():
+            """关掉这个请求独占的 session，也就是中止传输（规格 H.1）。
+
+            curl_cffi 0.7.4 的 stream() 退出时只会 await rsp.aclose()，而它只是等后台传输任务自己
+            结束、不中止：谷歌持续发心跳时，期限到了的异常要等谷歌结束响应才离得开 stream 上下文
+            （回环实测：期限 +2.50s 触发，+8.01s 才到调用方），四个路由一直发 ping、账号槽位一直占着。
+            所以任何异常离开 stream 上下文之前都先关 session，后台传输当场收尾。
+            幂等：0.7.4 第二次 close 会抛 TypeError。不用 resp.astream_task.cancel()：调用方拿到的
+            会变成 CancelledError，池会把它当成客户端断连。
+            """
+            nonlocal session_closed
+            if session_closed:
+                return
+            session_closed = True
             try:
                 await session.close()
             except Exception:
                 pass
+
+        loop = asyncio.get_running_loop()
+        # 期限从紧挨着 StreamGenerate POST 之前开始计时（附件已经上传完），与非流式 _send_request
+        # 的 started 同口径（规格 H.4）：大附件上传不能吃掉 flash-lite 的 60 秒。
+        # 第一次进展必须在 budget 内到达（等响应头也算在内：卡住时响应头 60 秒才到）；之后相邻两次
+        # 进展的间隔上限同样是 budget（规格 H.3）。不能更短：同账号 pro 不开思考做难题，时间线与
+        # 卡住一模一样，+89.4s 才出正文、是正常回答（第 0 节第 3 条）。
+        started = loop.time()
+        last_progress = started
+        deadline = started + budget
+
+        def _stalled() -> GenerationStalled:
+            waited = loop.time() - last_progress
+            logger.warning(
+                f"Gemini stream stalled ({family}): no progress for {waited:.0f}s "
+                f"(budget {budget:.0f}s, {keepalive_frames} keepalive frames, "
+                f"{'after' if progressed else 'before'} the first progress)"
+            )
+            return GenerationStalled(budget, waited, keepalive_frames, progressed)
+
+        try:
+            cm = session.stream(
+                "POST", GENERATE_URL,
+                data=form_data, cookies=cookies, headers=headers,
+            )
+            try:
+                resp = await asyncio.wait_for(cm.__aenter__(), timeout=deadline - loop.time())
+            except asyncio.TimeoutError:
+                await _abort_transport()
+                raise _stalled() from None
+            except RequestsError as e:
+                if getattr(e, "code", None) == _CURL_TIMEDOUT:
+                    await _abort_transport()
+                    raise _stalled() from e
+                raise
+            try:
+                if resp.status_code >= 400:
+                    # 读错误正文同样受期限约束：上游拖着不结束时，状态码本身已经说明了问题。
+                    try:
+                        body = await asyncio.wait_for(resp.atext(), timeout=deadline - loop.time())
+                    except asyncio.TimeoutError:
+                        body = "(error body not received before the stream deadline)"
+                    raise HTTPStatusError(resp.status_code, body[:200])
+
+                aiter = resp.aiter_content()
+                while True:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise _stalled()
+                    try:
+                        chunk = await asyncio.wait_for(aiter.__anext__(), timeout=remaining)
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        raise _stalled() from None
+                    except RequestsError as e:
+                        # curl 自己的 LOW_SPEED 先到了（code 28）：同样是流式无进展超时
+                        if getattr(e, "code", None) == _CURL_TIMEDOUT:
+                            raise _stalled() from e
+                        raise
+                    if not chunk:
+                        continue
+                    buf += chunk.decode("utf-8", "replace")
+                    frames, consumed = _scan_complete_wrb_frames(buf)
+                    if consumed:
+                        buf = buf[consumed:]
+                    for elem in frames:
+                        # 流式同样要识别 200 正文里的拒绝块（与非流式同一条识别路径）。
+                        # 注意只覆盖 _scan_complete_wrb_frames 能切出的 wrb.fr 帧；
+                        # 真·流式下拒绝块总在首帧，正常答案的增量帧也都是 wrb.fr。
+                        rejection = _extract_bard_error(elem)
+                        if rejection is not None:
+                            logger.warning(f"Upstream rejected the stream: {rejection}")
+                            raise rejection
+                        text, conv, thoughts = _extract_text_from_wrb(elem)
+                        imgs = self._images_from_wrb(elem)
+                        cvs = self._canvases_from_wrb(elem)
+                        advanced = False
+                        if text and text != seen_text:
+                            seen_text, advanced = text, True
+                        if thoughts and thoughts != seen_thoughts:
+                            seen_thoughts, advanced = thoughts, True
+                        if imgs and imgs != seen_images:
+                            seen_images, advanced = imgs, True
+                        if cvs and cvs != seen_canvases:
+                            seen_canvases, advanced = cvs, True
+                        if advanced:
+                            progressed = True
+                            last_progress = loop.time()
+                            deadline = last_progress + budget
+                        elif text is None and not conv and not thoughts \
+                                and isinstance(elem, list) and elem and elem[0] == "wrb.fr":
+                            keepalive_frames += 1
+                            logger.debug(f"Gemini stream ({family}): keepalive frame #{keepalive_frames} "
+                                         f"after {loop.time() - last_progress:.0f}s without progress")
+                        if conv:
+                            last_conv = conv
+                        if thoughts:
+                            last_thoughts = thoughts
+                        if thoughts and len(thoughts) > len(emitted_thoughts) \
+                                and thoughts.startswith(emitted_thoughts):
+                            t_delta = thoughts[len(emitted_thoughts):]
+                            emitted_thoughts = thoughts
+                            if t_delta:
+                                yield {"type": "thoughts", "text": t_delta}
+                        if imgs:
+                            last_images = imgs
+                        if cvs:
+                            _warn_if_canvas_list_shrank(last_canvases, cvs)
+                            last_canvases = cvs
+                        if text is None:
+                            continue
+                        # last_text 始终存原始累积文本，供收尾 _finalize_stream 统一过滤占位串。
+                        last_text = text
+                        # 计算"可安全 emit 的稳定前缀"：剥掉已完整的占位 URL，并 hold 住任何
+                        # 尚未接收完整的占位 URL 尾部（避免泄露半截 googleusercontent 网址）。
+                        safe = _stable_placeholder_prefix(text)
+                        if holding:
+                            if _could_be_failure_reply(safe):
+                                held = safe
+                                continue
+                            # 分叉了、不可能再是套话：这一帧把扣住的部分连同新增量一起发出去
+                            # （emitted 此时还是空串），之后恢复逐帧增量。
+                            holding = False
+                        # 帧是累积式：safe 应是 emitted 的扩展前缀。严格 append-only：
+                        # 只在 safe 以 emitted 为前缀时追加新增尾部；非累积帧（思考/重排
+                        # 导致 safe 不再以 emitted 为前缀，或占位串补全后变短）则 hold 住，
+                        # 不发 _replace（append-only SSE 无法回退），由收尾的 final.text 兜底纠正。
+                        if safe == emitted:
+                            continue  # 没有新的稳定增量
+                        if len(safe) > len(emitted) and safe.startswith(emitted):
+                            delta = safe[len(emitted):]
+                            emitted = safe
+                            if delta:
+                                yield {"type": "delta", "text": delta}
+                        # else: 非累积/缩短帧，本帧不 emit，等后续帧或 final 收尾
+            except BaseException:
+                # 任何异常（期限到、4xx、拒绝块、客户端断连的 GeneratorExit / CancelledError）离开
+                # stream 上下文之前先中止传输，否则 0.7.4 的 __aexit__ 会一直等到谷歌自己结束响应。
+                await _abort_transport()
+                if not await cm.__aexit__(*sys.exc_info()):
+                    raise
+            else:
+                await cm.__aexit__(None, None, None)
+            finally:
+                # 无论正常结束/4xx/超时，都尝试更新 PSIDTS（流式下 resp 头部 cookie 可读），
+                # 避免流式错误路径漏掉 Cookie 轮换（与非流式 _send_request 行为对齐）
+                try:
+                    self._cookie_jar.update_from_response(resp)
+                except Exception:
+                    pass
+        finally:
+            await _abort_transport()
 
         final = await self._finalize_stream(last_text, last_conv, last_images, last_thoughts,
                                             last_canvases)

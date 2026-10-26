@@ -118,13 +118,15 @@ class Settings(BaseSettings):
     # 线上实测）。整段正文规范化后**恰好等于**其中一条才算失败（换号 / 兜底），包含、前缀都不算。
     # 运维在别的语言 / 别的措辞上抓到样本时往这里加。见 gemini_client.is_generic_failure_reply。
     gemini_failure_replies: str = ""
-    # 非流式对话 POST 超时，按模型族分层（秒）。形如 "flash-lite=60,flash=120,pro=300"。
+    # 对话的生成超时，按模型族分层（秒）。形如 "flash-lite=60,flash=120,pro=300"。
     # 留空=用代码里的默认分层（flash-lite 60 / flash 120 / pro 300 / argon 300）。
+    # 非流式按它掐断整个 POST；真流式（v1.6.46 起）按它约束「第一次进展」与「相邻两次进展的间隔」，
+    # 谷歌的心跳帧不算进展（见 gemini_client.generate_stream）。
     # 旧配置里的 flash-thinking=... 已无对应模型族（该模型已下线为 gemini-flash 的别名），被忽略、无害。
     # 同一道难题 flash-lite 几秒就回、pro 经常 80 秒以上，全族共用一个 60s 会让越强的模型
     # 越容易被我们自己掐断。认不出的模型族回落到 60s。
     generate_timeouts: str = ""
-    # 生图请求的 POST 超时（秒）。生图在 pro 上常超过 60s，与上面的分层互不影响。
+    # 疑似生图时把上面的预算抬到至少这个值（秒，取大不覆盖）。生图在 pro 上常超过 60s。流式同口径。
     generate_timeout_image: float = 180.0
     # 访问密钥用量的**美元估算**价格表。形如
     # "gemini-pro=2.0/12.0,gemini-flash=0.75/3.75"（公开模型名=输入价/输出价，
