@@ -54,6 +54,19 @@ def _fresh_keepalive_modes(monkeypatch):
     monkeypatch.setattr(_keepalive_modes, "MODES_PATH", _KEEPALIVE_DIR / f"{uuid.uuid4().hex}.json")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_model_breaker():
+    """每个测试一个空的全局模型熔断器（v1.6.46 规格 I.13）。
+
+    熔断器是进程全局的、用真实单调钟：池层的测试拿 "gemini-flash" 造一串超时 / 失败套话，就会让
+    全局的 flash 熔断开着几十秒，之后开了兜底的路由测试结果取决于执行顺序。"""
+    from app.core.model_breaker import model_breaker
+
+    model_breaker.reset()
+    yield
+    model_breaker.reset()
+
+
 @pytest.fixture
 def app_main():
     """Import the FastAPI application module; skip if runtime deps are absent."""

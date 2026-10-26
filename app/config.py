@@ -1,10 +1,11 @@
+import math
 import string
 import secrets
 import logging
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
+from pydantic import ValidationInfo, field_validator, model_validator
 
 from app.core.settings_overrides import THINKING_DEFAULT_LEVELS, apply_overrides
 
@@ -17,6 +18,50 @@ def _generate_api_key() -> str:
     chars = string.ascii_letters + string.digits
     suffix = "".join(secrets.choice(chars) for _ in range(32))
     return f"sk-{suffix}"
+
+
+# 模型级熔断（v1.6.46 规格 C.4）的出厂值。字段名 = Settings 的属性名。
+MODEL_BREAKER_DEFAULTS = {
+    "model_breaker_enabled": True,
+    "model_breaker_threshold": 2,
+    "model_breaker_window": 300.0,
+    "model_breaker_cooldown": 60.0,
+    "model_breaker_max_cooldown": 300.0,
+}
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+_FALSE_WORDS = frozenset({"0", "false", "no", "off"})
+
+
+def coerce_model_breaker_value(field: str, value):
+    """MODEL_BREAKER_* 的宽容解析 → (值, 是否合法)。解析失败或越界一律 (出厂值, False)。
+
+    启动时的校验器（会打 WARNING）和熔断器每次调用现读 settings（运行时覆盖 / 测试 monkeypatch
+    塞进来的值不经过校验器）共用这一份口径：一个手写错的 .env 值绝不能让服务起不来，也不能让熔断器
+    拿着 0 秒的开放期或 0 的阈值乱跳。
+    """
+    default = MODEL_BREAKER_DEFAULTS[field]
+    if field == "model_breaker_enabled":
+        if isinstance(value, bool):
+            return value, True
+        raw = str(value if value is not None else "").strip().lower()
+        if raw in _TRUE_WORDS:
+            return True, True
+        if raw in _FALSE_WORDS:
+            return False, True
+        return default, False
+    if isinstance(value, bool):
+        return default, False
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return default, False
+    if not math.isfinite(number) or number <= 0:
+        return default, False
+    if field == "model_breaker_threshold":
+        if not number.is_integer():
+            return default, False
+        return int(number), True
+    return number, True
 
 
 def mask_secret(value: str) -> str:
@@ -136,6 +181,18 @@ class Settings(BaseSettings):
     # 配不到价格的模型在面板上显示 "—"，绝不回落到某个"差不多"的价。
     # **不参与任何限额判定** —— 额度限制只有 request_limit（计次）这一条。
     token_prices: str = ""
+    # 模型级熔断（v1.6.46 规格 C）：谷歌某个模型族整体故障时（北京 2026-10-26 gemini-flash 至少两段，
+    # 三个账号都中招），带第三方兜底的 /v1/chat/completions 请求不再每次先白等一个预算。
+    # 窗口内 THRESHOLD 个**不同请求**在同一族上「疑似故障」地失败（谷歌的失败套话、几乎没收到数据的
+    # 生成超时、一次进展都没有的流式超时）→ 打开 COOLDOWN 秒：开了兜底的 chat 请求直接走兜底；到期后
+    # 放一个真实请求去试探谷歌，试探失败开放期翻倍（封顶 MAX_COOLDOWN），任何成功都关闭熔断。
+    # 没开兜底的请求、其它协议一律照常调谷歌（它们的结果照样更新熔断状态）。进程重启后状态清空。
+    # 非法值（解析失败、≤0、阈值 <1）回退出厂值并 WARNING；MAX_COOLDOWN 至少等于 COOLDOWN。
+    model_breaker_enabled: bool = True
+    model_breaker_threshold: int = 2
+    model_breaker_window: float = 300.0
+    model_breaker_cooldown: float = 60.0
+    model_breaker_max_cooldown: float = 300.0
 
     @field_validator("gemini_psid")
     @classmethod
@@ -167,6 +224,28 @@ class Settings(BaseSettings):
             "falling back to 'low'"
         )
         return "low"
+
+    @field_validator("model_breaker_enabled", "model_breaker_threshold", "model_breaker_window",
+                     "model_breaker_cooldown", "model_breaker_max_cooldown", mode="before")
+    @classmethod
+    def model_breaker_value(cls, v, info: ValidationInfo):
+        # 仿照 default_thinking_level：先宽容解析，认不出 / 越界就回出厂值，绝不让服务起不来
+        # （pydantic 对 bool / int 字段的严格解析遇到 "maybe" / "abc" 会在 Settings() 里直接抛错）。
+        value, ok = coerce_model_breaker_value(info.field_name, v)
+        if not ok:
+            logger.warning(f"{info.field_name.upper()}={v!r} is invalid; falling back to {value!r}")
+        return value
+
+    @model_validator(mode="after")
+    def model_breaker_max_cooldown_floor(self):
+        # 开放期翻倍「封顶」MAX_COOLDOWN：它比 COOLDOWN 还小的话，翻倍反而会把开放期缩短。
+        if self.model_breaker_max_cooldown < self.model_breaker_cooldown:
+            logger.warning(
+                f"MODEL_BREAKER_MAX_COOLDOWN={self.model_breaker_max_cooldown!r} is below "
+                f"MODEL_BREAKER_COOLDOWN={self.model_breaker_cooldown!r}; raising it to match"
+            )
+            self.model_breaker_max_cooldown = self.model_breaker_cooldown
+        return self
 
     @field_validator("port")
     @classmethod
