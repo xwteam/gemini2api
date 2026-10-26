@@ -159,6 +159,10 @@ async def deep_research(request: DeepResearchRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except TimeoutError as e:
+        # 生成超时（含连接期超时把重试用完，见 gemini_client.TimeoutAfterRetries）：504，与对话
+        # 接口同口径。过去落到下面的 500 "Research failed"，连超时这个原因都被吞掉。
+        raise HTTPException(status_code=504, detail=str(e))
     except Exception as e:
         logger.error(f"Deep research failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Research failed")
@@ -375,6 +379,9 @@ async def deep_research_interact(request: InteractionRequest):
             raise HTTPException(status_code=400, detail=str(e))
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
+        except TimeoutError as e:
+            # 同 deep_research：生成超时回 504
+            raise HTTPException(status_code=504, detail=str(e))
         except Exception as e:
             logger.error(f"Interactive research failed: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="Research failed")

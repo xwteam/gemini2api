@@ -154,3 +154,85 @@ def test_non_timeout_hard_failures_still_count_towards_expired():
 
     asyncio.run(run())
     assert pool.accounts[0].status == AccountStatus.EXPIRED
+
+
+# ---------------------------------------------------------------------------
+# 连接期超时把重试用完（几秒就回来的 curl code 28，没吃掉生成预算）
+# ---------------------------------------------------------------------------
+# 这类超时照旧在 GeminiWebClient.generate 里按 max_retries 重试（原样再发大概率就通了）。
+# 但重试用完后过去被包成 RuntimeError("Exhausted N retries: ...")、也不带 cause 链：账号池的
+# is_timeout_error 和 classify_error 都认不出它是超时 —— 账号照算连败、3 次即 EXPIRED，客户端
+# 拿到 500 api_error。谷歌前端短时间黑洞丢包这种「不是 cookie 失效」的超时，照样能把单账号池打掉。
+
+def _web_client_failing_with(monkeypatch, exc):
+    """真的 GeminiWebClient.generate（含 max_retries 重试循环），_send_request 每次都抛 exc。"""
+    from app.core import gemini_client as gc
+
+    client = gc.GeminiWebClient.__new__(gc.GeminiWebClient)
+    client._healthy = True
+    client._heal_lock = asyncio.Lock()
+    client._family_model = {}
+    calls = []
+
+    async def _send(*a, **kw):
+        calls.append(True)
+        raise exc
+
+    async def _no_sleep(*a, **kw):
+        return None
+
+    monkeypatch.setattr(client, "_send_request", _send)
+    monkeypatch.setattr(gc.asyncio, "sleep", _no_sleep)
+    return client, calls
+
+
+def test_connect_phase_timeouts_that_use_up_the_retries_surface_as_a_timeout(monkeypatch):
+    from app.core import gemini_client as gc
+
+    cause = RequestsError("Connection timed out after 10001 milliseconds", code=28)
+    client, calls = _web_client_failing_with(monkeypatch, cause)
+
+    with pytest.raises(TimeoutError) as ei:
+        asyncio.run(client.generate("hi", "gemini-flash"))
+
+    exc = ei.value
+    assert len(calls) == gc.settings.max_retries, "连接期超时仍要按 max_retries 重试"
+    assert not isinstance(exc, gc.GenerationTimedOut), "它没吃掉生成预算，不是生成期超时"
+    assert gc.is_timeout_error(exc)
+    assert str(exc).startswith(f"Exhausted {gc.settings.max_retries} retries: ")
+    assert exc.__cause__ is cause, "要保留 cause 链"
+    assert gc.classify_error(exc) == (504, "timeout_error", None)
+
+
+def test_other_failures_that_use_up_the_retries_stay_a_runtime_error(monkeypatch):
+    """零回归：最后一次不是超时（如连接重置）时照旧是 RuntimeError、500 api_error。"""
+    from app.core import gemini_client as gc
+
+    cause = RequestsError("Connection reset by peer", code=56)
+    client, calls = _web_client_failing_with(monkeypatch, cause)
+
+    with pytest.raises(RuntimeError) as ei:
+        asyncio.run(client.generate("hi", "gemini-flash"))
+
+    assert len(calls) == gc.settings.max_retries
+    assert not gc.is_timeout_error(ei.value)
+    assert str(ei.value).startswith(f"Exhausted {gc.settings.max_retries} retries: ")
+    assert ei.value.__cause__ is cause
+    assert gc.classify_error(ei.value) == (500, "api_error", None)
+
+
+def test_exhausted_connect_timeouts_never_expire_the_account(monkeypatch):
+    client, calls = _web_client_failing_with(
+        monkeypatch, RequestsError("Connection timed out after 10001 milliseconds", code=28))
+    pool = _pool([client])
+
+    async def run():
+        for _ in range(4):
+            with pytest.raises(TimeoutError):
+                await pool.generate("p", "gemini-flash")
+
+    asyncio.run(run())
+    account = pool.accounts[0]
+    _assert_still_in_rotation(account)
+    assert account.error_count == 4
+    assert account.cooldown_until > 0

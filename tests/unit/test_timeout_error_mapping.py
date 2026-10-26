@@ -94,12 +94,20 @@ def _sse_events(body: str):
 # classify_error
 # ---------------------------------------------------------------------------
 
+def _connect_timeouts_used_up():
+    from app.core.gemini_client import TimeoutAfterRetries
+
+    return TimeoutAfterRetries("Exhausted 3 retries: Connection timed out after 10001 milliseconds")
+
+
 @pytest.mark.parametrize("exc", [
     _timed_out(),
+    _connect_timeouts_used_up(),
     TimeoutError("read timed out"),
     asyncio.TimeoutError(),
     RequestsError("Operation timed out after 180000 milliseconds", code=28),
-], ids=["GenerationTimedOut", "TimeoutError", "asyncio.TimeoutError", "curl-code-28"])
+], ids=["GenerationTimedOut", "TimeoutAfterRetries", "TimeoutError", "asyncio.TimeoutError",
+        "curl-code-28"])
 def test_generation_timeouts_classify_as_504_timeout_error(exc):
     assert classify_error(exc) == (504, "timeout_error", None)
 
@@ -410,6 +418,63 @@ def test_openai_images_other_failures_keep_their_old_500(gem_client, monkeypatch
 
     assert r.status_code == 500, r.text
     assert r.json()["error"] == {"message": str(exc), "type": "api_error"}
+
+
+# ---------------------------------------------------------------------------
+# 深度研究（/gemini/v1beta/deepresearch*）
+# ---------------------------------------------------------------------------
+# 它按 ValueError → 400 / RuntimeError → 503 / 其它 → 500 "Research failed" 收尾。生成期超时一直
+# 落在最后那条（500，细节被吞掉）；「连接期超时把重试用完」过去是 RuntimeError（503），现在是
+# TimeoutError 的子类（TimeoutAfterRetries），不接住就会一起掉进 500。两种超时都回 504。
+
+class _ResearchPool:
+    is_healthy = True
+    models = ["gemini-flash"]
+
+    def __init__(self, exc):
+        self._exc = exc
+        self.calls = 0
+
+    async def generate(self, *a, **k):
+        self.calls += 1
+        raise self._exc
+
+
+_RESEARCH_ROUTES = [
+    ("/gemini/v1beta/deepresearch", {"query": "q", "model": "gemini-flash"}),
+    ("/gemini/v1beta/deepresearch/interact", {"input": "q"}),
+]
+
+
+@pytest.mark.parametrize("exc_factory", [_timed_out, _connect_timeouts_used_up],
+                         ids=["generation-timeout", "connect-timeouts-used-up"])
+@pytest.mark.parametrize("path,body", _RESEARCH_ROUTES, ids=["deepresearch", "interact"])
+def test_research_timeouts_are_504(gem_client, monkeypatch, exc_factory, path, body):
+    import app.routers.research as research
+
+    pool = _ResearchPool(exc_factory())
+    monkeypatch.setattr(research, "gemini_client", pool)
+    r = gem_client.post(path, json=body, headers=_AUTH)
+
+    assert r.status_code == 504, r.text
+    assert r.headers["content-type"].startswith("application/json"), r.headers
+    assert "timed out" in r.json()["detail"]
+    assert pool.calls == 1
+
+
+@pytest.mark.parametrize("exc,status", [
+    (RuntimeError("No available accounts"), 503),
+    (ValueError("bad model"), 400),
+])
+@pytest.mark.parametrize("path,body", _RESEARCH_ROUTES, ids=["deepresearch", "interact"])
+def test_research_other_failures_keep_their_old_status(gem_client, monkeypatch, exc, status, path, body):
+    import app.routers.research as research
+
+    monkeypatch.setattr(research, "gemini_client", _ResearchPool(exc))
+    r = gem_client.post(path, json=body, headers=_AUTH)
+
+    assert r.status_code == status, r.text
+    assert r.json()["detail"] == str(exc)
 
 
 # ---------------------------------------------------------------------------

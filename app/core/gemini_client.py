@@ -138,6 +138,18 @@ class GenerationTimedOut(TimeoutError):
         )
 
 
+class TimeoutAfterRetries(TimeoutError):
+    """generate() 的重试用完了，最后一次失败仍是超时（建连期的 curl code 28 之类：几秒就回来、
+    没吃掉生成预算，所以照旧重试过 max_retries 次）。
+
+    它和 GenerationTimedOut 一样是谷歌那边的问题、不是 cookie 失效。过去这里被包成
+    RuntimeError("Exhausted N retries: ...")：账号池认不出它是超时（照算连败、3 次即 EXPIRED，
+    谷歌前端短时间黑洞丢包就能把单账号池打掉），客户端拿到 500 api_error。作为 TimeoutError，
+    池按瞬时故障记账，classify_error 回 504 / timeout_error。消息与原来一致，cause 链指向最后
+    一次的异常。
+    """
+
+
 # ---------------------------------------------------------------------------
 # PSIDTS 轮换循环的节流
 # ---------------------------------------------------------------------------
@@ -2764,7 +2776,12 @@ class GeminiWebClient:
                 logger.warning(f"Attempt {attempt+1}: {e}, wait {wait}s")
                 await asyncio.sleep(wait)
 
-        raise RuntimeError(f"Exhausted {settings.max_retries} retries: {last_err}")
+        if last_err is not None and is_timeout_error(last_err):
+            # 重试用完、最后一次仍是超时：照样是超时，不是 cookie 失效（见 TimeoutAfterRetries）
+            raise TimeoutAfterRetries(
+                f"Exhausted {settings.max_retries} retries: {last_err}"
+            ) from last_err
+        raise RuntimeError(f"Exhausted {settings.max_retries} retries: {last_err}") from last_err
 
     async def generate_stream(self, prompt: str, model: str, conversation_id: str = "",
                               attachments: list | None = None, gem_id: str | None = None,
