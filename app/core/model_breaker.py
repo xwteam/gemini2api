@@ -315,10 +315,17 @@ class ModelBreaker:
             st = self._families[family]
             self._lazy(family, st, now)
             remaining = max(0.0, st.open_until - now) if st.state == STATE_OPEN else 0.0
+            count = len(st.fingerprints)
+            if st.state == STATE_CLOSED and (st.last_counted_at is None
+                                             or now - st.last_counted_at > cfg.window):
+                # 计数只在窗口里有意义：窗口已过，下一次失败会从 1 重新计（record_failure 那时才真正
+                # 清空）。只是不展示过期的计数 —— 这里不改状态：按 I.2，窗口内就已开始、晚些才失败
+                # 的尝试仍要和它凑数。
+                count = 0
             out[family] = {
                 "state": st.state,
                 "enabled": cfg.enabled,
-                "consecutive_failures": len(st.fingerprints),
+                "consecutive_failures": count,
                 "open_remaining_seconds": round(remaining, 1),
                 # open 时给绝对时间（面板显示「几点几分再试谷歌」，不是打开页面那一刻的倒计时快照）
                 "retry_at": (wall + timedelta(seconds=remaining)).isoformat()

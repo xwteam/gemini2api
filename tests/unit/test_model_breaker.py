@@ -399,6 +399,22 @@ def test_snapshot_fields():
     assert snap["probe_in_flight"] is False
 
 
+def test_snapshot_does_not_show_a_count_whose_window_has_passed():
+    """consecutive_failures 是「当前窗口里」疑似故障地失败过的不同请求个数（API.md）。计数只在下一次
+    失败 / 成功时才真正清空，窗口过了还显示 1，看起来像「再来一次就熔断」—— 其实下一次会从 1 重新计。"""
+    b, clock, _ = _breaker()
+    _fail(b, clock, "req-a")                       # 计入于 t=1000，WINDOW=300
+    clock.t = 1300.0
+    assert b.snapshot()[FAM]["consecutive_failures"] == 1, "窗口边界上照旧算（与 record_failure 同口径）"
+    clock.t = 4600.0
+    snap = b.snapshot()[FAM]
+    assert (snap["state"], snap["consecutive_failures"]) == ("closed", 0)
+    assert snap["last_reason"], "最近一次失败的原因照旧展示"
+    # 只是展示：snapshot 不改状态，下一次失败照旧从 1 重新计
+    _fail(b, clock, "req-b")
+    assert b.snapshot()[FAM]["consecutive_failures"] == 1
+
+
 def test_the_breaker_api_is_fully_synchronous():
     """I.5：检查和占位之间不能有 await —— 整个接口同步，没有任何协程。"""
     for name in ("should_bypass", "release", "record_failure", "record_success", "snapshot", "reset"):
