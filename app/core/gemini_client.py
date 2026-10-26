@@ -104,11 +104,20 @@ def _generate_timeout(resolved_model: str, prompt: str, models: dict | None = No
 _TIMEOUT_ELAPSED_RATIO = 0.9
 
 
-def _is_timeout_error(exc: BaseException) -> bool:
-    """这次失败是不是一个超时（不区分连接期 / 生成期，见 _TIMEOUT_ELAPSED_RATIO）。"""
+def is_timeout_error(exc: BaseException) -> bool:
+    """这次失败是不是一个超时（不区分连接期 / 生成期，见 _TIMEOUT_ELAPSED_RATIO）。
+
+    覆盖 GenerationTimedOut（及任何 TimeoutError / asyncio.TimeoutError，真流式里 wait_for
+    等不到下一个 chunk 抛的就是它）和 curl 的 code 28。路由用它决定「超时不重试」与
+    classify_error 的 504 映射。
+    """
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return True
     return isinstance(exc, RequestsError) and getattr(exc, "code", None) == _CURL_TIMEDOUT
+
+
+# 旧名：_send_request 与既有测试一直用它。
+_is_timeout_error = is_timeout_error
 
 
 class GenerationTimedOut(TimeoutError):
@@ -545,9 +554,9 @@ def classify_error(exc: Exception) -> tuple[int, str, int | None]:
     (http_status, error_type, retry_after_seconds)。
 
     error_type 用 Anthropic 风格命名（overloaded_error/rate_limit_error/api_error/
-    invalid_request_error）；OpenAI/Gemini 路由各自用自己的错误信封包裹同一个 type 字符串。
-    三个协议路由的非流式错误响应，以及 Claude 真流式的 error 帧，全部复用这一个函数，
-    避免同一类失败在不同入口给出不一致（甚至互相矛盾）的状态码/类型。
+    invalid_request_error/timeout_error）；OpenAI/Gemini 路由各自用自己的错误信封包裹同一个
+    type 字符串。三个协议路由的非流式错误响应，以及 Claude 真流式的 error 帧，全部复用这一个
+    函数，避免同一类失败在不同入口给出不一致（甚至互相矛盾）的状态码/类型。
     """
     if isinstance(exc, HTTPStatusError):
         status = exc.status_code
@@ -559,6 +568,11 @@ def classify_error(exc: Exception) -> tuple[int, str, int | None]:
         else:
             error_type = "api_error"
         return status, error_type, None
+    if is_timeout_error(exc):
+        # 生成期超时（谷歌那边卡住、我们按预算掐断）：504 + timeout_error。过去落到最后的
+        # 500 api_error，客户端分不出「网关坏了」和「上游太慢」，也不会按超时去重试。
+        # timeout_error 是 Anthropic SDK 认识的类型；504 对应它的 GatewayTimeoutError。
+        return 504, "timeout_error", None
     if isinstance(exc, RuntimeError):
         msg = str(exc)
         # 先判"会话失效"再判"池打满"：前者槽位是空的，重试不会好转，529 是误导（issue #11）。
