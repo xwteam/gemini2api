@@ -1,6 +1,5 @@
 import json
 import time
-import shutil
 import asyncio
 import logging
 from enum import Enum
@@ -64,23 +63,33 @@ def _prepare_accounts_file() -> Path:
     """
     path = Path(settings.accounts_file)
     legacy = Path(LEGACY_ACCOUNTS_FILE)
-    if settings.accounts_file == DEFAULT_ACCOUNTS_FILE and not path.exists() and legacy.is_file():
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(legacy, path)
-            logger.warning(f"Accounts file moved to the new default {path} (copied from {legacy}; "
-                           f"the old file is kept but no longer read)")
-        except OSError as e:
-            # 这一次先从旧文件读；之后面板一保存就写到新位置，下次启动读新文件
-            logger.error(f"Could not copy {legacy} to {path}, reading the old file this time: {e}")
-            return legacy
+    if settings.accounts_file == DEFAULT_ACCOUNTS_FILE and legacy.is_file():
+        if not path.exists():
+            try:
+                # 原子写：复制到一半失败不能留下半截文件（下次启动会读到 0 个账号、也不再看旧文件和 .env）
+                atomic_write_text(path, legacy.read_text(encoding="utf-8"))
+                logger.warning(f"Accounts file moved to the new default {path} (copied from {legacy}; "
+                               f"the old file is kept but no longer read)")
+            except OSError as e:
+                # 这一次先从旧文件读；之后面板一保存就写到新位置，下次启动读新文件
+                logger.error(f"Could not copy {legacy} to {path}, reading the old file this time: {e}")
+                return legacy
+        else:
+            logger.warning(f"{legacy} still exists but is no longer read (accounts come from {path}); "
+                           f"delete it once you have checked {path}")
     if _DOCKERENV.exists():
         data_dir = Path("data").resolve()
         if data_dir not in path.resolve().parents:
             logger.warning(f"ACCOUNTS_FILE={settings.accounts_file} is not under the mounted data/ volume: "
                            f"accounts added in the panel will be lost when the container is recreated "
-                           f"(e.g. on upgrade). Set ACCOUNTS_FILE=data/accounts.json to keep them.")
+                           f"(e.g. on upgrade). Before the next recreate run "
+                           f"`docker cp gemini2api:/app/{settings.accounts_file} ./data/accounts.json`, "
+                           f"then set ACCOUNTS_FILE=data/accounts.json in .env.")
     return path
+
+
+def _clean_cookie(value) -> str:
+    return (value or "").strip().strip('"').strip("'").rstrip(";")
 
 
 def _breaker_counts(exc: Exception) -> bool:
@@ -291,6 +300,7 @@ class AccountPool:
         if accounts_path.exists():
             self._load_from_file(accounts_path)
             logger.info(f"Loaded {len(self._accounts)} accounts from {accounts_path}")
+            self._warn_if_env_psid_unused(accounts_path)
         else:
             self._add_from_env()
 
@@ -339,6 +349,16 @@ class AccountPool:
                 if suffix.isdigit():
                     max_seq = max(max_seq, int(suffix))
         self._next_id_seq = max(self._next_id_seq, max_seq + 1)
+
+    def _warn_if_env_psid_unused(self, accounts_path: Path) -> None:
+        """账号文件一存在，.env 的单账号配置就不再读（面板 / 保活插件更新 cookie 时会建这个文件）。
+        .env 里的 GEMINI_PSID 对不上任何已载入的账号时提醒一句，免得改了 .env 却以为生效了。
+        .env.example 的占位值（your__Secure-1PSID_cookie_value）不提醒：多账号部署常常不改它。"""
+        env_psid = _clean_cookie(settings.gemini_psid)
+        if env_psid and not env_psid.startswith("your_") \
+                and all(a.psid != env_psid for a in self._accounts):
+            logger.warning(f"GEMINI_PSID in .env is not used: accounts come from {accounts_path}. "
+                           f"Update cookies in the panel, or edit / remove that file.")
 
     def _add_from_env(self):
         account = Account(

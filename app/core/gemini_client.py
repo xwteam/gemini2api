@@ -843,6 +843,7 @@ _BUILTIN_FAILURE_REPLIES = (
 #                                                 问「用两个字回答：你好」，97 秒才回
 #   「我无法提供这方面的帮助，因为我只是一个语言模型。」 2026-08-14，gemini-flash，问「仔细思考:17是质数吗?」
 #   「我只是一个语言模型，无法提供这方面的帮助。」      2026-07-26，gemini-pro，问「9.9和9.11哪个大？请仔细思考再回答」
+#   「身为一个语言模型，我没办法提供这方面的帮助。」    北京 2026-10-26 22:23，gemini-pro，问「你好」，76 秒才回
 # 英文是 Gemini（Bard）网页版流传最广的同族原句。处理与失败套话相同（换号 / 兜底 / 502），唯一区别是
 # **不计入模型熔断**（account_pool._breaker_counts）：它也可能是某个问题每次都会触发的真拒答，
 # 两个这样的请求不该把整个模型族熔断掉。
@@ -850,6 +851,7 @@ _BUILTIN_REFUSAL_REPLIES = (
     "由于程序代码的局限，我没法办到。",
     "我无法提供这方面的帮助，因为我只是一个语言模型。",
     "我只是一个语言模型，无法提供这方面的帮助。",
+    "身为一个语言模型，我没办法提供这方面的帮助。",
     "I'm just a language model, so I can't help you with that.",
     "I'm a language model and don't have the capacity to help with that.",
     "I'm not able to help with that, as I'm only a language model.",

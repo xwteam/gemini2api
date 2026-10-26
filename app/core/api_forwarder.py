@@ -133,8 +133,13 @@ def _build_openai_request(entry: ApiKeyEntry, messages: list[dict], req) -> tupl
         payload["tool_choice"] = req.tool_choice
     for key in _PASSTHROUGH_PARAMS:
         value = getattr(req, key, None)
-        if value is not None:
-            payload[key] = value
+        # 空值不带（stop=[] / "" 会被按 OpenAI 规范校验的上游拒收）；parallel_tool_calls 只能和
+        # tools 一起出现（Responses 客户端不管有没有工具都会带它）
+        if value is None or value in ("", [], {}):
+            continue
+        if key == "parallel_tool_calls" and not req.tools:
+            continue
+        payload[key] = value
     if req.stream and getattr(req, "stream_options", None) is not None:
         payload["stream_options"] = req.stream_options
     effort = getattr(entry, "reasoning_effort", None)
@@ -500,11 +505,8 @@ async def _forward_anthropic(
 
     if system_message:
         payload["system"] = system_message
-    # 采样参数：Anthropic 认 temperature / top_p / stop_sequences（其余 OpenAI 专有参数不带）
-    if req.temperature is not None:
-        payload["temperature"] = req.temperature
-    if getattr(req, "top_p", None) is not None:
-        payload["top_p"] = req.top_p
+    # 只带 stop_sequences。temperature / top_p 刻意不带（与改动前一致）：Claude 4 起不许两者同时出现，
+    # 更新的型号干脆不认或只认默认值，客户端常把两个都发上来，带过去会让本来能用的请求 400。
     stop = getattr(req, "stop", None)
     if stop:
         payload["stop_sequences"] = [stop] if isinstance(stop, str) else list(stop)

@@ -78,7 +78,8 @@ def test_openai_payload_forwards_the_params(monkeypatch):
                                                          {"role": "user", "content": "hi"}], req)
     assert payload["top_p"] == 0.9 and payload["stop"] == "END" and payload["seed"] == 7
     assert payload["response_format"] == {"type": "json_object"}
-    assert payload["max_completion_tokens"] == 99 and payload["parallel_tool_calls"] is False
+    assert payload["max_completion_tokens"] == 99
+    assert "parallel_tool_calls" not in payload, "没有 tools 时不带（见下一个测试）"
     assert payload["stream_options"] == {"include_usage": True}
     assert payload["messages"][0]["role"] == "system", "developer 转 system"
     assert "presence_penalty" not in payload, "没给的参数不带"
@@ -92,7 +93,7 @@ def test_stream_options_never_go_out_on_a_non_stream_request(monkeypatch):
     assert "stream_options" not in payload
 
 
-def test_anthropic_merges_system_messages_and_maps_sampling(monkeypatch):
+def test_anthropic_merges_system_messages_and_maps_stop(monkeypatch):
     _no_ssrf(monkeypatch)
     captured = {}
 
@@ -117,7 +118,9 @@ def test_anthropic_merges_system_messages_and_maps_sampling(monkeypatch):
     body = captured["body"]
     assert body["system"] == "说明一\n\n说明二", "过去只留最后一条 system，developer 还会被当成普通消息发出去"
     assert [m["role"] for m in body["messages"]] == ["user"]
-    assert (body["temperature"], body["top_p"], body["stop_sequences"]) == (0.3, 0.8, ["END"])
+    assert body["stop_sequences"] == ["END"]
+    assert "temperature" not in body and "top_p" not in body, \
+        "Claude 4 起不许两者同时出现、更新的型号干脆不认：带过去会让本来能用的请求 400"
     assert body["max_tokens"] == 512
 
 
@@ -196,3 +199,67 @@ def test_no_warning_for_the_default_path_in_a_container(monkeypatch, tmp_path, c
     with caplog.at_level(logging.WARNING):
         ap._prepare_accounts_file()
     assert not any("not under the mounted" in r.getMessage() for r in caplog.records)
+
+
+def test_empty_stop_and_toolless_parallel_tool_calls_are_not_forwarded(monkeypatch):
+    _no_ssrf(monkeypatch)
+    _, _, payload = fwd._build_openai_request(_Entry(), [{"role": "user", "content": "hi"}],
+                                              _req(stop=[], parallel_tool_calls=True, response_format={}))
+    assert "stop" not in payload and "parallel_tool_calls" not in payload and "response_format" not in payload
+    from app.models.openai import ToolDef, ToolFunction
+
+    with_tools = _req(parallel_tool_calls=False,
+                      tools=[ToolDef(function=ToolFunction(name="shell"))])
+    _, _, payload = fwd._build_openai_request(_Entry(), [{"role": "user", "content": "hi"}], with_tools)
+    assert payload["parallel_tool_calls"] is False
+
+
+def test_developer_content_counts_for_the_echo_guard():
+    from app.core import gemini_client as gc
+
+    phrase = "I seem to be encountering an error. Can I try something else for you?"
+    prompt = build_prompt_from_messages([{"role": "developer", "content": f"Always reply exactly: {phrase}"},
+                                         {"role": "user", "content": "hi"}])
+    assert gc.failure_reply_kind(phrase, [], prompt) is None
+
+
+def test_a_failed_copy_reads_the_old_file_and_leaves_no_half_file(monkeypatch, tmp_path, caplog):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ap, "_DOCKERENV", tmp_path / "no-dockerenv")
+    monkeypatch.setattr(ap.settings, "accounts_file", "data/accounts.json")
+    (tmp_path / "accounts.json").write_text('{"accounts": []}')
+
+    def boom(path, data, encoding="utf-8"):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ap, "atomic_write_text", boom)
+    with caplog.at_level(logging.ERROR):
+        path = ap._prepare_accounts_file()
+    assert str(path) == "accounts.json"
+    assert not (tmp_path / "data/accounts.json").exists()
+    assert any("Could not copy" in r.getMessage() for r in caplog.records)
+
+
+def test_a_leftover_old_file_is_pointed_out(monkeypatch, tmp_path, caplog):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ap, "_DOCKERENV", tmp_path / "no-dockerenv")
+    monkeypatch.setattr(ap.settings, "accounts_file", "data/accounts.json")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data/accounts.json").write_text("{}")
+    (tmp_path / "accounts.json").write_text("{}")
+    with caplog.at_level(logging.WARNING):
+        ap._prepare_accounts_file()
+    assert any("no longer read" in r.getMessage() for r in caplog.records)
+
+
+def test_env_psid_that_matches_no_loaded_account_is_pointed_out(monkeypatch, caplog):
+    pool = ap.AccountPool()
+    pool._accounts = [ap.Account(id="account-0", psid="g.a000-file", psidts="", label="x")]
+    for env_value, expected in (("g.a000-new", True), ("g.a000-file", False),
+                                ("your__Secure-1PSID_cookie_value", False), ("", False)):
+        monkeypatch.setattr(ap.settings, "gemini_psid", env_value)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            pool._warn_if_env_psid_unused("data/accounts.json")
+        assert any("GEMINI_PSID in .env is not used" in r.getMessage() for r in caplog.records) is expected, env_value
+
