@@ -525,8 +525,9 @@ async def chat_completions(req: ChatRequest, request: Request):
                     tools_raw = [t.model_dump() for t in req.tools]
                     prompt = build_tool_prompt(prompt, tools_raw, req.tool_choice)
                 try:
+                    # 新开会话：历史里的附件（图片 / 文件）也要一起发（真流式 / buffered 同口径）
                     result = await generate_with_thinking_fallback(
-                        gemini_client, prompt, resolved_model,
+                        gemini_client, prompt, resolved_model, "", attachments,
                         gem_id=gem_id, account_id=gem_account_id,
                         extended_thinking=_full_history_thinking(err, extended_thinking))
                     gemini_conv_id = ""

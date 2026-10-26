@@ -540,6 +540,37 @@ def test_google_rejecting_the_resume_retries_with_the_full_history(wired):
     assert json.loads(conv.gemini_conv_id) == served.triple(served._turn)
 
 
+def test_the_nonstream_full_history_retry_keeps_the_attachments(wired, monkeypatch):
+    """「续接失败 → 改发完整历史」是新开会话：历史里的图片也得一起发过去。非流式这一步过去不带
+    attachments（真流式 / buffered 都带），新会话里看不到用户发过的图。"""
+    from app.utils.prompt import extract_attachments
+
+    w = wired
+    first, idx = _first_turn(w)
+    first.reject_resume = HTTPStatusError(400, "conversation not found")
+    seen = []
+    real_generate = w.pool.generate
+
+    async def recording_generate(*a, **k):
+        seen.append({"conv": a[2] if len(a) > 2 else k.get("conversation_id", ""),
+                     "attachments": a[3] if len(a) > 3 else k.get("attachments")})
+        return await real_generate(*a, **k)
+
+    monkeypatch.setattr(w.pool, "generate", recording_generate)
+    with_image = {"role": "user", "content": [
+        {"type": "text", "text": "u1"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+    ]}
+    messages = [with_image, A1, U2]
+
+    _chat(w, messages)
+
+    fresh = [c for c in seen if not c["conv"]]
+    assert fresh, seen
+    assert fresh[-1]["attachments"] == extract_attachments(messages) != [], \
+        "完整历史重试把历史里的图片丢了"
+
+
 @pytest.mark.parametrize("stored", ["garbage", "gemini-conv-1", "[1, 2]"])
 def test_bad_stored_metadata_resends_the_full_history(wired, stored, caplog):
     w = wired
