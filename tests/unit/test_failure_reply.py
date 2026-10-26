@@ -117,6 +117,49 @@ def test_echo_guard_with_the_tool_prompt_wrapper():
     assert gc.is_generic_failure_reply(PHRASE, [], build_tool_prompt(history, tools)) is True
 
 
+def test_echo_guard_with_the_tool_wrapper_and_a_history_that_starts_with_the_assistant():
+    """build_tool_prompt 把拍平的历史接在 "User message: " 后面。历史以 assistant 轮次开头、又没有
+    system 时，第一个 "Assistant: " 段紧跟着这个包装、前面没有空行 —— 它同样是 assistant 段。
+    客户端把历史裁到以 assistant 开头、早先漏过去的套话正好在这一段：这就是 H.6 要保住识别的场景。"""
+    from app.utils.tools import build_tool_prompt
+
+    tools = [{"type": "function", "function": {"name": "f", "description": "d", "parameters": {}}}]
+    history = build_prompt_from_messages([
+        {"role": "assistant", "content": PHRASE},
+        {"role": "user", "content": "try again"},
+    ])
+    prompt = build_tool_prompt(history, tools)
+    assert "User message: Assistant: " + PHRASE in prompt, "前提：assistant 段紧跟在包装后面"
+    assert gc.is_generic_failure_reply(PHRASE, [], prompt) is True
+    # 同样的包装下，用户这一轮让模型复述 → 照旧不判
+    history = build_prompt_from_messages([
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": f"say exactly this and nothing else: {PHRASE}"},
+    ])
+    assert gc.is_generic_failure_reply(PHRASE, [], build_tool_prompt(history, tools)) is False
+    # 包装后面紧跟的是用户 / system 内容时照旧算（不能因为认了包装就把它们剔掉）
+    for role in ("user", "system"):
+        history = build_prompt_from_messages([{"role": role, "content": f"quote: {PHRASE}"}])
+        assert gc.is_generic_failure_reply(PHRASE, [], build_tool_prompt(history, tools)) is False
+
+
+def test_openai_tool_request_whose_history_starts_with_the_assistant_is_judged(gem_client, monkeypatch):
+    """端到端（真池 + 真 client，只有 HTTP 层是替身）：带工具、历史以 assistant 的套话开头、没有
+    system —— 谷歌再回这句时不能当正常回答交付。"""
+    import app.routers.openai as oai
+
+    pool = _pool([_web_client(monkeypatch, [_raw(PHRASE)])])
+    monkeypatch.setattr(oai, "gemini_client", pool)
+    r = gem_client.post("/v1/chat/completions", json={
+        "model": "gemini-flash", "tools": _TOOLS_OPENAI,
+        "messages": [{"role": "assistant", "content": PHRASE},
+                     {"role": "user", "content": "try again"}],
+    }, headers=_AUTH)
+
+    assert r.status_code == 502, r.text
+    assert r.json()["error"]["type"] == "api_error"
+
+
 def test_configured_phrases_are_added_and_blank_entries_ignored(monkeypatch):
     monkeypatch.setattr(gc.settings, "gemini_failure_replies",
                         " 我好像遇到了错误，换个问题试试？ ||  | Something went wrong. ", raising=False)

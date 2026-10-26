@@ -839,8 +839,10 @@ _BUILTIN_FAILURE_REPLIES = (
 )
 _WHITESPACE_RE = re.compile(r"\s+")
 # build_prompt_from_messages 拍平历史时每一段的角色前缀（段与段之间用空行隔开）。回声保护要把
-# assistant 段剔掉，见 _non_assistant_prompt。
-_PROMPT_ROLE_RE = re.compile(r"(?:\A|\n\n)(System|Human|Assistant|Tool result): ")
+# assistant 段剔掉，见 _non_assistant_prompt。带工具的请求外面还包了一层 build_tool_prompt
+# （"<工具说明>\n\nUser message: <拍平的历史>"）：历史的第一段紧跟在 "User message: " 后面、前面
+# 没有空行，所以它也算段首 —— 否则历史以 assistant 轮次开头（又没有 system）时，那一段剔不掉。
+_PROMPT_ROLE_RE = re.compile(r"(?:\A|\n\n|User message: )(System|Human|Assistant|Tool result): ")
 
 
 def _normalize_reply(text) -> str:
@@ -873,7 +875,10 @@ def _non_assistant_prompt(prompt: str) -> str:
     build_prompt_from_messages（段首是 "System: " / "Human: " / "Assistant: " / "Tool result: "，
     段间空行），在这里剔一处就够了；往下传要改池与 client 两层的签名，所有测试替身跟着改，侵入大
     得多。续接路径只发最新一条用户消息、没有角色前缀，原样全算用户内容，结论与完整历史一致。
-    已知的偏差只在一侧：用户正文里自己写了 "\\n\\nAssistant: <套话>" 时那一段也会被剔掉。
+    带工具的请求在拍平的历史外面包了 build_tool_prompt 的 "User message: "，它后面紧跟的角色前缀
+    同样是段首（见 _PROMPT_ROLE_RE）。
+    已知的偏差只在一侧：用户正文里自己写了 "\\n\\nAssistant: <套话>"（或以 "Assistant: " 开头）时
+    那一段也会被剔掉。
     """
     if "Assistant: " not in prompt:
         return prompt
