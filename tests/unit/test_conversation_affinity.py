@@ -534,3 +534,106 @@ def test_buffered_full_history_retry_keeps_the_tool_definitions(wired):
              if c["conv"] == "" and "Human: u1" in c["prompt"] and "Human: u2" in c["prompt"]]
     assert fresh, [u.calls for u in w.ups]
     assert all("get_weather" in c["prompt"] for c in fresh), fresh
+
+
+# ---------------------------------------------------------------------------
+# 第三方兜底答了这一轮：续接点作废
+# ---------------------------------------------------------------------------
+# 续接真正生效之后，存储里的 [cid, rid, rcid] 必须与客户端的历史同步。某一轮由第三方兜底
+# 回答（超时现在也会走兜底）时，Gemini 那边的会话根本没见过这一轮的问答；下一轮若还从旧的
+# 续接点只发最后一句，这一轮就静默丢了。所以兜底一旦答了，就清掉续接点，下一轮发完整历史。
+# 报错（没有兜底）不清：客户端多半原样重试这一轮，从原来的续接点接着走正好。
+
+U3 = {"role": "user", "content": "u3"}
+FB_ANSWER = "fallback answer"
+TURN3 = [U1, A1, U2, {"role": "assistant", "content": FB_ANSWER}, U3]
+TURN3_HISTORY = f"Human: u1\n\nAssistant: a1\n\nHuman: u2\n\nAssistant: {FB_ANSWER}\n\nHuman: u3"
+
+
+def _fallback_data():
+    return {"id": "chatcmpl-fb", "object": "chat.completion", "created": 0, "model": "tp",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": FB_ANSWER}}]}
+
+
+@pytest.fixture
+def with_fallback(wired, monkeypatch):
+    from app.routers import openai as oai
+
+    async def fake_fallback(request, req, messages_raw, exclude_model=""):
+        return _fallback_data()
+
+    async def fake_fallback_stream(request, req, messages_raw, exclude_model, completion_id, model_name):
+        yield 'data: {"choices": [{"delta": {"content": "fallback answer"}}]}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(oai, "_fallback_result", fake_fallback)
+    monkeypatch.setattr(oai, "_maybe_fallback_stream", fake_fallback_stream)
+    return wired
+
+
+def _fail_resume_with(upstream, exc):
+    upstream.reject_resume = exc
+
+
+def _call_marks(w):
+    return [len(u.calls) for u in w.ups]
+
+
+def _calls_since(w, marks):
+    return [c for u, m in zip(w.ups, marks) for c in u.calls[m:]]
+
+
+@pytest.mark.parametrize("mode", ["nonstream", "stream", "buffered"])
+def test_a_turn_answered_by_the_fallback_invalidates_the_resume_point(with_fallback, mode):
+    from app.core.gemini_client import GenerationTimedOut
+
+    w = with_fallback
+    first, idx = _first_turn(w)
+    _fail_resume_with(first, GenerationTimedOut(120, 120.5, TimeoutError()))
+
+    kw = {"stream": mode != "nonstream", "tools": _TOOLS if mode == "buffered" else None}
+    body = _chat(w, [U1, A1, U2], **kw)
+    assert FB_ANSWER in json.dumps(body), body
+
+    conv = _stored(w)
+    assert (conv.gemini_conv_id, conv.account_id) == ("", ""), "兜底答了这一轮，续接点还留着"
+
+    # 下一轮：发完整历史（含兜底那一轮的问答）、不带续接参数
+    first.reject_resume = None
+    marks = _call_marks(w)
+    _chat(w, TURN3)
+    new_calls = _calls_since(w, marks)
+    assert [(c["prompt"], c["conv"]) for c in new_calls] == [(TURN3_HISTORY, "")]
+
+
+def test_an_empty_gemini_answer_replaced_by_the_fallback_invalidates_the_resume_point(with_fallback):
+    w = with_fallback
+    first, idx = _first_turn(w)
+
+    async def empty(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                    extended_thinking=False):
+        first.calls.append({"prompt": prompt, "conv": conversation_id})
+        return {"text": "", "images": [], "thoughts": "",
+                "conversation_id": json.dumps(first.triple(9))}
+
+    first.generate = empty
+    _chat(w, [U1, A1, U2])
+    assert (_stored(w).gemini_conv_id, _stored(w).account_id) == ("", "")
+
+
+def test_an_error_without_fallback_keeps_the_resume_point(wired):
+    """没有兜底、回了错误：续接点保留（客户端重试同一轮时从原来的续接点接着走）。"""
+    from app.core.gemini_client import GenerationTimedOut
+
+    w = wired
+    first, idx = _first_turn(w)
+    before = _stored(w).gemini_conv_id
+    first.reject_resume = GenerationTimedOut(120, 120.5, TimeoutError())
+
+    r = w.http.post("/v1/chat/completions", json={
+        "model": "gemini-pro", "messages": [U1, A1, U2], "conversation_id": "t1",
+    }, headers=_AUTH)
+    assert r.status_code == 504, r.text
+    assert _stored(w).gemini_conv_id == before
+    assert _stored(w).account_id == f"account-{idx}"

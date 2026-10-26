@@ -199,6 +199,32 @@ async def _maybe_fallback_stream(request, req: ChatRequest, messages_raw: list, 
         yield sse
 
 
+async def _forget_resume_point(conv) -> None:
+    """这一轮是第三方兜底答的：清掉会话的续接点，下一轮发完整历史、新开会话。
+
+    续接点（[cid, rid, rcid] + 账号）只记 Gemini 那条会话答到了哪一轮。兜底答的这一轮 Gemini
+    那边根本没见过；下一轮若还从旧的续接点只发最后一句，这一轮的问答就静默丢了。
+    报错（没有兜底）不清：客户端多半原样重试这一轮，从原来的续接点接着走正好。
+    """
+    if conv is None or not getattr(conv, "gemini_conv_id", ""):
+        return
+    conv.gemini_conv_id = ""
+    conv.account_id = ""
+    await conversation_store.update(conv)
+
+
+async def _fallback_stream(conv, request, req: ChatRequest, messages_raw: list, exclude_model: str,
+                           completion_id: str, model_name: str) -> AsyncGenerator[str, None]:
+    """流式路径的兜底（_maybe_fallback_stream）；兜到了就清掉会话的续接点。"""
+    emitted = False
+    async for chunk in _maybe_fallback_stream(request, req, messages_raw, exclude_model,
+                                              completion_id, model_name):
+        emitted = True
+        yield chunk
+    if emitted:
+        await _forget_resume_point(conv)
+
+
 def _thirdparty_ok(resp) -> bool:
     """非流式第三方 JSONResponse 成功判定：状态<400 且 body 非空（有 content 或 tool_calls）。"""
     if not isinstance(resp, JSONResponse):
@@ -327,6 +353,13 @@ async def chat_completions(req: ChatRequest, request: Request):
     # 否则 = Gem 绑定的账号，没有就不钉）。完整历史重试一律只钉 Gem 的账号（gem_account_id）。
     gemini_conv_id, account_id = _resume_target(conv, gem_account_id)
 
+    async def _fallback():
+        """第三方兜底；兜到了就清掉会话的续接点（见 _forget_resume_point）。"""
+        fb = await _fallback_result(request, req, messages_raw, resolved_model)
+        if fb is not None:
+            await _forget_resume_point(conv)
+        return fb
+
     # 如果有有效的 gemini_conv_id，只发最新一条用户消息
     if gemini_conv_id and messages_raw:
         last_user_msg = ""
@@ -416,7 +449,7 @@ async def chat_completions(req: ChatRequest, request: Request):
                     gemini_conv_id = ""
                     account_id = gem_account_id
                 except Exception:
-                    fb = await _fallback_result(request, req, messages_raw, resolved_model)
+                    fb = await _fallback()
                     if fb is not None:
                         return JSONResponse(content=fb)
                     status, err_type, retry_after = classify_error(err)
@@ -427,7 +460,7 @@ async def chat_completions(req: ChatRequest, request: Request):
                         headers=headers,
                     )
             else:
-                fb = await _fallback_result(request, req, messages_raw, resolved_model)
+                fb = await _fallback()
                 if fb is not None:
                     return JSONResponse(content=fb)
                 status, err_type, retry_after = classify_error(err)
@@ -440,7 +473,7 @@ async def chat_completions(req: ChatRequest, request: Request):
 
     # Gemini 返回空响应（无文本、无图）→ 第三方兜底（开关关闭/无候选时返回 None，零回归）
     if is_empty_result(result):
-        fb = await _fallback_result(request, req, messages_raw, resolved_model)
+        fb = await _fallback()
         if fb is not None:
             return JSONResponse(content=fb)
 
@@ -688,7 +721,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                 # 尚未流出任何内容（只发过 role 首帧）→ 可安全改用第三方兜底（流式）
                 if not streamed_any:
                     emitted = False
-                    async for chunk in _maybe_fallback_stream(request, req, messages_raw, model, completion_id, model_name):
+                    async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
                         emitted = True
                         yield chunk
                     if emitted:
@@ -707,7 +740,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
         else:
             if not streamed_any:
                 emitted = False
-                async for chunk in _maybe_fallback_stream(request, req, messages_raw, model, completion_id, model_name):
+                async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
                     emitted = True
                     yield chunk
                 if emitted:
@@ -718,7 +751,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
     # Gemini 真流式整条为空（只发过 role 首帧，未流出任何内容）→ 第三方兜底
     if not streamed_any and not (full_text or "").strip() and not final_images:
         emitted = False
-        async for chunk in _maybe_fallback_stream(request, req, messages_raw, model, completion_id, model_name):
+        async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
             emitted = True
             yield chunk
         if emitted:
@@ -827,7 +860,7 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
                 result = retry_task.result()
             except Exception as e2:
                 emitted = False
-                async for chunk in _maybe_fallback_stream(request, req, messages_raw, model, completion_id, model_name):
+                async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
                     emitted = True
                     yield chunk
                 if emitted:
@@ -838,7 +871,7 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
             prompt, gemini_conv_id, account_id = full_prompt, "", gem_account_id
         else:
             emitted = False
-            async for chunk in _maybe_fallback_stream(request, req, messages_raw, model, completion_id, model_name):
+            async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
                 emitted = True
                 yield chunk
             if emitted:
@@ -849,7 +882,7 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
     # Gemini 返回空响应（无文本、无图）→ 第三方兜底（此前只发过 role 首帧 + keepalive，可安全改流）
     if is_empty_result(result):
         emitted = False
-        async for chunk in _maybe_fallback_stream(request, req, messages_raw, model, completion_id, model_name):
+        async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
             emitted = True
             yield chunk
         if emitted:
