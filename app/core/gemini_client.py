@@ -1518,6 +1518,7 @@ def _rand_reqid() -> int:
 class GeminiWebClient:
     # 类级默认值：测试替身常用 __new__ 绕开 __init__ 造实例，刷新循环 / 状态导出照样读得到它。
     _auth_expired = False
+    _rotation_rejected_for: tuple | None = None
 
     def __init__(self, psid: str | None = None, psidts: str | None = None):
         self._psid = psid or settings.gemini_psid
@@ -1539,6 +1540,8 @@ class GeminiWebClient:
         # 会话已被谷歌打回登录页（见 auth_expired）。与 _healthy 分开记：不健康的原因很多
         # （网络抖动、5xx、页面解析失败……），只有这一种必须换 cookie 才能恢复。
         self._auth_expired = False
+        # 谷歌对哪一份 cookie（PSID, PSIDTS）的 RotateCookies 明确回过 401（见 _rotation_futile）。
+        self._rotation_rejected_for: tuple | None = None
         self._refresh_task: asyncio.Task | None = None
         self._health_check_task: asyncio.Task | None = None
         self._http: AsyncSession | None = None
@@ -1670,8 +1673,9 @@ class GeminiWebClient:
         RotateCookies 回 401 本身不置位 —— 以随后的 token 获取结果为准。
 
         用途：①AccountPool.get_status 把「池里还标着 ACTIVE、其实会话已死」的账号对外报成
-        expired（浏览器保活插件只认 expired）；②置位期间 _auto_refresh_loop 不再白敲
-        RotateCookies，只探测 token。
+        expired（浏览器保活插件只认 expired）；②置位、且谷歌已对这同一份 cookie 回过 401 之后，
+        不再白敲 RotateCookies（见 _rotation_futile）。光置位不停轮换：PSIDTS 过期的会话同样会被
+        打回登录页，而它往往一次轮换就能救回来。
         """
         return self._auth_expired
 
@@ -1831,10 +1835,40 @@ class GeminiWebClient:
             pass
 
     def _adopt_session_token(self, token: str, body: str) -> None:
-        """拿到了 SNlM0e：换上新 token。能拿到 token 就说明会话没被打回登录页。"""
+        """拿到了 SNlM0e：换上新 token。能拿到 token 就说明会话没被打回登录页。
+
+        上一次失效期间记下的「谷歌拒绝过这份 cookie」也一并作废：会话活过来了，下一次再被
+        打回登录页时照旧先试一次轮换（见 _rotation_futile）。
+        """
         self._session_token = token
         self._push_id = _extract_push_id(body)
         self._auth_expired = False
+        self._rotation_rejected_for = None
+
+    @staticmethod
+    def _session_cookie_pair(cookies: dict) -> tuple:
+        """一份 cookie 的身份：(__Secure-1PSID, __Secure-1PSIDTS)。只在内存里比对，不落盘、不进日志。"""
+        return (cookies.get("__Secure-1PSID"), cookies.get("__Secure-1PSIDTS"))
+
+    def _rotation_futile(self) -> bool:
+        """这次轮换注定白敲：会话已被打回登录页（auth_expired），且谷歌已经对**这同一份** cookie
+        （按 PSID + PSIDTS 比对）的 RotateCookies 明确回过 401。
+
+        两个条件缺一不可：
+        - 光 auth_expired 不够：PSIDTS 过期的会话同样会被打回登录页，而它往往一次轮换就能救回来
+          （issue #11 的自愈）。复审复现过死锁：一置位就永久停轮换，启动那一次就地轮换碰上网络
+          抖动，之后就再也救不回来。
+        - 光 401 不够：401 本身不说明会话死了（规格：以随后的 token 获取结果为准）。
+        cookie 一变（换上新 cookie、某个响应 Set-Cookie 下发了新 PSIDTS）旧记录就不再命中，给新
+        cookie 一次机会；拿到 token（_adopt_session_token）、reload 成功都会清掉它。
+        """
+        rejected = self._rotation_rejected_for
+        if not self._auth_expired or rejected is None:
+            return False
+        try:
+            return self._session_cookie_pair(self._get_cookies()) == rejected
+        except Exception:
+            return False
 
     def _detect_login_redirect(self, body: str) -> bool:
         """/app 页面被谷歌打回了登录页 → 置 auth_expired 并返回 True。
@@ -1905,7 +1939,7 @@ class GeminiWebClient:
             self._session_token = ""
 
     async def _rotate_cookies(self) -> RotationResult:
-        # 浏览器保活的账号服务端一律不轮换。这是**唯一**的闸口：刷新循环、reload 兜底、启动重试、
+        # 浏览器保活的账号服务端一律不轮换。闸口只设在这一处：刷新循环、reload 兜底、启动重试、
         # 自愈都经过这里，不必逐个改调用方。浏览器和服务端共用同一个谷歌会话，两边各自调
         # RotateCookies，后一方拿着被对方换掉的旧 PSIDTS 去换就 401、整个会话被踢下线
         # （见 app/core/keepalive_modes.py）。不发任何网络请求（轮换抖动也免了），按「现有 cookie
@@ -1913,6 +1947,15 @@ class GeminiWebClient:
         if self.keepalive_mode == keepalive_modes.MODE_BROWSER:
             logger.debug("RotateCookies skipped: cookies are kept alive by the browser plugin")
             return RotationResult.STILL_VALID
+        # 第二道闸口，同样对所有调用方生效（刷新循环、reload 兜底、池 / generate 的自愈）：会话已被
+        # 打回登录页、谷歌又已经对这同一份 cookie 回过 401，再敲也是 401（线上一个死账号 37 小时敲了
+        # 220+ 次），白敲谷歌还平添风控面。按失败返回：调用方不该接着当成「cookie 仍有效」去重取 token。
+        if self._rotation_futile():
+            logger.info(
+                "RotateCookies skipped: Google already rejected these cookies (401) and the "
+                "session is redirected to the login page; waiting for fresh cookies"
+            )
+            return RotationResult.FAILED
         try:
             await apply_jitter("cookie_rotate")
             await self._ensure_session_current()
@@ -1932,9 +1975,14 @@ class GeminiWebClient:
             )
             if resp.status_code != 200:
                 logger.warning(f"RotateCookies returned {resp.status_code}")
+                if resp.status_code == 401:
+                    # 谷歌明确拒绝了这份 cookie。只记下来、不置 auth_expired（以随后的 token 获取
+                    # 结果为准）；两者同时成立时 _rotation_futile 才会挡住后续的轮换。
+                    self._rotation_rejected_for = self._session_cookie_pair(cookies)
                 live_metrics.record_rotation(False)
                 return RotationResult.FAILED
 
+            self._rotation_rejected_for = None
             self._cookie_jar.update_from_response(resp)
 
             new_ts = resp.cookies.get("__Secure-1PSIDTS")
@@ -2416,13 +2464,15 @@ class GeminiWebClient:
         while True:
             await asyncio.sleep(interval * random_delay_factor())
             try:
-                if self.auth_expired:
-                    # 会话已被打回登录页：死会话换 PSIDTS 也是 401（线上一个死账号 37 小时敲了
-                    # 220+ 次），白敲谷歌还平添风控面。只做下面的 token 探测：瞬时故障能自己
-                    # 恢复；换上好 cookie（reload_cookies 成功）也会清掉判定，下一轮恢复轮换。
+                if self._rotation_futile():
+                    # 会话已被打回登录页，且谷歌已对这同一份 cookie 回过 401：死会话换 PSIDTS 也是
+                    # 401（线上一个死账号 37 小时敲了 220+ 次），白敲谷歌还平添风控面。只做下面的
+                    # token 探测：瞬时故障能自己恢复；换上好 cookie（reload_cookies 成功）也会清掉
+                    # 判定，下一轮恢复轮换。只是被打回登录页、谷歌还没拒绝过的会话照旧轮换（见
+                    # _rotation_futile：PSIDTS 过期的会话往往一次轮换就能救回来）。
                     logger.info(
-                        "Auto-refresh: session expired (login redirect); "
-                        "skipping RotateCookies, probing the token only"
+                        "Auto-refresh: session expired (login redirect) and Google already "
+                        "rejected these cookies; skipping RotateCookies, probing the token only"
                     )
                 else:
                     rotated = await self._rotate_cookies()
@@ -3087,10 +3137,11 @@ class GeminiWebClient:
         只还原 _healthy 是不够的：函数开头会清空 _session_token 并把新 Cookie 写进 jar，
         一个"健康但没有 SNlM0e token / 拿着别人 Cookie"的 client 会被池照常派活、然后每个
         请求都失败，3 次就被标 EXPIRED —— 比不还原更糟。所以整组状态一起回滚。
-        auth_expired 同理：失败的 reload 拿死 cookie 取 token 时会把它置上，不还原的话一个
-        好好的会话会被当成「已被打回登录页」，刷新循环从此不再给它轮换。
+        auth_expired 与「谷歌拒绝过哪份 cookie」同理：失败的 reload 拿死 cookie 取 token、兜底
+        轮换时会改写它们，不还原的话一个好好的会话会被当成「已被打回登录页」，或者旧 cookie 的
+        拒绝记录被新 cookie 的顶掉、刷新循环拿旧 cookie 再白敲一次 401。
         """
-        psid, psidts, session_token, was_healthy, auth_expired = prev
+        psid, psidts, session_token, was_healthy, auth_expired, rotation_rejected_for = prev
         if not was_healthy:
             return
         self._psid = psid
@@ -3098,6 +3149,7 @@ class GeminiWebClient:
         self._session_token = session_token
         self._healthy = True
         self._auth_expired = auth_expired
+        self._rotation_rejected_for = rotation_rejected_for
         if self._cookie_jar is not None:
             self._cookie_jar.set("__Secure-1PSID", psid)
             if psidts:
@@ -3109,7 +3161,10 @@ class GeminiWebClient:
         # 要么原样不动"：旧实现在任何网络操作之前就无条件 self._healthy = False，失败返回
         # 路径却从不恢复，于是一次失败的刷新（面板误填 cookie、Google 临时 5xx、多账号池里
         # /reload-cookies 拿同一份 cookie 挨个试）就把一个本来健康的 client 永久拉黑。
-        prev_state = (self._psid, self._psidts, self._session_token, self._healthy, self._auth_expired)
+        prev_state = (
+            self._psid, self._psidts, self._session_token, self._healthy, self._auth_expired,
+            self._rotation_rejected_for,
+        )
 
         if psid:
             self._psid = psid.strip().strip('"').strip("'").rstrip(";")
@@ -3134,6 +3189,7 @@ class GeminiWebClient:
             if self._session_token:
                 self._healthy = True
                 self._auth_expired = False
+                self._rotation_rejected_for = None
                 self._ensure_refresh_task()
                 await self._send_heartbeat()  # 拉取账号真实可用模型
                 logger.info("Cookies reloaded successfully")
@@ -3147,6 +3203,7 @@ class GeminiWebClient:
                 if self._session_token:
                     self._healthy = True
                     self._auth_expired = False
+                    self._rotation_rejected_for = None
                     self._ensure_refresh_task()
                     logger.info("Cookies reloaded after rotation")
                     return {"success": True}
