@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from app.core.gemini_client import (
     GeminiFailureReply, GeminiRefusalReply, GeminiWebClient, GenerationStalled, GenerationTimedOut,
-    HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable,
+    HTTPStatusError, ModelUnavailable, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable,
     is_timeout_error, model_family,
 )
 from app.core import keepalive_modes
@@ -1192,6 +1192,14 @@ class AccountPool:
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
                 # 换号分支与 _release_failed 分支都要记（规格 I.1），所以记在分叉之前
                 self._breaker_failure(model, prompt, conversation_id, attempt_started, e)
+                if isinstance(e, ModelUnavailable):
+                    # 这个账号没有这个模型：不是账号的错，不计失败、不冷却，换下一个账号；
+                    # 一个都没有才把它（400）抛给调用方
+                    last_err = e
+                    tried.add(account.id)
+                    await self.release_disconnected(account)
+                    released = True
+                    continue
                 if _is_retryable(e):
                     # 可重试：5xx 冷却该账号、401/403 标 expired，换下一个账号重试
                     last_err = e
@@ -1285,7 +1293,14 @@ class AccountPool:
                     # 换号分支与 _release_failed 分支都要记（规格 I.1）；已经记过成功的不再记失败
                     self._breaker_failure(model, prompt, conversation_id, attempt_started, e)
                 # 只有「还没吐任何内容」+「可重试」+「还有别的账号」才 failover
-                if _is_retryable(e) and not emitted_any:
+                if isinstance(e, ModelUnavailable) and not emitted_any:
+                    # 这个账号没有这个模型：中性释放、换号（同非流式）
+                    last_err = e
+                    tried.add(account.id)
+                    await self.release_disconnected(account)
+                    released = True
+                    failover = True
+                elif _is_retryable(e) and not emitted_any:
                     last_err = e
                     tried.add(account.id)
                     await self.release(account, success=False, cooldown=_is_5xx(e), error=_error_summary(e))

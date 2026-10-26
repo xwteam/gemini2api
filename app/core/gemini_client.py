@@ -162,6 +162,15 @@ class GenerationTimedOut(TimeoutError):
         )
 
 
+class ModelUnavailable(ValueError):
+    """这个账号没有请求的模型（混合账号池：有的号有 Argon、有的没有之类）。
+
+    ValueError 的子类：所有账号都没有时，各协议照旧按 ValueError 回 400。账号池遇到它不计失败、
+    不冷却，直接换下一个账号（见 account_pool）—— 过去它一律不可重试，请求落到没有该模型的账号上
+    就直接 400，哪怕池里别的账号有。
+    """
+
+
 class GenerationStalled(TimeoutError):
     """真流式在族预算内没有进展，我们把它掐断了（v1.6.46 规格 B）。
 
@@ -3013,7 +3022,7 @@ class GeminiWebClient:
 
         resolved = _resolve_model(model, self._family_model)
         if resolved not in self._model_table():
-            raise ValueError(
+            raise ModelUnavailable(
                 f"Model '{model}' unavailable. "
                 f"Options: {', '.join(self._available_models or PUBLIC_MODELS)}"
             )
@@ -3098,7 +3107,7 @@ class GeminiWebClient:
 
         resolved = _resolve_model(model, self._family_model)
         if resolved not in self._model_table():
-            raise ValueError(
+            raise ModelUnavailable(
                 f"Model '{model}' unavailable. "
                 f"Options: {', '.join(self._available_models or PUBLIC_MODELS)}"
             )
@@ -3408,11 +3417,7 @@ class GeminiWebClient:
         # 共用同一个 _restore_body —— 两条路径对同一段正文必须逐字节一致。
         text, thoughts = _restore_body(text, canvases, thoughts)
         if images:
-            cookies = self._get_cookies()
-            for img in images:
-                entry = await self._build_image_entry(img, cookies)
-                if entry:
-                    result_images.append(entry)
+            result_images = await self._build_image_entries(images, self._get_cookies())
             # 真的有图时，正文里的占位 URL 一定无意义（真图在 images 里）
             text = _IMAGE_GEN_PLACEHOLDER_RE.sub("", text).strip()
         else:
@@ -3441,7 +3446,7 @@ class GeminiWebClient:
         # 模型头**发出，Google 用账号默认模型回答，客户端拿到的是另一个模型的答案却
         # 毫无感知。宁可 400，不要静默换模型。
         if resolved not in self._model_table():
-            raise ValueError(
+            raise ModelUnavailable(
                 f"Model '{model}' unavailable. "
                 f"Options: {', '.join(self._available_models or PUBLIC_MODELS)}"
             )
@@ -3508,15 +3513,21 @@ class GeminiWebClient:
         # AI 生成图片：lh3 URL 客户端直接访问会 403，服务端带 cookie 代下载，
         # 同时存盘（供对话接口返回可渲染 URL）+ 转 base64（供 images/generations 接口）
         if result.get("images"):
-            cookies = self._get_cookies()
-            downloaded = []
-            for img in result["images"]:
-                entry = await self._build_image_entry(img, cookies)
-                if entry:
-                    downloaded.append(entry)
-            result["images"] = downloaded
+            result["images"] = await self._build_image_entries(result["images"], self._get_cookies())
 
         return result
+
+    async def _build_image_entries(self, images: list, cookies: dict) -> list:
+        """多张生成图并发下载（最多 4 张同时），结果保持原顺序、去掉失败项。过去逐张串行，
+        一次出 4 张图要等 4 个下载时间之和。"""
+        sem = asyncio.Semaphore(4)
+
+        async def one(img):
+            async with sem:
+                return await self._build_image_entry(img, cookies)
+
+        entries = await asyncio.gather(*(one(img) for img in images))
+        return [e for e in entries if e]
 
     async def _build_image_entry(self, img: dict, cookies: dict) -> dict | None:
         """下载生成图、存盘并返回 entry；失败时回退占位提示，不静默丢图。"""

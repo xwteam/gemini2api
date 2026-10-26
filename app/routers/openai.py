@@ -502,6 +502,19 @@ async def list_models(request: Request):
     return ModelList(data=data)
 
 
+@router.get("/models/{model_id:path}")
+async def retrieve_model(model_id: str, request: Request):
+    """OpenAI SDK 的 models.retrieve：与 /models 列表同一个口径（含白名单、访问密钥可见范围），
+    不在列表里就按 OpenAI 的格式回 404。"""
+    listed = await list_models(request)
+    for info in listed.data:
+        if info.id == model_id:
+            return info
+    return JSONResponse(status_code=404, content={"error": {
+        "message": f"The model '{model_id}' does not exist", "type": "invalid_request_error",
+        "param": None, "code": "model_not_found"}})
+
+
 @router.post("/chat/completions")
 @limiter.limit(dynamic_rate_limit, exempt_when=rate_limit_exempt)
 async def chat_completions(req: ChatRequest, request: Request):

@@ -90,11 +90,29 @@ async def _safe_remote_get(http, url: str):
     return None
 
 
+# 上传遇到网络错误 / 5xx 时再试的次数与间隔（4xx 是请求本身的问题，重试没用）。过去一次失败就把
+# 附件静默丢掉，模型看不到图却照样回答。
+UPLOAD_RETRIES = 1
+UPLOAD_RETRY_DELAY = 1.0
+
+
 async def upload_file(http, cookies: dict, base_headers: dict, push_id: str,
                       data: bytes, filename: str, mime: str) -> str | None:
     """上传单个文件，返回 Gemini 的文件标识符（形如 /contrib_service/ttl_1d/...）。
-    失败返回 None。
+    失败返回 None；网络错误 / 5xx 会先重试 UPLOAD_RETRIES 次。
     """
+    for attempt in range(UPLOAD_RETRIES + 1):
+        file_id, retryable = await _upload_once(http, cookies, push_id, data, filename, mime)
+        if file_id or not retryable or attempt >= UPLOAD_RETRIES:
+            return file_id
+        logger.warning(f"[upload] {filename} failed (transient), retrying in {UPLOAD_RETRY_DELAY:.0f}s")
+        await asyncio.sleep(UPLOAD_RETRY_DELAY)
+    return None
+
+
+async def _upload_once(http, cookies: dict, push_id: str, data: bytes, filename: str,
+                       mime: str) -> tuple[str | None, bool]:
+    """传一次：返回 (file_id 或 None, 失败是否值得重试)。"""
     # 极简 header（对齐 HanaokaYuzu/Gemini-API 实测可用的协议）：
     # 只要 Origin/Referer/X-Tenant-Id/Push-ID，不要任何 X-Goog-Upload-* 和指纹基础头，
     # 否则 Google 按 resumable 协议解析导致 "Multipart body does not contain 2 or 3 parts"
@@ -123,16 +141,16 @@ async def upload_file(http, cookies: dict, base_headers: dict, push_id: str,
         )
         if resp.status_code != 200:
             logger.error(f"[upload] {filename} returned {resp.status_code}: {resp.text[:160]}")
-            return None
+            return None, resp.status_code >= 500
         file_id = resp.text.strip()
         if not file_id:
             logger.error(f"[upload] {filename} empty response")
-            return None
+            return None, True
         logger.info(f"[upload] {filename} -> {file_id[:48]}")
-        return file_id
+        return file_id, False
     except Exception as e:
         logger.error(f"[upload] {filename} failed: {e}")
-        return None
+        return None, True
 
 
 async def upload_files(http, cookies: dict, base_headers: dict, push_id: str,
