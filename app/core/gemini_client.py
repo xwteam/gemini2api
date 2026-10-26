@@ -837,7 +837,34 @@ def _extract_bard_error(elem) -> "GeminiRejectionError | None":
 _BUILTIN_FAILURE_REPLIES = (
     "I seem to be encountering an error. Can I try something else for you?",
 )
+# 谷歌的「语言模型」类拒答套话（v1.6.47）：整段回答就是一句「我只是个语言模型、帮不了你」，不是回答。
+# 中转站会话记录里的真机样本（问题本身都很好答）：
+#   「由于程序代码的局限，我没法办到。」            北京 2026-10-26 20:43，gemini-flash 谷歌侧故障中，
+#                                                 问「用两个字回答：你好」，97 秒才回
+#   「我无法提供这方面的帮助，因为我只是一个语言模型。」 2026-08-14，gemini-flash，问「仔细思考:17是质数吗?」
+#   「我只是一个语言模型，无法提供这方面的帮助。」      2026-07-26，gemini-pro，问「9.9和9.11哪个大？请仔细思考再回答」
+# 英文是 Gemini（Bard）网页版流传最广的同族原句。处理与失败套话相同（换号 / 兜底 / 502），唯一区别是
+# **不计入模型熔断**（account_pool._breaker_counts）：它也可能是某个问题每次都会触发的真拒答，
+# 两个这样的请求不该把整个模型族熔断掉。
+_BUILTIN_REFUSAL_REPLIES = (
+    "由于程序代码的局限，我没法办到。",
+    "我无法提供这方面的帮助，因为我只是一个语言模型。",
+    "我只是一个语言模型，无法提供这方面的帮助。",
+    "I'm just a language model, so I can't help you with that.",
+    "I'm a language model and don't have the capacity to help with that.",
+    "I'm not able to help with that, as I'm only a language model.",
+    "I'm unable to help, as I am only a language model and don't have the ability to process and "
+    "understand that.",
+    "As a language model, I'm not able to assist you with that.",
+    "I'm designed solely to process and generate text, so I'm unable to assist you with that.",
+    "I'm a text-based AI and can't assist with that.",
+    "I'm a text-based AI, and that is outside of my capabilities.",
+)
+FAILURE_REPLY = "failure"
+REFUSAL_REPLY = "refusal"
 _WHITESPACE_RE = re.compile(r"\s+")
+# 弯引号按直引号比较（I’m / I'm 是同一句）
+_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
 # build_prompt_from_messages 拍平历史时每一段的角色前缀（段与段之间用空行隔开）。回声保护要把
 # assistant 段剔掉，见 _non_assistant_prompt。带工具的请求外面还包了一层 build_tool_prompt
 # （"<工具说明>\n\nUser message: <拍平的历史>"）：历史的第一段紧跟在 "User message: " 后面、前面
@@ -846,8 +873,8 @@ _PROMPT_ROLE_RE = re.compile(r"(?:\A|\n\n|User message: )(System|Human|Assistant
 
 
 def _normalize_reply(text) -> str:
-    """去首尾空白、内部连续空白压成一个空格、casefold —— 判定与扣住共用这一个口径。"""
-    return _WHITESPACE_RE.sub(" ", str(text or "").strip()).casefold()
+    """去首尾空白、内部连续空白压成一个空格、弯引号当直引号、casefold —— 判定与扣住共用这一个口径。"""
+    return _WHITESPACE_RE.sub(" ", str(text or "").strip()).translate(_QUOTES).casefold()
 
 
 def failure_reply_phrases() -> tuple[str, ...]:
@@ -863,6 +890,11 @@ def failure_reply_phrases() -> tuple[str, ...]:
         if norm and norm not in out:
             out.append(norm)
     return tuple(out)
+
+
+def refusal_reply_phrases() -> tuple[str, ...]:
+    """内置的「语言模型」拒答套话，规范化后去重（v1.6.47，见 _BUILTIN_REFUSAL_REPLIES）。"""
+    return tuple(dict.fromkeys(_normalize_reply(p) for p in _BUILTIN_REFUSAL_REPLIES))
 
 
 def _non_assistant_prompt(prompt: str) -> str:
@@ -895,8 +927,9 @@ def _non_assistant_prompt(prompt: str) -> str:
     return "".join(kept)
 
 
-def is_generic_failure_reply(text, images=None, prompt: str = "") -> bool:
-    """这一段正文是不是谷歌拿来代替回答的失败套话（非流式与流式共用的纯函数）。
+def failure_reply_kind(text, images=None, prompt: str = "") -> str | None:
+    """这一段正文是不是谷歌拿来代替回答的套话（非流式与流式共用的纯函数）：失败套话 → FAILURE_REPLY，
+    「语言模型」拒答套话 → REFUSAL_REPLY（v1.6.47，不计熔断），都不是 → None。
 
     - text 必须是**整段**正文（_restore_body / 占位串剥离之后的最终文本），规范化后**恰好等于**
       某条套话才算：包含、前缀、相似都不算，正常回答里完全可能出现这句话的片段；
@@ -906,13 +939,24 @@ def is_generic_failure_reply(text, images=None, prompt: str = "") -> bool:
     - 思考链不参与，调用方只传正文。
     """
     if images:
-        return False
+        return None
     norm = _normalize_reply(text)
-    if not norm or norm not in failure_reply_phrases():
-        return False
+    if not norm:
+        return None
+    if norm in failure_reply_phrases():
+        kind = FAILURE_REPLY
+    elif norm in refusal_reply_phrases():
+        kind = REFUSAL_REPLY
+    else:
+        return None
     if norm in _normalize_reply(_non_assistant_prompt(prompt or "")):
-        return False
-    return True
+        return None
+    return kind
+
+
+def is_generic_failure_reply(text, images=None, prompt: str = "") -> bool:
+    """failure_reply_kind 的布尔版：两种套话都算。"""
+    return failure_reply_kind(text, images, prompt) is not None
 
 
 def _could_be_failure_reply(text) -> bool:
@@ -921,7 +965,8 @@ def _could_be_failure_reply(text) -> bool:
     空串也算「仍可能」：还没收到任何正文时本来就没有可发的东西。
     """
     norm = _normalize_reply(text)
-    return any(phrase.startswith(norm) for phrase in failure_reply_phrases())
+    return any(phrase.startswith(norm)
+               for phrase in (*failure_reply_phrases(), *refusal_reply_phrases()))
 
 
 class GeminiFailureReply(HTTPStatusError):
@@ -932,12 +977,27 @@ class GeminiFailureReply(HTTPStatusError):
     classify_error → 502 api_error。不是空响应，也不是超时。
     """
 
+    _what = "its generic failure message"
+
     def __init__(self, reply: str):
         self.reply = reply
-        super().__init__(
-            502,
-            f'Gemini replied with its generic failure message instead of an answer: "{reply}"',
-        )
+        super().__init__(502, f'Gemini replied with {self._what} instead of an answer: "{reply}"')
+
+
+class GeminiRefusalReply(GeminiFailureReply):
+    """谷歌回了「语言模型」类拒答套话（v1.6.47，见 _BUILTIN_REFUSAL_REPLIES）。
+
+    处理与 GeminiFailureReply 完全相同（502、换号、兜底、软冷却），唯一区别是不计入模型熔断
+    （account_pool._breaker_counts）。
+    """
+
+    _what = "a canned refusal"
+
+
+def failure_reply_error(kind: str, text) -> GeminiFailureReply:
+    """failure_reply_kind 的结果 → 要抛的异常。"""
+    reply = str(text or "").strip()
+    return GeminiRefusalReply(reply) if kind == REFUSAL_REPLY else GeminiFailureReply(reply)
 
 
 GEMINI_APP_URL = "https://gemini.google.com/app"
@@ -3293,8 +3353,9 @@ class GeminiWebClient:
         # （上面「非累积/缩短帧」那条分支）把整段正文换成了套话：替换前的几个字已经发出去、收不回来，
         # 但这句套话绝不能作为 final.text 交出去 —— 路由拿 final.text 存会话记录（规格 A.6）。照样抛出：
         # 路由在已发出的正文之后补一个错误帧，什么都不落盘。
-        if is_generic_failure_reply(final.get("text"), last_images, prompt):
-            raise GeminiFailureReply(str(final.get("text") or "").strip())
+        kind = failure_reply_kind(final.get("text"), last_images, prompt)
+        if kind:
+            raise failure_reply_error(kind, final.get("text"))
         if holding and held:
             # 一直扣着、但不是套话（例如整个回答就是 "I"）：先把扣住的正文作为增量补发，再发 final。
             yield {"type": "delta", "text": held}
@@ -3438,8 +3499,9 @@ class GeminiWebClient:
         # 谷歌的失败套话（规格 A.4）：解析完、下载图片之前就判 —— 非流式、buffered 带工具、深度研究、
         # 生图都经这里，手里也正好有这一轮发出去的 prompt（回声保护要用）。抛出去就自然不会写进
         # 会话记录、也不算空响应。
-        if is_generic_failure_reply(result.get("text"), result.get("images"), prompt):
-            raise GeminiFailureReply(str(result.get("text") or "").strip())
+        kind = failure_reply_kind(result.get("text"), result.get("images"), prompt)
+        if kind:
+            raise failure_reply_error(kind, result.get("text"))
 
         # AI 生成图片：lh3 URL 客户端直接访问会 403，服务端带 cookie 代下载，
         # 同时存盘（供对话接口返回可渲染 URL）+ 转 base64（供 images/generations 接口）

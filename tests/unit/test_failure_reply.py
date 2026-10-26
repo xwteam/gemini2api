@@ -623,3 +623,114 @@ def test_the_failure_phrase_never_reaches_the_conversation_store(gem_client, mon
     assert PHRASE not in stored
     files = list((tmp_path / "conversations").glob("*.json"))
     assert all(PHRASE not in f.read_text(encoding="utf-8") for f in files)
+
+
+# ---------------------------------------------------------------------------
+# v1.6.47：「语言模型」类拒答套话 —— 处理同失败套话（换号 / 兜底 / 502），但不计入模型熔断
+# ---------------------------------------------------------------------------
+
+REFUSAL = "我只是一个语言模型，无法提供这方面的帮助。"
+
+
+@pytest.mark.parametrize("text", [
+    "由于程序代码的局限，我没法办到。",
+    "我无法提供这方面的帮助，因为我只是一个语言模型。",
+    REFUSAL,
+    "I'm just a language model, so I can't help you with that.",
+    "I\u2019m just a language model, so I can\u2019t help you with that.",   # 弯引号
+    "  i'm a language model and don't have the capacity to help with that.\n",
+], ids=["zh-code-limits", "zh-cannot-help", "zh-only-a-model", "en", "en-curly-quotes", "en-case-ws"])
+def test_builtin_refusals_are_recognised_as_their_own_kind(text):
+    assert gc.failure_reply_kind(text, [], "hi") == gc.REFUSAL_REPLY
+    assert gc.is_generic_failure_reply(text, [], "hi") is True
+
+
+def test_the_error_phrase_keeps_its_failure_kind():
+    assert gc.failure_reply_kind(PHRASE, [], "hi") == gc.FAILURE_REPLY
+
+
+@pytest.mark.parametrize("text", [
+    REFUSAL + "不过你可以换个问法再试试。",
+    "他说：" + REFUSAL,
+    "我只是一个语言模型",
+], ids=["longer-answer", "contains", "prefix"])
+def test_refusal_needs_an_exact_whole_answer_match(text):
+    assert gc.failure_reply_kind(text, [], "hi") is None
+
+
+def test_refusal_echo_guard():
+    assert gc.failure_reply_kind(REFUSAL, [], f"请原样复述：{REFUSAL}") is None
+
+
+def test_refusal_exception_is_a_failure_reply_with_its_own_message():
+    exc = gc.failure_reply_error(gc.REFUSAL_REPLY, f" {REFUSAL} ")
+    assert isinstance(exc, gc.GeminiRefusalReply) and isinstance(exc, gc.GeminiFailureReply)
+    assert exc.status_code == 502 and exc.reply == REFUSAL
+    assert "canned refusal" in str(exc) and REFUSAL in str(exc)
+    assert classify_error(exc) == (502, "api_error", None)
+    plain = gc.failure_reply_error(gc.FAILURE_REPLY, PHRASE)
+    assert type(plain) is gc.GeminiFailureReply and "generic failure message" in str(plain)
+
+
+def test_refusal_never_counts_toward_the_model_breaker():
+    from app.core.account_pool import _breaker_counts
+
+    assert _breaker_counts(gc.GeminiRefusalReply(REFUSAL)) is False
+    assert _breaker_counts(gc.GeminiFailureReply(PHRASE)) is True
+
+
+def test_send_request_raises_a_refusal_reply(monkeypatch):
+    client = _web_client(monkeypatch, [_raw(REFUSAL)])
+    with pytest.raises(gc.GeminiRefusalReply):
+        asyncio.run(client._send_request("用两个字回答：你好", "gemini-flash"))
+
+
+def test_generate_hands_the_refusal_straight_to_the_pool(monkeypatch):
+    client = _web_client(monkeypatch, [_raw(REFUSAL), _raw("你好")])
+    with pytest.raises(gc.GeminiRefusalReply):
+        asyncio.run(client.generate("用两个字回答：你好", "gemini-flash"))
+    assert client.posts == 1, "拒答套话同样不在同一账号上快速重试"
+
+
+def test_pool_fails_over_on_a_refusal_without_touching_the_breaker(monkeypatch, caplog):
+    from app.core.model_breaker import model_breaker
+
+    clients = [_web_client(monkeypatch, [_raw(REFUSAL)]) for _ in range(3)]
+    pool = _pool(clients)
+    for prompt in ("问题一", "问题二", "问题三"):
+        with pytest.raises(gc.GeminiRefusalReply):
+            asyncio.run(pool.generate(prompt, "gemini-flash"))
+
+    assert [c.posts for c in clients] == [3, 3, 3], "每个请求每个账号各打一次"
+    for account in pool.accounts:
+        assert account.status == AccountStatus.ACTIVE and account.consecutive_failures == 0
+        assert account.last_error == "GeminiRefusalReply (HTTP 502)"
+    assert "flash" not in model_breaker.snapshot(), "三个不同请求都回拒答套话，熔断一次都没计"
+
+
+def test_pool_moves_on_from_a_refusal_to_a_healthy_account(monkeypatch):
+    pool = _pool([_web_client(monkeypatch, [_raw(REFUSAL)]), _web_client(monkeypatch, [_raw("你好")])])
+    result = asyncio.run(pool.generate("用两个字回答：你好", "gemini-flash"))
+    assert result["text"] == "你好"
+
+
+def test_openai_nonstream_refusal_falls_back_to_a_third_party(gem_client, monkeypatch):
+    import app.routers.openai as oai
+
+    async def generate(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                       account_id=None, extended_thinking=False):
+        raise gc.GeminiRefusalReply(REFUSAL)
+
+    async def fake_fallback(request, req, messages_raw, exclude_model=""):
+        return {"id": "chatcmpl-fb", "object": "chat.completion", "created": 0, "model": "tp",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "from fallback"}}]}
+
+    monkeypatch.setattr(oai.gemini_client, "generate", generate)
+    monkeypatch.setattr(oai, "_fallback_result", fake_fallback)
+    r = gem_client.post("/v1/chat/completions", json={
+        "model": "gemini-flash", "messages": [{"role": "user", "content": "hi"}],
+    }, headers=_AUTH)
+    assert r.status_code == 200, r.text
+    assert r.json()["choices"][0]["message"]["content"] == "from fallback"
+

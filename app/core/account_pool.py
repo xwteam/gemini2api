@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.core.gemini_client import (
-    GeminiFailureReply, GeminiWebClient, GenerationStalled, GenerationTimedOut, HTTPStatusError,
-    NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable,
+    GeminiFailureReply, GeminiRefusalReply, GeminiWebClient, GenerationStalled, GenerationTimedOut,
+    HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable,
     is_timeout_error, model_family,
 )
 from app.core import keepalive_modes
@@ -53,9 +53,12 @@ def _breaker_counts(exc: Exception) -> bool:
 
     算：谷歌的失败套话；几乎没收到数据（< 1KB，解析不出字节数时照旧算）的非流式生成超时；一次进展都
     没有的流式无进展超时。不算：建连期超时重试用完（网络问题）、谷歌的拒绝块、4xx / 401 / 403、
-    其它 5xx、池满、客户端断连、钉住的账号不可用、空响应 —— 以及「输出过内容之后才卡住」的超时：
-    单个请求的超时分不清是卡住还是正常的慢回答（第 0 节第 3 条），两个正常的长回答不能误开熔断。
+    其它 5xx、池满、客户端断连、钉住的账号不可用、空响应、「语言模型」拒答套话（v1.6.47：也可能是某个
+    问题每次都会触发的真拒答）—— 以及「输出过内容之后才卡住」的超时：单个请求的超时分不清是卡住还是
+    正常的慢回答（第 0 节第 3 条），两个正常的长回答不能误开熔断。
     """
+    if isinstance(exc, GeminiRefusalReply):
+        return False
     if isinstance(exc, GeminiFailureReply):
         return True
     if isinstance(exc, GenerationStalled):
@@ -776,8 +779,9 @@ class AccountPool:
         if isinstance(exc, GeminiFailureReply):
             logger.warning(f"Account {account.id} got {exc} after the stream had started; "
                            f"not failing over")
+            reason = "canned refusal" if isinstance(exc, GeminiRefusalReply) else "generic failure reply"
             await self.release(account, success=False, cooldown=True, error=_error_summary(exc),
-                               reason="generic failure reply")
+                               reason=reason)
             return
         await self.release(account, success=False, error=_error_summary(exc))
 

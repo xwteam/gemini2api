@@ -393,3 +393,31 @@ def test_openai_stream_falls_back_after_thoughts_then_the_phrase(gem_client, mon
     assert account.consecutive_failures == 0
     assert account.cooldown_until > 0
     assert client.stream_calls == 3
+
+
+# ---------------------------------------------------------------------------
+# v1.6.47：「语言模型」类拒答套话同样扣住、整段命中就抛 GeminiRefusalReply
+# ---------------------------------------------------------------------------
+
+_REFUSAL = "我只是一个语言模型，无法提供这方面的帮助。"
+
+
+def test_a_stream_that_ends_as_a_refusal_raises_without_leaking(monkeypatch):
+    client = _client(monkeypatch, stream_raw=_raw(
+        ("我", None), ("我只是一个语言模型，", None), (_REFUSAL, None),
+    ))
+    events, err = _collect(client.generate_stream("用两个字回答：你好", "gemini-flash"))
+
+    assert isinstance(err, gc.GeminiRefusalReply), (events, err)
+    assert _deltas(events) == []
+    assert not [e for e in events if e["type"] == "final"]
+
+
+def test_a_chinese_answer_that_merely_starts_like_a_refusal_is_released(monkeypatch):
+    client = _client(monkeypatch, stream_raw=_raw(("我", None), ("我是 Gemini", None),
+                                                  ("我是 Gemini，很高兴认识你", None)))
+    events, err = _collect(client.generate_stream("你是谁", "gemini-flash"))
+
+    assert err is None, err
+    assert _deltas(events) == ["我是 Gemini", "，很高兴认识你"]
+
