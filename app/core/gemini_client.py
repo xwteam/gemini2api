@@ -3100,6 +3100,8 @@ class GeminiWebClient:
         seen_images: list = []
         seen_canvases: list = []
         progressed = False
+        # 距上一次进展（还没有进展就是距发请求）收到的心跳帧个数：每次进展清零。B.4 要在消息与 WARNING
+        # 里写「这段等待期间」收到几个心跳，进展之前的心跳不属于最后这段卡住的等待。
         keepalive_frames = 0
 
         # curl_cffi 0.7.4 流式下 timeout 只等于 CONNECTTIMEOUT + LOW_SPEED（连续这么多秒一个字节
@@ -3218,6 +3220,7 @@ class GeminiWebClient:
                             progressed = True
                             last_progress = loop.time()
                             deadline = last_progress + budget
+                            keepalive_frames = 0
                         elif text is None and not conv and not thoughts \
                                 and isinstance(elem, list) and elem and elem[0] == "wrb.fr":
                             keepalive_frames += 1

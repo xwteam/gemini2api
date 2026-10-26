@@ -398,6 +398,26 @@ def test_a_stall_after_progress_times_out_one_budget_after_the_last_progress(mon
     assert out.deltas == ["开头"], "已经流出的正文不收回"
 
 
+def test_the_keepalive_count_covers_only_the_wait_that_stalled(monkeypatch, caplog):
+    """B.4：消息与 WARNING 写的是「这段没有进展的等待期间」收到几个心跳帧。进展之前收到的心跳
+    （这里 5 个）不属于最后这段等待，算进去会让人误判谷歌在那段时间里的行为。"""
+    import logging
+
+    up = _Upstream(events=[(0.0, _HEARTBEAT), (10.0, _HEARTBEAT), (20.0, _HEARTBEAT),
+                           (30.0, _HEARTBEAT), (40.0, _HEARTBEAT), (55.0, _frame("开头")),
+                           (105.0, _HEARTBEAT), (155.0, _HEARTBEAT)], end_at=1000.0)
+    with caplog.at_level(logging.WARNING, logger="app.core.gemini_client"):
+        out = _drive(_client(monkeypatch, up))
+
+    assert isinstance(out.error, gc.GenerationStalled), out.error
+    assert out.error.progressed is True
+    assert 119.9 <= out.error.waited < 121.0
+    assert out.error.keepalive_frames == 2, "只有 +105s、+155s 两个心跳落在最后这段等待里"
+    assert "2 keepalive frames" in str(out.error)
+    stalls = [r.getMessage() for r in caplog.records if "stalled" in r.getMessage()]
+    assert len(stalls) == 1 and "2 keepalive frames" in stalls[0], stalls
+
+
 def test_the_gap_limit_is_the_family_budget_not_120s(monkeypatch):
     """H.3：间隔上限 = budget，取代原来固定的 chunk_timeout=120（不能两者取 min）。
     pro 预算 300：两次进展之间隔 249 秒、290 秒都是正常的慢思考。"""
