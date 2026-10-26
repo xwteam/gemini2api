@@ -96,6 +96,7 @@ cat .env | grep API_KEY
 | 403 | `permission_error` | 禁止访问 |
 | 429 | `rate_limit_error` | 请求过于频繁 |
 | 500 | `server_error` | 服务器错误 |
+| 502 | `api_error` | 上游错误，包括谷歌回了一句固定的失败套话代替回答，见[谷歌侧故障](#谷歌侧故障) |
 | 503 | `service_unavailable_error` | 无可用账号 |
 | 504 | `timeout_error` | 生成超时（上游迟迟不出结果，按超时预算掐断），见[超时](#超时) |
 
@@ -815,7 +816,20 @@ curl http://localhost:5918/admin/status \
       "models_count": 4,
       "keepalive_mode": "server"
     }
-  ]
+  ],
+  "model_breakers": {
+    "flash": {
+      "state": "open",
+      "enabled": true,
+      "consecutive_failures": 2,
+      "open_remaining_seconds": 41.2,
+      "retry_at": "2026-10-26T09:01:03.402771+00:00",
+      "cooldown_seconds": 60.0,
+      "probe_in_flight": false,
+      "last_reason": "GeminiFailureReply (HTTP 502)",
+      "last_failure_at": "2026-10-26T09:00:03.402771+00:00"
+    }
+  }
 }
 ```
 
@@ -826,6 +840,14 @@ curl http://localhost:5918/admin/status \
 | `accounts[].is_healthy` | 客户端会话当前是否可用。`active` 但为 `false` 表示暂时不可用（如网络抖动），尚未判定为会话失效 |
 | `accounts[].last_error` / `last_error_at` | 最近一次失败的脱敏摘要与时间 |
 | `accounts[].keepalive_mode` | cookie 由谁保活：`server`（默认，服务端定时轮换）/ `browser`（由浏览器保活插件推送，服务端不轮换，见 `PUT /admin/accounts/{id}/cookies`） |
+| `model_breakers` | 模型故障熔断各族的状态（`GET /admin/accounts` 同样带这个字段），只列有过状态的族，见[谷歌侧故障](#谷歌侧故障) |
+| `model_breakers.*.state` | `closed`：照常调谷歌；`open`：谷歌侧故障中，开了兜底的 `/v1/chat/completions` 请求直接走兜底；`half_open`：开放期已到，下一个请求去试探谷歌 |
+| `model_breakers.*.enabled` | `MODEL_BREAKER_ENABLED`；为 `false` 时照常记录状态，但绝不绕开谷歌 |
+| `model_breakers.*.consecutive_failures` | 当前窗口里疑似故障地失败过的不同请求个数 |
+| `model_breakers.*.open_remaining_seconds` / `retry_at` | `open` 时还剩多少秒 / 到点的绝对时间（UTC）；其它状态为 `0` / `null` |
+| `model_breakers.*.cooldown_seconds` | 本次（或下一次）开放期的秒数（试探失败会翻倍，封顶 `MODEL_BREAKER_MAX_COOLDOWN`） |
+| `model_breakers.*.probe_in_flight` | `half_open` 时是否已有一个请求在试探谷歌 |
+| `model_breakers.*.last_reason` / `last_failure_at` | 最近一次计入熔断的失败（异常类型 + 状态码的安全摘要）与时间（UTC） |
 
 ### GET /admin/system-info
 
@@ -856,6 +878,8 @@ curl http://localhost:5918/admin/system-info \
 ### GET /admin/accounts
 
 获取所有账号列表及状态。
+
+> 响应与 `GET /admin/status` 相同（同样带 `model_breakers`，面板账号页顶部的熔断提示读的就是这个接口）。
 
 **请求**：
 ```bash
@@ -1661,7 +1685,7 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 
 ## 超时
 
-非流式（`stream: false`）请求的生成超时**按模型族分层**，可用 `GENERATE_TIMEOUTS` 覆盖：
+生成超时**按模型族分层**（非流式与流式同一个预算），可用 `GENERATE_TIMEOUTS` 覆盖：
 
 | 模型族 | 默认超时 |
 |------|------|
@@ -1672,6 +1696,8 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 | 认不出的族 | 60 秒 |
 
 疑似生图的请求与 `GENERATE_TIMEOUT_IMAGE`（默认 180 秒）**取大**。超时不再重试三遍——失败就是失败。
+
+**流式请求**同样受这个预算约束：第一次进展（正文 / 思考 / 生成图片 / Canvas 有了新内容）必须在预算内到达，等响应头的时间也算在内；之后相邻两次进展的间隔同样不能超过预算。谷歌排队时每 60 秒发一个不含任何内容的心跳帧 `[{"37":[0]}]`，它**不算进展**；重复的帧、只带会话元数据的帧也不算。不会比族预算更早掐断：同账号 pro 不开思考做难题时，60 秒才回响应头、89 秒才出正文是正常回答。附件上传的时间不计入。到点后服务会先中止与谷歌的传输，再把 `timeout_error` 事件发给客户端。
 
 超时回 **504**，错误类型 `timeout_error`，用各协议自己的错误体：OpenAI / Gemini 原生 / Responses 是 `{"error": {..., "type": "timeout_error"}}`，Anthropic 是 `{"type": "error", "error": {"type": "timeout_error", ...}}`（过去是纯文本的 `500 Internal Server Error`，SDK 解析不了、也不会按超时重试）。流式请求（含带工具的伪流式）已经回过 200，超时是协议内的错误事件：OpenAI 的 error 帧 `type` 为 `timeout_error`、`code` 为 `504`；Anthropic 的 `error` 事件与 Gemini 原生 NDJSON 的错误行 `type` 为 `timeout_error`；Responses 的 `response.failed` 里 `error.code` 为 `timeout_error`。生图接口 `/v1/images/generations` 同样回 504 + `timeout_error`；深度研究接口（`/gemini/v1beta/deepresearch`，以及 `/gemini/v1beta/deepresearch/interact` 的非流式请求）回 504，错误体是 `{"detail": "..."}`。
 
@@ -1684,7 +1710,15 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 > 非流式路径在生成返回之前**连接上是零字节输出**，所以这是**首字节**超时而不是空闲超时。
 > **pro 非流式最长要干等 300 秒，会超过常见前置代理的首字节上限**（EdgeOne 免费版 15 秒，不少反向代理默认 60 秒），这时客户端拿到的是代理的 504 而不是本服务的错误体。
 > 本服务自己的超时同样是 504，但带上面的 JSON 错误体（`timeout_error`），据此可以和代理的 504 区分开。
-> 有前置代理的部署建议对这类请求直接用 `stream: true`；流式路径受自己的包线约束（单 chunk 120 秒 / 整条 180 秒），不受上表影响。
+> 有前置代理的部署建议对这类请求直接用 `stream: true`（流式先发首帧、等待期间有保活帧）；流式请求同样受上表的预算约束，规则见上。
+
+## 谷歌侧故障
+
+谷歌那边某个模型族整体出问题时（2026-10-26 实测 gemini-flash 两段故障，三个账号都中招，同账号的 flash-lite、pro 正常），表现有两种：排队卡住（60 秒才回响应头，之后每 60 秒一个空心跳帧，按上面的[超时](#超时)处理），或者 1 秒左右就回一句固定的失败套话。
+
+**失败套话**：整段回答（去掉首尾空白、连续空白压成一个、不分大小写）恰好是 `I seem to be encountering an error. Can I try something else for you?`（或 `GEMINI_FAILURE_REPLIES` 里追加的某句）时，按上游失败处理：换下一个账号重试；全部失败时 `/v1/chat/completions` 先试第三方兜底，否则回 **502 `api_error`**（OpenAI / Gemini 原生 / Responses 是 `{"error": {..., "type": "api_error"}}`，Anthropic 是 `{"type": "error", "error": {"type": "api_error", ...}}`，生图接口同样 502）。流式请求与别的上游错误一样是协议内的错误事件：OpenAI 的 error 帧 `type` 为 `api_error`、`code` 为 `502`；Anthropic 的 `error` 事件与 Gemini 原生 NDJSON 的错误行 `type` 为 `api_error`；Responses 的 `response.failed` 里 `error.code` 为 `internal_error`；深度研究接口照旧回 500。包含这句、以它开头、带生成图片的回答都不算，用户本来就让模型复述这句时也不算。套话不会写进会话记录，账号只短暂冷却、不计入连续失败。流式请求会先扣住还可能长成这句的开头（只影响回答开头这一小段），确认不是才放出去。
+
+**模型故障熔断**（只作用于 `/v1/chat/completions`）：窗口（`MODEL_BREAKER_WINDOW`，默认 300 秒）内有 `MODEL_BREAKER_THRESHOLD`（默认 2）个**不同请求**在同一个模型族上疑似故障地失败——失败套话、几乎没收到数据（< 1KB）的非流式生成超时、一次进展都没有的流式超时——熔断就打开 `MODEL_BREAKER_COOLDOWN`（默认 60）秒。这期间开了 `FALLBACK_ENABLED` 且有兜底候选的 `/v1/chat/completions` 请求**直接由第三方兜底回答**，不再先白等一个预算（流式请求照常先收到首帧，等兜底期间有保活帧）；兜底没答出来就照常调谷歌，之后不再重复兜底。到期后放一个真实请求去试探谷歌：成功立即恢复，失败开放期翻倍（封顶 `MODEL_BREAKER_MAX_COOLDOWN`）。没开兜底的请求、其它协议、深度研究、生图一律照常调谷歌，它们的结果照样更新熔断状态；只影响故障的那个族。各族状态见 `GET /admin/status`（和 `GET /admin/accounts`）的 `model_breakers`；进程重启后清空。
 
 ## 获取帮助
 

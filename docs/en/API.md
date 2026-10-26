@@ -712,7 +712,20 @@ curl http://localhost:5918/admin/status \
       "models_count": 4,
       "keepalive_mode": "server"
     }
-  ]
+  ],
+  "model_breakers": {
+    "flash": {
+      "state": "open",
+      "enabled": true,
+      "consecutive_failures": 2,
+      "open_remaining_seconds": 41.2,
+      "retry_at": "2026-10-26T09:01:03.402771+00:00",
+      "cooldown_seconds": 60.0,
+      "probe_in_flight": false,
+      "last_reason": "GeminiFailureReply (HTTP 502)",
+      "last_failure_at": "2026-10-26T09:00:03.402771+00:00"
+    }
+  }
 }
 ```
 
@@ -723,6 +736,14 @@ curl http://localhost:5918/admin/status \
 | `accounts[].is_healthy` | Whether the client session is usable right now. `active` with `false` means temporarily unavailable (e.g. a network glitch), not yet judged as a dead session |
 | `accounts[].last_error` / `last_error_at` | Redacted summary and time of the most recent failure |
 | `accounts[].keepalive_mode` | Who keeps the cookies alive: `server` (default; the server rotates them on a timer) / `browser` (pushed by the browser keep-alive extension; the server does not rotate them — see `PUT /admin/accounts/{id}/cookies`) |
+| `model_breakers` | State of the model outage breaker per family (`GET /admin/accounts` carries it too); only families that ever had state are listed; see [Google-side outages](#google-side-outages) |
+| `model_breakers.*.state` | `closed`: Google is called as usual; `open`: the family is failing on Google's side and `/v1/chat/completions` requests with a fallback go straight to the fallback; `half_open`: the open period is over and the next request probes Google |
+| `model_breakers.*.enabled` | `MODEL_BREAKER_ENABLED`; with `false` the state is still recorded but Google is never bypassed |
+| `model_breakers.*.consecutive_failures` | Number of different requests that failed in a suspected-outage way in the current window |
+| `model_breakers.*.open_remaining_seconds` / `retry_at` | While `open`: seconds left / the absolute time (UTC) it ends; `0` / `null` otherwise |
+| `model_breakers.*.cooldown_seconds` | Length of the current (or next) open period in seconds (doubles when a probe fails, capped at `MODEL_BREAKER_MAX_COOLDOWN`) |
+| `model_breakers.*.probe_in_flight` | While `half_open`: whether a request is already probing Google |
+| `model_breakers.*.last_reason` / `last_failure_at` | The last failure counted by the breaker (a safe summary: exception type + status code) and when it happened (UTC) |
 
 ### GET /admin/system-info
 
@@ -753,6 +774,8 @@ curl http://localhost:5918/admin/system-info \
 ### GET /admin/accounts
 
 List all accounts.
+
+> The response is the same as `GET /admin/status` (it carries `model_breakers` too; the breaker notice at the top of the panel's Accounts page reads this endpoint).
 
 **Request:**
 ```bash
@@ -1563,6 +1586,7 @@ All error responses follow this format:
 | 401 | Unauthorized | Missing or invalid API Key |
 | 403 | Forbidden | Access denied |
 | 500 | Internal Error | Server error |
+| 502 | Bad Gateway | Upstream error (`api_error`), including Google sending its fixed failure sentence instead of an answer; see [Google-side outages](#google-side-outages) |
 | 503 | Service Unavailable | No healthy accounts available |
 | 504 | Gateway Timeout | Generation timed out (`timeout_error`); see [Timeouts](#timeouts) |
 
@@ -1609,7 +1633,7 @@ Set `stream: true` in request body to enable streaming.
 
 ## Timeouts
 
-The generation timeout for non-streaming (`stream: false`) requests is **tiered per model family** and can be overridden with `GENERATE_TIMEOUTS`:
+The generation timeout is **tiered per model family** (the same budget for non-streaming and streaming requests) and can be overridden with `GENERATE_TIMEOUTS`:
 
 | Model family | Default timeout |
 |------|------|
@@ -1620,6 +1644,8 @@ The generation timeout for non-streaming (`stream: false`) requests is **tiered 
 | Unrecognized family | 60 s |
 
 Requests that look like image generation take the **larger** of the tier above and `GENERATE_TIMEOUT_IMAGE` (default 180 s). A timeout is no longer retried three times — a failure is a failure.
+
+**Streaming requests** are bound by the same budget: the first progress (new body text, thinking, generated images or Canvas) must arrive within the budget, and waiting for the response headers counts too; after that, the gap between two progresses may not exceed the budget either. The empty heartbeat frame `[{"37":[0]}]` Google sends every 60 seconds while a request is queued **does not count as progress**, and neither do repeated frames or frames that only carry conversation metadata. Nothing is cut earlier than the family budget: on the same account, pro answering a hard question without thinking legitimately sends its response headers after 60 seconds and its answer after 89. Time spent uploading attachments does not count. When the budget runs out the service first aborts the transfer from Google, then sends the `timeout_error` event to the client.
 
 A timeout returns **504** with error type `timeout_error`, in each protocol's own error body: OpenAI / Gemini native / Responses use `{"error": {..., "type": "timeout_error"}}`, Anthropic uses `{"type": "error", "error": {"type": "timeout_error", ...}}` (it used to be a plain-text `500 Internal Server Error` that SDKs could not parse and would not retry as a timeout). Streaming requests (including the buffered tool-calling streams) have already answered 200, so the timeout arrives as an in-protocol error event: the OpenAI error frame has `type` `timeout_error` and `code` `504`; the Anthropic `error` event and the Gemini native NDJSON error line have `type` `timeout_error`; in Responses, `response.failed` carries `error.code` `timeout_error`. The image endpoint `/v1/images/generations` also returns 504 with `timeout_error`; the deep-research endpoints (`/gemini/v1beta/deepresearch`, and non-streaming requests to `/gemini/v1beta/deepresearch/interact`) return 504 with a `{"detail": "..."}` body.
 
@@ -1632,4 +1658,12 @@ A timeout returns **504** with error type `timeout_error`, in each protocol's ow
 > On the non-streaming path the connection emits **zero bytes** until generation returns, so this is a **time-to-first-byte** timeout, not an idle timeout.
 > **A non-streaming pro request can sit silent for up to 300 seconds, which exceeds the first-byte limit of common front proxies** (15 seconds on the EdgeOne free tier, 60 seconds by default on many reverse proxies); the client then receives the proxy's 504 instead of this service's error body.
 > This service's own timeout is also a 504, but it carries the JSON error body above (`timeout_error`), which tells it apart from a proxy's 504.
-> Behind a front proxy, prefer `stream: true` for these requests. The streaming path has its own envelope (120 s per chunk / 180 s overall) and is unaffected by the table above.
+> Behind a front proxy, prefer `stream: true` for these requests (a stream sends its first frame at once and keep-alive frames while waiting); streaming requests are bound by the budget above too, see the rules above.
+
+## Google-side outages
+
+When a whole model family fails on Google's side (measured on 2026-10-26: two gemini-flash outages hitting all three accounts while flash-lite and pro on the same accounts kept working), it shows up in one of two ways: the request is stuck in Google's queue (response headers after 60 seconds, then an empty heartbeat frame every 60 seconds; handled by the [Timeouts](#timeouts) above), or Google answers within about a second with a fixed failure sentence.
+
+**The generic failure sentence**: when the whole answer (with surrounding whitespace trimmed, runs of whitespace collapsed, case-insensitive) is exactly `I seem to be encountering an error. Can I try something else for you?` (or a sentence added via `GEMINI_FAILURE_REPLIES`), it is handled as an upstream failure: the next account is tried; if all fail, `/v1/chat/completions` tries the third-party fallback first, otherwise the answer is **502 `api_error`** (`{"error": {..., "type": "api_error"}}` for OpenAI / Gemini native / Responses, `{"type": "error", "error": {"type": "api_error", ...}}` for Anthropic; the image endpoint returns 502 too). Streaming requests get the same in-protocol error event as any other upstream error: the OpenAI error frame has `type` `api_error` and `code` `502`; the Anthropic `error` event and the Gemini native NDJSON error line have `type` `api_error`; in Responses, `response.failed` carries `error.code` `internal_error`; the deep-research endpoints keep answering 500. An answer that merely contains or starts with the sentence, or comes with generated images, is not affected, and neither is an answer to a user who asked for that very sentence. The sentence is never saved into the conversation record; the account only gets a short cooldown and the failure does not count toward its consecutive failures. Streaming requests hold back an opening that could still grow into the sentence (only the first few words of an answer) and release it as soon as it diverges.
+
+**Model outage breaker** (applies to `/v1/chat/completions` only): when `MODEL_BREAKER_THRESHOLD` (default 2) **different requests** fail in a suspected-outage way on the same model family within the window (`MODEL_BREAKER_WINDOW`, default 300 s) — the failure sentence, a non-streaming generation timeout with almost no data received (< 1 KB), a streaming timeout without any progress — the breaker opens for `MODEL_BREAKER_COOLDOWN` (default 60) seconds. Meanwhile `/v1/chat/completions` requests with `FALLBACK_ENABLED` on and a fallback candidate available **are answered by the third-party fallback directly** instead of first waiting out a whole budget (streams still get their first frame at once and keep-alive frames while the fallback works); if the fallback cannot answer, Google is called as usual and the fallback is not retried afterwards. When the period ends, one real request probes Google: a success closes the breaker at once, a failure doubles the period (capped at `MODEL_BREAKER_MAX_COOLDOWN`). Requests without a fallback, the other protocols, deep research and image generation always call Google as usual, and their results still update the breaker; only the failing family is affected. The state per family is in `model_breakers` of `GET /admin/status` (and `GET /admin/accounts`); it is cleared on restart.

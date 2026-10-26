@@ -659,8 +659,14 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 思考总闸（高级/兼容项）：`false` = 四个协议一律不思考，连客户端明确要求的也忽略 |
 | `THIRDPARTY_FAILOVER_COOLDOWN` | ❌ | `180` | 第三方「同名多家」故障切换的坏家冷却秒数（0 关闭） |
 | `BARD_ERROR_CODES` | ❌ | — | Gemini 在 **HTTP 200** 正文里返回的拒绝块的 code→语义对照表，形如 `1152=rate_limit,404=session_expired`，分类可取 `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**留空时所有拒绝块按未知处理（冷却该账号 + 换号重试），这是刻意的安全兜底**；配上之后各类才有专门处理（会话过期触发 Cookie 自愈、上下文超长直接回 400 不重试、人机验证让出该账号） |
-| `GENERATE_TIMEOUTS` | ❌ | — | 非流式生成超时按模型族覆盖，形如 `pro=300,flash=120`；留空用内置分层（flash-lite 60 / flash 120 / pro 300 / argon 300，认不出的族回落 60） |
-| `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 疑似生图请求的非流式超时（秒）。与模型族档位**取大**，只作用于非流式路径 |
+| `GEMINI_FAILURE_REPLIES` | ❌ | — | 追加谷歌的「失败套话」（用 `\|` 分隔；内置的 `I seem to be encountering an error. Can I try something else for you?` 始终生效）。整段回答恰好是其中一句时按上游失败处理（换号 / 兜底 / 502），不会当成正常回答返回，见注意事项 8 |
+| `GENERATE_TIMEOUTS` | ❌ | — | 生成超时按模型族覆盖，形如 `pro=300,flash=120`；留空用内置分层（flash-lite 60 / flash 120 / pro 300 / argon 300，认不出的族回落 60）。非流式按它掐断整个请求；流式按它约束「第一次有新内容」与「相邻两次有新内容」的间隔（谷歌的心跳帧不算） |
+| `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 疑似生图请求的生成超时（秒）。与模型族档位**取大**，流式与非流式同口径 |
+| `MODEL_BREAKER_ENABLED` | ❌ | `true` | 模型故障熔断总开关（见注意事项 7）。`false` 时照常记录状态，但绝不绕开谷歌 |
+| `MODEL_BREAKER_THRESHOLD` | ❌ | `2` | 窗口内有这么多个**不同请求**在同一模型族上疑似故障地失败就熔断（同一请求换号、重试、客户端重发只算一个） |
+| `MODEL_BREAKER_WINDOW` | ❌ | `300` | 计数窗口（秒）：这次失败的尝试开始时距上一次计入的失败超过它，计数从 1 重新开始 |
+| `MODEL_BREAKER_COOLDOWN` | ❌ | `60` | 熔断打开后的开放期（秒），期间开了兜底的 `/v1/chat/completions` 请求直接走兜底 |
+| `MODEL_BREAKER_MAX_COOLDOWN` | ❌ | `300` | 试探谷歌又失败时开放期翻倍的上限（秒），至少等于 `MODEL_BREAKER_COOLDOWN` |
 | `TOKEN_PRICES` | ❌ | — | 访问密钥用量的**美元估算**价格表，形如 `gemini-pro=2.0/12.0,gemini-flash=0.75/3.75`（公开模型名=输入价/输出价，单位 USD / 百万 token）。留空用内置默认值；写错的条目静默忽略，配不到价格的模型面板显示 `—`。**只统计、不参与任何限额判定**，且不是账单（本服务走网页版、本身不花钱） |
 
 ---
@@ -677,7 +683,11 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 
 5. **网络环境**：部署服务器需能直接访问 `gemini.google.com`，部分地区可能需要配置代理。
 
-6. **非流式超时与前置代理**：非流式（`stream: false`）请求的超时按模型族分层——flash-lite 60 秒、flash 120 秒、pro 与 argon 300 秒（可用 `GENERATE_TIMEOUTS` 覆盖；疑似生图取 `GENERATE_TIMEOUT_IMAGE`，默认 180 秒），超时也不再重试三遍。到点后本服务回 **504**（错误类型 `timeout_error`，用各协议自己的 JSON 错误体；流式请求是协议内的错误事件），不再是纯文本的 500；开了 `FALLBACK_ENABLED` 时 `/v1/chat/completions` 会先尝试第三方兜底。超时是谷歌那边卡住，不计入账号的连续失败、不会把账号标成 `expired`（建连阶段的超时照旧先重试几次，重试用完同样按超时处理）。注意这整段时间里连接上是**零字节输出**，所以它是**首字节**超时而不是空闲超时：**pro 非流式最长要干等 300 秒，会超过常见前置代理的首字节上限**（EdgeOne 免费版 15 秒，不少反向代理默认 60 秒），客户端拿到的将是代理的 504 而不是本服务的错误体。这类场景建议直接用流式请求。 开了思考的请求还要再多几秒（默认 `low` 实测平均每请求多约 5 秒）。 flash-lite 的 60 秒是按"不思考、几秒就回"定的，默认档开思考后在长 prompt / 难题上可能偏紧，可用 `GENERATE_TIMEOUTS=flash-lite=120` 调大（生成期超时不会退回不思考重试，会直接报超时）。
+6. **非流式超时与前置代理**：非流式（`stream: false`）请求的超时按模型族分层——flash-lite 60 秒、flash 120 秒、pro 与 argon 300 秒（可用 `GENERATE_TIMEOUTS` 覆盖；疑似生图取 `GENERATE_TIMEOUT_IMAGE`，默认 180 秒），超时也不再重试三遍。到点后本服务回 **504**（错误类型 `timeout_error`，用各协议自己的 JSON 错误体；流式请求是协议内的错误事件），不再是纯文本的 500；开了 `FALLBACK_ENABLED` 时 `/v1/chat/completions` 会先尝试第三方兜底。超时是谷歌那边卡住，不计入账号的连续失败、不会把账号标成 `expired`（建连阶段的超时照旧先重试几次，重试用完同样按超时处理）。注意这整段时间里连接上是**零字节输出**，所以它是**首字节**超时而不是空闲超时：**pro 非流式最长要干等 300 秒，会超过常见前置代理的首字节上限**（EdgeOne 免费版 15 秒，不少反向代理默认 60 秒），客户端拿到的将是代理的 504 而不是本服务的错误体。这类场景建议直接用流式请求。 开了思考的请求还要再多几秒（默认 `low` 实测平均每请求多约 5 秒）。 flash-lite 的 60 秒是按"不思考、几秒就回"定的，默认档开思考后在长 prompt / 难题上可能偏紧，可用 `GENERATE_TIMEOUTS=flash-lite=120` 调大（生成期超时不会退回不思考重试，会直接报超时）。 **流式请求同样受这套族预算约束**：第一次有新内容（正文 / 思考 / 生成图片 / Canvas）必须在预算内到达（等响应头的时间也算在内），之后相邻两次有新内容的间隔也不能超过预算；谷歌排队时每 60 秒发一个不含任何内容的心跳帧，它**不算进展**。到点同样回协议内的 `timeout_error` 错误事件（还没流出正文时 `/v1/chat/completions` 先试第三方兜底）。过去流式只看「两次收到字节之间」的 120 秒，被谷歌的心跳一次次重置，实测客户端干等了约 240 秒。
+
+7. **模型故障熔断**：谷歌某个模型族整体故障时（例如 gemini-flash 所有账号都在排队卡住或秒回失败套话），窗口内有 `MODEL_BREAKER_THRESHOLD`（默认 2）个不同请求在这个族上疑似故障地失败（失败套话、几乎没收到数据的生成超时、一次进展都没有的流式超时），熔断就打开 `MODEL_BREAKER_COOLDOWN`（默认 60）秒：这期间**开了 `FALLBACK_ENABLED` 且有兜底候选**的 `/v1/chat/completions` 请求直接走第三方兜底，不再先白等一个预算；到期后放一个真实请求去试探谷歌，试探失败开放期翻倍（封顶 `MODEL_BREAKER_MAX_COOLDOWN`），任何成功都立即恢复。没开兜底的请求和 Claude / Gemini 原生 / Responses 一律照常调谷歌（它们的结果照样更新熔断状态）；只影响故障的那个族，同账号的其它族照常。状态见面板账号页顶部的提示和 `/admin/status` 的 `model_breakers`；进程重启后清空。
+
+8. **谷歌的失败套话**：谷歌侧故障时 Gemini 有时会秒回一句固定的 `I seem to be encountering an error. Can I try something else for you?` 代替回答。整段回答恰好是这句（或 `GEMINI_FAILURE_REPLIES` 里追加的某句）时按上游失败处理——换号重试、`/v1/chat/completions` 可走兜底、否则回 502 `api_error`——不会当成正常回答返回，也不会写进会话记录；流式请求会先扣住还可能长成这句的开头，确认不是才放出去（回答开头最多晚几个字）。
 
 ---
 

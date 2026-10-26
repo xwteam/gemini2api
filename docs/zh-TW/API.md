@@ -645,7 +645,20 @@ curl http://localhost:5918/admin/status \
       "models_count": 4,
       "keepalive_mode": "server"
     }
-  ]
+  ],
+  "model_breakers": {
+    "flash": {
+      "state": "open",
+      "enabled": true,
+      "consecutive_failures": 2,
+      "open_remaining_seconds": 41.2,
+      "retry_at": "2026-10-26T09:01:03.402771+00:00",
+      "cooldown_seconds": 60.0,
+      "probe_in_flight": false,
+      "last_reason": "GeminiFailureReply (HTTP 502)",
+      "last_failure_at": "2026-10-26T09:00:03.402771+00:00"
+    }
+  }
 }
 ```
 
@@ -656,6 +669,14 @@ curl http://localhost:5918/admin/status \
 | `accounts[].is_healthy` | 用戶端工作階段目前是否可用。`active` 但為 `false` 表示暫時不可用（如網路抖動），尚未判定為工作階段失效 |
 | `accounts[].last_error` / `last_error_at` | 最近一次失敗的去敏摘要與時間 |
 | `accounts[].keepalive_mode` | cookie 由誰保活：`server`（預設，伺服器端定時輪換）/ `browser`（由瀏覽器保活擴充功能推送，伺服器端不輪換，見 `PUT /admin/accounts/{id}/cookies`） |
+| `model_breakers` | 模型故障熔斷各族的狀態（`GET /admin/accounts` 同樣帶這個欄位），只列有過狀態的族，見[谷歌端故障](#谷歌端故障) |
+| `model_breakers.*.state` | `closed`：照常呼叫谷歌；`open`：谷歌端故障中，開了兜底的 `/v1/chat/completions` 請求直接走兜底；`half_open`：開放期已到，下一個請求去試探谷歌 |
+| `model_breakers.*.enabled` | `MODEL_BREAKER_ENABLED`；為 `false` 時照常記錄狀態，但絕不繞開谷歌 |
+| `model_breakers.*.consecutive_failures` | 目前視窗裡疑似故障地失敗過的不同請求個數 |
+| `model_breakers.*.open_remaining_seconds` / `retry_at` | `open` 時還剩多少秒 / 到點的絕對時間（UTC）；其他狀態為 `0` / `null` |
+| `model_breakers.*.cooldown_seconds` | 本次（或下一次）開放期的秒數（試探失敗會翻倍，封頂 `MODEL_BREAKER_MAX_COOLDOWN`） |
+| `model_breakers.*.probe_in_flight` | `half_open` 時是否已有一個請求在試探谷歌 |
+| `model_breakers.*.last_reason` / `last_failure_at` | 最近一次計入熔斷的失敗（例外類型 + 狀態碼的安全摘要）與時間（UTC） |
 
 ### GET /system-info
 
@@ -686,6 +707,8 @@ curl http://localhost:5918/admin/system-info \
 ### GET /accounts
 
 列出所有帳號。
+
+> 回應與 `GET /admin/status` 相同（同樣帶 `model_breakers`，面板帳號頁頂部的熔斷提示讀的就是這個介面）。
 
 **請求：**
 ```bash
@@ -1276,6 +1299,7 @@ curl http://localhost:5918/health
 | 401 | 未認證（API Key 無效或缺失） |
 | 403 | 禁止（API Key 無效） |
 | 500 | 伺服器錯誤 |
+| 502 | 上游錯誤（`api_error`），包括谷歌回了一句固定的失敗套話代替回答，見[谷歌端故障](#谷歌端故障) |
 | 503 | 服務不可用（無可用帳號） |
 | 504 | 生成超時（`timeout_error`：上游遲遲不出結果，依超時預算掐斷），見[超時](#超時) |
 
@@ -1304,7 +1328,7 @@ curl http://localhost:5918/health
 
 ## 超時
 
-非流式（`stream: false`）請求的生成超時**按模型族分層**，可用 `GENERATE_TIMEOUTS` 覆寫：
+生成超時**按模型族分層**（非流式與流式同一個預算），可用 `GENERATE_TIMEOUTS` 覆寫：
 
 | 模型族 | 預設超時 |
 |------|------|
@@ -1315,6 +1339,8 @@ curl http://localhost:5918/health
 | 認不出的族 | 60 秒 |
 
 疑似生圖的請求與 `GENERATE_TIMEOUT_IMAGE`（預設 180 秒）**取大**。超時不再重試三遍 —— 失敗就是失敗。
+
+**流式請求**同樣受這個預算約束：第一次進展（內文 / 思考 / 生成圖片 / Canvas 有了新內容）必須在預算內到達，等回應標頭的時間也算在內；之後相鄰兩次進展的間隔同樣不能超過預算。谷歌排隊時每 60 秒送一個不含任何內容的心跳幀 `[{"37":[0]}]`，它**不算進展**；重複的幀、只帶對話中繼資料的幀也不算。不會比族預算更早掐斷：同帳號 pro 不開思考做難題時，60 秒才回回應標頭、89 秒才出內文是正常回答。附件上傳的時間不計入。到點後服務會先中止與谷歌的傳輸，再把 `timeout_error` 事件送給用戶端。
 
 超時回 **504**，錯誤類型 `timeout_error`，用各協議自己的錯誤內文：OpenAI / Gemini 原生 / Responses 是 `{"error": {..., "type": "timeout_error"}}`，Anthropic 是 `{"type": "error", "error": {"type": "timeout_error", ...}}`（過去是純文字的 `500 Internal Server Error`，SDK 解析不了、也不會依超時重試）。流式請求（含帶工具的偽流式）已經回過 200，超時是協議內的錯誤事件：OpenAI 的 error 幀 `type` 為 `timeout_error`、`code` 為 `504`；Anthropic 的 `error` 事件與 Gemini 原生 NDJSON 的錯誤行 `type` 為 `timeout_error`；Responses 的 `response.failed` 裡 `error.code` 為 `timeout_error`。生圖介面 `/v1/images/generations` 同樣回 504 + `timeout_error`；深度研究介面（`/gemini/v1beta/deepresearch`，以及 `/gemini/v1beta/deepresearch/interact` 的非流式請求）回 504，錯誤內文是 `{"detail": "..."}`。
 
@@ -1327,7 +1353,15 @@ curl http://localhost:5918/health
 > 非流式路徑在生成回傳之前**連線上是零位元組輸出**，所以這是**首位元組**超時而不是閒置超時。
 > **pro 非流式最長要乾等 300 秒，會超過常見前置代理的首位元組上限**（EdgeOne 免費版 15 秒，不少反向代理預設 60 秒），這時用戶端拿到的是代理的 504 而不是本服務的錯誤內文。
 > 本服務自己的超時同樣是 504，但帶上面的 JSON 錯誤內文（`timeout_error`），據此可以和代理的 504 區分開。
-> 有前置代理的部署建議對這類請求直接用 `stream: true`；流式路徑受自己的包線約束（單 chunk 120 秒／整條 180 秒），不受上表影響。
+> 有前置代理的部署建議對這類請求直接用 `stream: true`（流式先送首幀、等待期間有保活幀）；流式請求同樣受上表的預算約束，規則見上。
+
+## 谷歌端故障
+
+谷歌那邊某個模型族整體出問題時（2026-10-26 實測 gemini-flash 兩段故障，三個帳號都中招，同帳號的 flash-lite、pro 正常），表現有兩種：排隊卡住（60 秒才回回應標頭，之後每 60 秒一個空心跳幀，按上面的[超時](#超時)處理），或者 1 秒左右就回一句固定的失敗套話。
+
+**失敗套話**：整段回答（去掉首尾空白、連續空白壓成一個、不分大小寫）恰好是 `I seem to be encountering an error. Can I try something else for you?`（或 `GEMINI_FAILURE_REPLIES` 裡追加的某句）時，按上游失敗處理：換下一個帳號重試；全部失敗時 `/v1/chat/completions` 先試第三方兜底，否則回 **502 `api_error`**（OpenAI / Gemini 原生 / Responses 是 `{"error": {..., "type": "api_error"}}`，Anthropic 是 `{"type": "error", "error": {"type": "api_error", ...}}`，生圖介面同樣 502）。流式請求與別的上游錯誤一樣是協議內的錯誤事件：OpenAI 的 error 幀 `type` 為 `api_error`、`code` 為 `502`；Anthropic 的 `error` 事件與 Gemini 原生 NDJSON 的錯誤行 `type` 為 `api_error`；Responses 的 `response.failed` 裡 `error.code` 為 `internal_error`；深度研究介面照舊回 500。包含這句、以它開頭、帶生成圖片的回答都不算，使用者本來就讓模型複述這句時也不算。套話不會寫進對話紀錄，帳號只短暫冷卻、不計入連續失敗。流式請求會先扣住還可能長成這句的開頭（只影響回答開頭這一小段），確認不是才放出去。
+
+**模型故障熔斷**（只作用於 `/v1/chat/completions`）：視窗（`MODEL_BREAKER_WINDOW`，預設 300 秒）內有 `MODEL_BREAKER_THRESHOLD`（預設 2）個**不同請求**在同一個模型族上疑似故障地失敗——失敗套話、幾乎沒收到資料（< 1KB）的非流式生成超時、一次進展都沒有的流式超時——熔斷就打開 `MODEL_BREAKER_COOLDOWN`（預設 60）秒。這期間開了 `FALLBACK_ENABLED` 且有兜底候選的 `/v1/chat/completions` 請求**直接由第三方兜底回答**，不再先白等一個預算（流式請求照常先收到首幀，等兜底期間有保活幀）；兜底沒答出來就照常呼叫谷歌，之後不再重複兜底。到期後放一個真實請求去試探谷歌：成功立即恢復，失敗開放期翻倍（封頂 `MODEL_BREAKER_MAX_COOLDOWN`）。沒開兜底的請求、其他協議、深度研究、生圖一律照常呼叫谷歌，它們的結果照樣更新熔斷狀態；只影響故障的那個族。各族狀態見 `GET /admin/status`（和 `GET /admin/accounts`）的 `model_breakers`；行程重啟後清空。
 
 ## 最佳實踐
 

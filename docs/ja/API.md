@@ -728,7 +728,20 @@ curl http://localhost:5918/admin/status \
       "models_count": 4,
       "keepalive_mode": "server"
     }
-  ]
+  ],
+  "model_breakers": {
+    "flash": {
+      "state": "open",
+      "enabled": true,
+      "consecutive_failures": 2,
+      "open_remaining_seconds": 41.2,
+      "retry_at": "2026-10-26T09:01:03.402771+00:00",
+      "cooldown_seconds": 60.0,
+      "probe_in_flight": false,
+      "last_reason": "GeminiFailureReply (HTTP 502)",
+      "last_failure_at": "2026-10-26T09:00:03.402771+00:00"
+    }
+  }
 }
 ```
 
@@ -739,6 +752,14 @@ curl http://localhost:5918/admin/status \
 | `accounts[].is_healthy` | クライアントのセッションが現在利用可能か。`active` なのに `false` の場合は一時的な不調（ネットワークの揺らぎなど）で、セッション失効とはまだ判定されていません |
 | `accounts[].last_error` / `last_error_at` | 直近の失敗の秘匿化された要約と発生時刻 |
 | `accounts[].keepalive_mode` | Cookie を誰が保持するか：`server`（デフォルト。サーバーが定期的にローテーション）/ `browser`（ブラウザ保持拡張機能が送信。サーバーはローテーションしない —— `PUT /admin/accounts/{id}/cookies` を参照） |
+| `model_breakers` | モデル障害ブレーカーのファミリーごとの状態（`GET /admin/accounts` にも含まれます）。状態を持ったことのあるファミリーだけを列挙。[Google 側の障害](#google-側の障害) を参照 |
+| `model_breakers.*.state` | `closed`：通常どおり Google を呼ぶ；`open`：Google 側で障害中、フォールバックのある `/v1/chat/completions` リクエストは直接フォールバックへ；`half_open`：開放期間が終わり、次のリクエストで Google を試す |
+| `model_breakers.*.enabled` | `MODEL_BREAKER_ENABLED`。`false` でも状態は記録しますが、Google を迂回することはありません |
+| `model_breakers.*.consecutive_failures` | 現在のウィンドウで障害の疑いがある失敗をした異なるリクエストの数 |
+| `model_breakers.*.open_remaining_seconds` / `retry_at` | `open` のとき残り秒数 / 終わる絶対時刻（UTC）。それ以外は `0` / `null` |
+| `model_breakers.*.cooldown_seconds` | 今回（または次回）の開放期間の秒数（試行が失敗すると倍、上限 `MODEL_BREAKER_MAX_COOLDOWN`） |
+| `model_breakers.*.probe_in_flight` | `half_open` のとき、すでに 1 件のリクエストが Google を試しているか |
+| `model_breakers.*.last_reason` / `last_failure_at` | ブレーカーが数えた直近の失敗（例外の型 + ステータスコードの安全な要約）とその時刻（UTC） |
 
 ### GET /admin/system-info
 
@@ -771,6 +792,8 @@ curl http://localhost:5918/admin/system-info \
 ### GET /admin/accounts
 
 すべてのアカウントを取得します。
+
+> レスポンスは `GET /admin/status` と同じです（`model_breakers` も含みます。パネルのアカウントページ上部のブレーカー表示はこのエンドポイントを読みます）。
 
 **リクエスト:**
 
@@ -1407,6 +1430,7 @@ API エラーは以下のコードで返されます。
 | 403 | 禁止 | 権限がない |
 | 429 | レート制限 | しばらく待機 |
 | 500 | サーバーエラー | ログを確認 |
+| 502 | 上流エラー（`api_error`）。Google が回答の代わりに失敗の定型文を返した場合を含む | 少し待って再試行。[Google 側の障害](#google-側の障害) を参照 |
 | 503 | 利用不可 | アカウントが利用不可 |
 | 504 | 生成タイムアウト（`timeout_error`） | 少し待って再試行、またはストリーミングを使用。[タイムアウト](#タイムアウト) を参照 |
 
@@ -1434,7 +1458,7 @@ X-RateLimit-Reset: 1715970060
 
 ## タイムアウト
 
-非ストリーミング（`stream: false`）リクエストの生成タイムアウトは**モデルファミリー単位で段階化**されており、`GENERATE_TIMEOUTS` で上書きできます。
+生成タイムアウトは**モデルファミリー単位で段階化**されており（非ストリーミングとストリーミングで同じ予算）、`GENERATE_TIMEOUTS` で上書きできます。
 
 | モデルファミリー | デフォルトのタイムアウト |
 |------|------|
@@ -1445,6 +1469,8 @@ X-RateLimit-Reset: 1715970060
 | 認識できないファミリー | 60 秒 |
 
 画像生成と推定されるリクエストは、上記の値と `GENERATE_TIMEOUT_IMAGE`（デフォルト 180 秒）のうち**大きい方**を採用します。タイムアウトは 3 回リトライしなくなりました —— 失敗は失敗です。
+
+**ストリーミングリクエスト**も同じ予算に従います：最初の進展（本文・思考・生成画像・Canvas の新しい内容）は予算内に届く必要があり、レスポンスヘッダーを待つ時間も含みます。以降、進展どうしの間隔も予算を超えられません。Google がキューで待たせている間 60 秒ごとに送ってくる内容のないハートビートフレーム `[{"37":[0]}]` は**進展に数えません**。重複したフレームや会話メタデータだけのフレームも同様です。ファミリーの予算より早く打ち切ることはありません：同じアカウントの pro が思考なしで難問に答えるとき、60 秒後にレスポンスヘッダー、89 秒後に本文が届くのは正常な回答です。添付ファイルのアップロード時間は数えません。予算を使い切ると、まず Google との転送を中止してから `timeout_error` イベントをクライアントに送ります。
 
 タイムアウトは **504**、エラータイプ `timeout_error` で、各プロトコル独自のエラー本文で返ります：OpenAI / Gemini ネイティブ / Responses は `{"error": {..., "type": "timeout_error"}}`、Anthropic は `{"type": "error", "error": {"type": "timeout_error", ...}}`（以前はプレーンテキストの `500 Internal Server Error` で、SDK は解析できず、タイムアウトとして再試行もしませんでした）。ストリーミングリクエスト（ツール呼び出し用の擬似ストリーミングを含む）はすでに 200 を返しているため、タイムアウトはプロトコル内のエラーイベントになります：OpenAI の error フレームは `type` が `timeout_error`、`code` が `504`；Anthropic の `error` イベントと Gemini ネイティブ NDJSON のエラー行は `type` が `timeout_error`；Responses の `response.failed` は `error.code` が `timeout_error`。画像生成エンドポイント `/v1/images/generations` も同じく 504 + `timeout_error` を返します。ディープリサーチのエンドポイント（`/gemini/v1beta/deepresearch`、および `/gemini/v1beta/deepresearch/interact` への非ストリーミングリクエスト）は 504 を返し、エラー本文は `{"detail": "..."}` です。
 
@@ -1457,4 +1483,12 @@ X-RateLimit-Reset: 1715970060
 > 非ストリーミング経路では生成が返るまで接続上の出力は**ゼロバイト**です。つまりこれはアイドルタイムアウトではなく**最初の 1 バイトまで**のタイムアウトです。
 > **pro の非ストリーミングは最長 300 秒無音で待つことになり、一般的な前段プロキシの最初の 1 バイトの上限を超えます**（EdgeOne 無料版は 15 秒、多くのリバースプロキシはデフォルト 60 秒）。その場合クライアントが受け取るのは本サービスのエラー本文ではなくプロキシの 504 です。
 > 本サービス自身のタイムアウトも 504 ですが、上記の JSON エラー本文（`timeout_error`）を伴うので、プロキシの 504 と区別できます。
-> 前段プロキシがある構成では、この種のリクエストに `stream: true` を使うことを推奨します。ストリーミング経路は独自の上限（1 チャンク 120 秒／全体 180 秒）に従い、上の表の影響を受けません。
+> 前段プロキシがある構成では、この種のリクエストに `stream: true` を使うことを推奨します（ストリーミングは最初のフレームをすぐに送り、待機中はキープアライブフレームを送ります）。ストリーミングリクエストも上の表の予算に従います。ルールは上記のとおりです。
+
+## Google 側の障害
+
+Google 側で、あるモデルファミリー全体に問題が起きたとき（2026-10-26 の実測：gemini-flash が 2 回障害になり 3 アカウントすべてが影響を受け、同じアカウントの flash-lite と pro は正常）、現れ方は 2 通りです：キューで止まる（60 秒後にレスポンスヘッダー、以降 60 秒ごとに空のハートビートフレーム。上記の[タイムアウト](#タイムアウト)で処理）か、1 秒ほどで固定の失敗の定型文が返ってくるかです。
+
+**失敗の定型文**：回答全体（前後の空白を除き、連続する空白を 1 つにまとめ、大文字小文字を区別しない）がちょうど `I seem to be encountering an error. Can I try something else for you?`（または `GEMINI_FAILURE_REPLIES` で追加した文）であれば、上流の失敗として扱います：次のアカウントで再試行し、すべて失敗した場合 `/v1/chat/completions` はまず第三者フォールバックを試み、それ以外は **502 `api_error`** を返します（OpenAI / Gemini ネイティブ / Responses は `{"error": {..., "type": "api_error"}}`、Anthropic は `{"type": "error", "error": {"type": "api_error", ...}}`。画像生成エンドポイントも 502）。ストリーミングリクエストではほかの上流エラーと同じくプロトコル内のエラーイベントになります：OpenAI の error フレームは `type` が `api_error`、`code` が `502`；Anthropic の `error` イベントと Gemini ネイティブ NDJSON のエラー行は `type` が `api_error`；Responses の `response.failed` は `error.code` が `internal_error`；ディープリサーチのエンドポイントは従来どおり 500 です。この文を含むだけ・この文で始まるだけ・生成画像付きの回答は対象外で、ユーザーがまさにこの文の復唱を頼んだ場合も対象外です。定型文が会話記録に保存されることはなく、アカウントは短いクールダウンに入るだけで連続失敗には数えません。ストリーミングでは、まだこの文になり得る冒頭（回答の最初の数語だけ）を保留し、違うと分かった時点ですぐに送り出します。
+
+**モデル障害ブレーカー**（`/v1/chat/completions` のみ）：ウィンドウ（`MODEL_BREAKER_WINDOW`、デフォルト 300 秒）内で `MODEL_BREAKER_THRESHOLD`（デフォルト 2）件の**異なるリクエスト**が同じモデルファミリーで障害の疑いがある失敗 —— 失敗の定型文、ほとんどデータを受け取れなかった（< 1KB）非ストリーミングの生成タイムアウト、一度も進展のないストリーミングタイムアウト —— をすると、ブレーカーが `MODEL_BREAKER_COOLDOWN`（デフォルト 60）秒間開きます。その間、`FALLBACK_ENABLED` が有効でフォールバック候補がある `/v1/chat/completions` リクエストは、予算を丸ごと待たずに**第三者フォールバックが直接回答**します（ストリーミングは従来どおり最初のフレームをすぐ受け取り、フォールバックを待つ間もキープアライブフレームが届きます）。フォールバックが回答できなければ通常どおり Google を呼び、その後フォールバックを繰り返すことはありません。期間が終わると実際のリクエスト 1 件で Google を試します：成功すればすぐに復帰し、失敗すれば開放期間を倍にします（上限 `MODEL_BREAKER_MAX_COOLDOWN`）。フォールバックのないリクエスト、ほかのプロトコル、ディープリサーチ、画像生成は常に通常どおり Google を呼び、その結果もブレーカーの状態に反映されます。影響するのは障害中のファミリーだけです。ファミリーごとの状態は `GET /admin/status`（および `GET /admin/accounts`）の `model_breakers` で確認でき、プロセスを再起動するとクリアされます。

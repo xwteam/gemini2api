@@ -764,7 +764,20 @@ curl http://localhost:5918/admin/status \
       "models_count": 4,
       "keepalive_mode": "server"
     }
-  ]
+  ],
+  "model_breakers": {
+    "flash": {
+      "state": "open",
+      "enabled": true,
+      "consecutive_failures": 2,
+      "open_remaining_seconds": 41.2,
+      "retry_at": "2026-10-26T09:01:03.402771+00:00",
+      "cooldown_seconds": 60.0,
+      "probe_in_flight": false,
+      "last_reason": "GeminiFailureReply (HTTP 502)",
+      "last_failure_at": "2026-10-26T09:00:03.402771+00:00"
+    }
+  }
 }
 ```
 
@@ -775,6 +788,14 @@ curl http://localhost:5918/admin/status \
 | `accounts[].is_healthy` | 클라이언트 세션을 지금 쓸 수 있는지 여부. `active`인데 `false`이면 일시적인 문제(네트워크 흔들림 등)로, 아직 세션 만료로 판정되지 않은 상태 |
 | `accounts[].last_error` / `last_error_at` | 가장 최근 실패의 비식별 요약과 발생 시각 |
 | `accounts[].keepalive_mode` | 쿠키를 누가 유지하는지: `server`(기본, 서버가 주기적으로 로테이션) / `browser`(브라우저 유지 확장 프로그램이 전송, 서버는 로테이션하지 않음 — `PUT /admin/accounts/{id}/cookies` 참고) |
+| `model_breakers` | 모델 장애 차단기의 패밀리별 상태(`GET /admin/accounts`에도 포함). 상태가 있었던 패밀리만 나열. [Google 측 장애](#google-측-장애) 참고 |
+| `model_breakers.*.state` | `closed`: 평소대로 Google 호출; `open`: Google 측 장애 중이라 폴백이 있는 `/v1/chat/completions` 요청은 바로 폴백으로; `half_open`: 열림 기간이 끝나 다음 요청으로 Google을 시험 |
+| `model_breakers.*.enabled` | `MODEL_BREAKER_ENABLED`. `false`여도 상태는 기록하지만 Google을 우회하지는 않음 |
+| `model_breakers.*.consecutive_failures` | 현재 창에서 장애로 의심되는 실패를 한 서로 다른 요청의 수 |
+| `model_breakers.*.open_remaining_seconds` / `retry_at` | `open`일 때 남은 초 / 끝나는 절대 시각(UTC). 그 밖에는 `0` / `null` |
+| `model_breakers.*.cooldown_seconds` | 이번(또는 다음) 열림 기간의 초(시험이 실패하면 두 배, 상한 `MODEL_BREAKER_MAX_COOLDOWN`) |
+| `model_breakers.*.probe_in_flight` | `half_open`일 때 이미 요청 하나가 Google을 시험 중인지 |
+| `model_breakers.*.last_reason` / `last_failure_at` | 차단기가 집계한 마지막 실패(예외 유형 + 상태 코드의 안전한 요약)와 그 시각(UTC) |
 
 ### GET /admin/system-info
 
@@ -804,6 +825,8 @@ curl http://localhost:5918/admin/system-info \
 ### GET /admin/accounts
 
 모든 계정 목록 및 상태
+
+> 응답은 `GET /admin/status`와 같습니다(`model_breakers`도 포함. 패널 계정 페이지 상단의 차단기 안내가 이 엔드포인트를 읽습니다).
 
 **요청**:
 
@@ -1390,6 +1413,7 @@ curl http://localhost:5918/health
 | 404 | 찾을 수 없음 (엔드포인트 또는 리소스 없음) |
 | 429 | 너무 많은 요청 (속도 제한 초과) |
 | 500 | 서버 오류 (내부 오류) |
+| 502 | 업스트림 오류 (`api_error`, Google이 답변 대신 실패 상투문을 보낸 경우 포함, [Google 측 장애](#google-측-장애) 참고) |
 | 503 | 서비스 사용 불가 (사용 가능한 계정 없음) |
 | 504 | 생성 타임아웃 (`timeout_error`, [타임아웃](#타임아웃) 참고) |
 
@@ -1481,7 +1505,7 @@ console.log(data.choices[0].message.content);
 
 ## 타임아웃
 
-비스트리밍(`stream: false`) 요청의 생성 타임아웃은 **모델 패밀리 단위로 구분**되며 `GENERATE_TIMEOUTS`로 재정의할 수 있습니다:
+생성 타임아웃은 **모델 패밀리 단위로 구분**되며(비스트리밍과 스트리밍이 같은 예산) `GENERATE_TIMEOUTS`로 재정의할 수 있습니다:
 
 | 모델 패밀리 | 기본 타임아웃 |
 |------|------|
@@ -1492,6 +1516,8 @@ console.log(data.choices[0].message.content);
 | 인식되지 않는 패밀리 | 60초 |
 
 이미지 생성으로 추정되는 요청은 위 값과 `GENERATE_TIMEOUT_IMAGE`(기본 180초) 중 **더 큰 쪽**을 채택합니다. 타임아웃은 더 이상 3번 재시도하지 않습니다 —— 실패는 실패입니다.
+
+**스트리밍 요청**도 같은 예산을 따릅니다: 첫 진전(본문·사고·생성 이미지·Canvas의 새 내용)은 예산 안에 도착해야 하며 응답 헤더를 기다리는 시간도 포함됩니다. 그 뒤 진전 사이의 간격도 예산을 넘을 수 없습니다. Google이 요청을 대기열에 세워 두는 동안 60초마다 보내는 내용 없는 하트비트 프레임 `[{"37":[0]}]`은 **진전으로 세지 않으며**, 반복된 프레임이나 대화 메타데이터만 있는 프레임도 마찬가지입니다. 패밀리 예산보다 일찍 끊지는 않습니다: 같은 계정의 pro가 사고 없이 어려운 문제를 풀 때 60초 뒤에 응답 헤더, 89초 뒤에 본문이 오는 것은 정상 답변입니다. 첨부 파일 업로드 시간은 세지 않습니다. 예산이 다 되면 먼저 Google과의 전송을 중단한 뒤 `timeout_error` 이벤트를 클라이언트에 보냅니다.
 
 타임아웃은 **504**, 오류 유형 `timeout_error`로 각 프로토콜 고유의 오류 본문에 담겨 반환됩니다: OpenAI / Gemini 네이티브 / Responses는 `{"error": {..., "type": "timeout_error"}}`, Anthropic은 `{"type": "error", "error": {"type": "timeout_error", ...}}`(예전에는 일반 텍스트 `500 Internal Server Error`라서 SDK가 해석하지 못했고 타임아웃으로 재시도하지도 않았습니다). 스트리밍 요청(도구 호출용 의사 스트리밍 포함)은 이미 200을 반환했으므로 타임아웃은 프로토콜 내 오류 이벤트로 옵니다: OpenAI의 error 프레임은 `type`이 `timeout_error`, `code`가 `504`; Anthropic의 `error` 이벤트와 Gemini 네이티브 NDJSON의 오류 줄은 `type`이 `timeout_error`; Responses의 `response.failed`는 `error.code`가 `timeout_error`입니다. 이미지 생성 엔드포인트 `/v1/images/generations`도 똑같이 504 + `timeout_error`를 반환합니다. 딥 리서치 엔드포인트(`/gemini/v1beta/deepresearch`, 그리고 `/gemini/v1beta/deepresearch/interact`의 비스트리밍 요청)는 504를 반환하며 오류 본문은 `{"detail": "..."}`입니다.
 
@@ -1504,4 +1530,12 @@ console.log(data.choices[0].message.content);
 > 비스트리밍 경로에서는 생성이 반환되기 전까지 연결에 **0바이트**가 흐릅니다. 즉 유휴 타임아웃이 아니라 **첫 바이트까지**의 타임아웃입니다.
 > **pro 비스트리밍은 최대 300초를 무응답으로 기다리게 되어 흔한 앞단 프록시의 첫 바이트 한도를 넘깁니다**(EdgeOne 무료 버전 15초, 많은 리버스 프록시의 기본값 60초). 그러면 클라이언트가 받는 것은 이 서비스의 오류 본문이 아니라 프록시의 504입니다.
 > 이 서비스 자체의 타임아웃도 504이지만 위의 JSON 오류 본문(`timeout_error`)이 함께 오므로 프록시의 504와 구분할 수 있습니다.
-> 앞단 프록시가 있는 구성에서는 이런 요청에 `stream: true`를 권장합니다. 스트리밍 경로는 자체 한도(청크당 120초 / 전체 180초)를 따르며 위 표의 영향을 받지 않습니다.
+> 앞단 프록시가 있는 구성에서는 이런 요청에 `stream: true`를 권장합니다(스트리밍은 첫 프레임을 바로 보내고 기다리는 동안 keep-alive 프레임을 보냄). 스트리밍 요청도 위 표의 예산을 따르며 규칙은 위와 같습니다.
+
+## Google 측 장애
+
+Google 측에서 어떤 모델 패밀리 전체에 문제가 생기면(2026-10-26 실측: gemini-flash가 두 차례 장애로 세 계정 모두 영향을 받았고, 같은 계정의 flash-lite와 pro는 정상), 두 가지 형태로 나타납니다: 대기열에서 멈추거나(60초 뒤에 응답 헤더, 이후 60초마다 빈 하트비트 프레임. 위의 [타임아웃](#타임아웃)으로 처리), 1초 남짓 만에 고정된 실패 상투문이 돌아옵니다.
+
+**실패 상투문**: 답변 전체(앞뒤 공백 제거, 연속 공백은 하나로, 대소문자 구분 없음)가 정확히 `I seem to be encountering an error. Can I try something else for you?`(또는 `GEMINI_FAILURE_REPLIES`로 추가한 문장)이면 업스트림 실패로 처리합니다: 다음 계정으로 재시도하고, 모두 실패하면 `/v1/chat/completions`는 먼저 타사 폴백을 시도하며, 그렇지 않으면 **502 `api_error`**를 반환합니다(OpenAI / Gemini 네이티브 / Responses는 `{"error": {..., "type": "api_error"}}`, Anthropic은 `{"type": "error", "error": {"type": "api_error", ...}}`, 이미지 생성 엔드포인트도 502). 스트리밍 요청은 다른 업스트림 오류와 마찬가지로 프로토콜 내 오류 이벤트를 받습니다: OpenAI의 error 프레임은 `type`이 `api_error`, `code`가 `502`; Anthropic의 `error` 이벤트와 Gemini 네이티브 NDJSON의 오류 줄은 `type`이 `api_error`; Responses의 `response.failed`는 `error.code`가 `internal_error`; 딥 리서치 엔드포인트는 예전처럼 500입니다. 이 문장을 포함하거나 이 문장으로 시작할 뿐인 답변, 생성 이미지가 있는 답변은 해당되지 않으며, 사용자가 바로 이 문장을 따라 하라고 한 경우도 해당되지 않습니다. 상투문은 대화 기록에 저장되지 않고, 계정은 짧게 쿨다운할 뿐 연속 실패로 세지 않습니다. 스트리밍 요청은 아직 이 문장이 될 수 있는 첫 부분(답변의 처음 몇 단어뿐)을 보류했다가 다르다고 판명되는 즉시 내보냅니다.
+
+**모델 장애 차단기**(`/v1/chat/completions` 전용): 창(`MODEL_BREAKER_WINDOW`, 기본 300초) 안에서 `MODEL_BREAKER_THRESHOLD`(기본 2)개의 **서로 다른 요청**이 같은 모델 패밀리에서 장애로 의심되는 실패 —— 실패 상투문, 데이터를 거의 받지 못한(< 1KB) 비스트리밍 생성 타임아웃, 진전이 한 번도 없는 스트리밍 타임아웃 —— 를 하면 차단기가 `MODEL_BREAKER_COOLDOWN`(기본 60)초 동안 열립니다. 그동안 `FALLBACK_ENABLED`가 켜져 있고 폴백 후보가 있는 `/v1/chat/completions` 요청은 예산을 통째로 기다리지 않고 **타사 폴백이 바로 답합니다**(스트리밍은 여전히 첫 프레임을 바로 받고, 폴백을 기다리는 동안 keep-alive 프레임이 옵니다). 폴백이 답하지 못하면 평소대로 Google을 호출하며 그 뒤 폴백을 반복하지 않습니다. 기간이 끝나면 실제 요청 하나로 Google을 시험합니다: 성공하면 즉시 복구하고, 실패하면 열림 기간을 두 배로 늘립니다(상한 `MODEL_BREAKER_MAX_COOLDOWN`). 폴백이 없는 요청, 다른 프로토콜, 딥 리서치, 이미지 생성은 항상 평소대로 Google을 호출하며 그 결과도 차단기 상태에 반영됩니다. 장애 중인 패밀리만 영향을 받습니다. 패밀리별 상태는 `GET /admin/status`(및 `GET /admin/accounts`)의 `model_breakers`에서 볼 수 있고, 프로세스를 재시작하면 초기화됩니다.
