@@ -41,24 +41,30 @@ def _push_source(request: Request) -> str:
     return keepalive_modes.mode_from_headers(request.headers)
 
 
-async def _after_cookie_reload(account, mode: str) -> None:
-    """换 cookie 成功之后的收尾（PUT /accounts/{id}/cookies 与 POST /reload-cookies 共用）。
-
-    1. 记下这个账号由谁保活（mode 见 _push_source）。只在 reload 成功之后写，写在 reload 之后的
-       **新** PSID 名下（client 自己知道换上的是哪个 PSID，含引号 / 分号清洗之后的值）。先写它：
-       从 reload 返回到这里没有 await、写记录本身也是同步的，浏览器推来的新 PSID 从换上到记成
-       browser 之间，刷新循环 / 自愈插不进来替它轮换（reload 进行中由 keepalive_mode 参数挡着）。
-    2. 池内状态当场回到可用（ACTIVE + consecutive_failures=0），不再依赖调用方随后调 /check。
+def _record_keepalive_mode(account, mode: str) -> None:
+    """把这个账号记成 mode，写在 client **当前**的 PSID 名下（client 自己知道换上的是哪个 PSID，
+    含引号 / 分号清洗之后的值）。同步、绝不抛：cookie 已经换上 / 账号已经加上了，记不下保活方式
+    只影响「服务端要不要轮换它」，绝不能把这次成功的操作报成失败（插件会当成没推上去、反复重推）。
     """
     try:
         recorded = account.client.set_keepalive_mode(mode)
     except Exception as e:
-        # cookie 已经换上了：记不下保活方式只影响「服务端要不要轮换它」，绝不能把这次成功的
-        # 换 cookie 报成失败（插件会当成没推上去、反复重推）。
         logger.warning(f"Account {account.id}: could not record keepalive mode {mode}: {e}")
-        recorded = False
+        return
     if recorded:  # 落盘失败时 keepalive_modes 自己已经告警过
-        logger.info(f"Account {account.id}: cookies reloaded, keepalive mode -> {mode}")
+        logger.info(f"Account {account.id}: keepalive mode -> {mode}")
+
+
+async def _after_cookie_reload(account, mode: str) -> None:
+    """换 cookie 成功之后的收尾（PUT /accounts/{id}/cookies 与 POST /reload-cookies 共用）。
+
+    1. 记下这个账号由谁保活（mode 见 _push_source）。只在 reload 成功之后写，写在 reload 之后的
+       **新** PSID 名下。先写它：从 reload 返回到这里没有 await、写记录本身也是同步的，浏览器推来
+       的新 PSID 从换上到记成 browser 之间，刷新循环 / 自愈插不进来替它轮换（reload 进行中由
+       keepalive_mode 参数挡着）。
+    2. 池内状态当场回到可用（ACTIVE + consecutive_failures=0），不再依赖调用方随后调 /check。
+    """
+    _record_keepalive_mode(account, mode)
     await account_pool.mark_cookies_reloaded(account)
 
 
@@ -181,13 +187,17 @@ async def list_accounts():
 
 
 @router.post("/accounts")
-async def add_account(req: AddAccountRequest):
+async def add_account(req: AddAccountRequest, request: Request):
     try:
         account = await account_pool.add_account(
             psid=req.psid,
             psidts=req.psidts,
             label=req.label,
         )
+        # 新添加的账号同样按来源记保活方式（面板 / 脚本 → server）。记录按 PSID 存、删账号时不清：
+        # 不记的话，删掉一个浏览器保活的账号、再用同一份 cookie 加回来，会直接继承旧的 browser ——
+        # 服务端不轮换、插件也不再推，几小时后过期。
+        _record_keepalive_mode(account, _push_source(request))
         return {
             "status": "ok",
             "account": {

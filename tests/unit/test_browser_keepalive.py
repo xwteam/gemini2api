@@ -767,3 +767,58 @@ def test_a_failed_self_heal_keeps_what_the_fallback_rotation_renewed(store, monk
 
     assert result["success"] is False
     assert c._psidts == "PSIDTS-ROTATED"
+
+
+# --------------------------------------------------------------------------
+# 添加账号同样按来源记保活方式（复审 Minor：删掉再用同一 PSID 加回会继承旧的 browser）
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def adding(monkeypatch, tmp_path):
+    """POST /admin/accounts 不联网：client 是真的 GeminiWebClient，只是不 initialize。"""
+    monkeypatch.setattr(ap.settings, "accounts_file", str(tmp_path / "accounts.json"))
+    monkeypatch.setattr(ap.account_pool, "_accounts", [])
+
+    async def _init(self, account):
+        account.client = gc.GeminiWebClient(psid=account.psid, psidts=account.psidts)
+        account.status = AccountStatus.ACTIVE
+
+    monkeypatch.setattr(AccountPool, "_init_account_client", _init)
+
+
+def test_re_adding_a_psid_through_the_panel_hands_it_to_server_rotation(gem_client, store, adding):
+    """复审：删掉一个浏览器保活的账号、再用同一份 cookie「添加账号」，以为交回了服务端轮换（文档也写
+    「新添加的账号走服务端轮换」）；可记录按 PSID 存、删账号不清，新账号直接继承 browser —— 服务端不轮换、
+    插件也不再推，几小时后过期。"""
+    km.set_mode("PSID-SAME", "browser")
+
+    r = gem_client.post("/admin/accounts", json={"psid": "PSID-SAME", "psidts": "PSIDTS-1"},
+                        headers={**_AUTH, **PANEL_ORIGIN})
+
+    assert r.status_code == 200
+    assert _recorded(store) == {_key("PSID-SAME"): "server"}
+    assert ap.account_pool._accounts[-1].client.keepalive_mode == "server"
+
+
+@pytest.mark.parametrize("headers,expected", [(PLUGIN_HEADER, "browser"), ({}, "server")],
+                         ids=["plugin-header", "script"])
+def test_adding_an_account_records_the_source_under_the_cleaned_psid(gem_client, store, adding,
+                                                                     headers, expected):
+    r = gem_client.post("/admin/accounts", json={"psid": ' "PSID-NEW" ', "psidts": "PSIDTS-1"},
+                        headers={**_AUTH, **headers})
+
+    assert r.status_code == 200
+    assert _recorded(store) == {_key("PSID-NEW"): expected}
+
+
+def test_a_failed_add_records_nothing(gem_client, store, monkeypatch, adding):
+    async def _boom(self, account):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(AccountPool, "_init_account_client", _boom)
+
+    r = gem_client.post("/admin/accounts", json={"psid": "PSID-X", "psidts": "t"},
+                        headers={**_AUTH, **PANEL_ORIGIN})
+
+    assert r.status_code == 500
+    assert _recorded(store) == {}
