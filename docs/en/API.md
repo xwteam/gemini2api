@@ -655,21 +655,64 @@ curl http://localhost:5918/admin/status \
 **Response:**
 ```json
 {
-  "service": "gemini2api",
-  "status": "ok",
+  "total": 2,
+  "active": 1,
+  "strategy": "round-robin",
+  "max_concurrent_per_account": 8,
   "accounts": [
     {
       "id": "account-0",
       "label": "Primary",
-      "status": "healthy",
-      "last_checked": "2025-05-17T10:30:00Z"
+      "psid": "g.a0****x0yz",
+      "status": "active",
+      "request_count": 152,
+      "error_count": 1,
+      "active_requests": 0,
+      "last_used": "2026-10-26T03:58:10.512014+00:00",
+      "cooling_down": false,
+      "is_healthy": true,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-26T03:58:12.104233+00:00",
+      "last_error": "",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "browser"
+    },
+    {
+      "id": "account-1",
+      "label": "Backup",
+      "psid": "g.a0****k9qr",
+      "status": "expired",
+      "request_count": 87,
+      "error_count": 0,
+      "active_requests": 0,
+      "last_used": "2026-10-24T14:40:02.338190+00:00",
+      "cooling_down": false,
+      "is_healthy": false,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-24T14:40:05.901123+00:00",
+      "last_error": "Google session expired (login redirect)",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "server"
     }
-  ],
-  "rotation_strategy": "round-robin",
-  "total_requests": 1234,
-  "failed_requests": 5
+  ]
 }
 ```
+
+| Field | Description |
+|------|------|
+| `active` | Number of accounts whose exported `status` is `active` |
+| `accounts[].status` | `active`: usable. `expired`: the session is dead and needs fresh cookies — 3 consecutive failures, an upstream 401/403, or **the Google session being redirected to the login page** (then `is_healthy` is `false`, and an empty `last_error` is filled with `Google session expired (login redirect)`); it goes back to `active` by itself once fresh cookies are in. `disabled`: disabled |
+| `accounts[].is_healthy` | Whether the client session is usable right now. `active` with `false` means temporarily unavailable (e.g. a network glitch), not yet judged as a dead session |
+| `accounts[].last_error` / `last_error_at` | Redacted summary and time of the most recent failure |
+| `accounts[].keepalive_mode` | Who keeps the cookies alive: `server` (default; the server rotates them on a timer) / `browser` (pushed by the browser keep-alive extension; the server does not rotate them — see `PUT /admin/accounts/{id}/cookies`) |
 
 ### GET /admin/system-info
 
@@ -811,6 +854,16 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 }
 ```
 
+**Keep-alive mode:** after a successful reload, the account's keep-alive mode is recorded from where the request came from (under the new PSID, in `data/keepalive-modes.json`, which stores only a hash of the PSID):
+
+| Request | `keepalive_mode` | Effect |
+|------|------|------|
+| Carries the `X-Gemini2API-Keepalive` header (sent by the browser keep-alive extension from v1.3.0, value like `gemini2api-plugin/1.3.0`) | `browser` | The server stops calling RotateCookies for this account; the browser rotates and the extension pushes |
+| `Origin` starts with `chrome-extension://` (older extension versions that do not send the header) | `browser` | Same as above |
+| Anything else (the panel's "Update Cookie", scripts / curl) | `server` | Handed back to the server's scheduled rotation |
+
+On success the account is back to `active` with its consecutive failures reset right away — no follow-up `/check` needed. A failed reload (503) changes neither the keep-alive mode nor the account state.
+
 ### POST /admin/reload-cookies
 
 Reload cookies from .env file.
@@ -829,6 +882,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
   "healthy": true
 }
 ```
+
+On success the keep-alive mode is recorded from the request source and the account is back to `active` right away, with the same rules as `PUT /admin/accounts/{id}/cookies`.
 
 ### GET /admin/health-history
 

@@ -588,20 +588,64 @@ curl http://localhost:5918/admin/status \
 **回應：**
 ```json
 {
-  "status": "ok",
-  "total_accounts": 2,
-  "active_accounts": 2,
-  "rotation_strategy": "round-robin",
+  "total": 2,
+  "active": 1,
+  "strategy": "round-robin",
+  "max_concurrent_per_account": 8,
   "accounts": [
     {
       "id": "account-0",
       "label": "主帳號",
-      "healthy": true,
-      "last_check": "2025-05-17T10:30:00Z"
+      "psid": "g.a0****x0yz",
+      "status": "active",
+      "request_count": 152,
+      "error_count": 1,
+      "active_requests": 0,
+      "last_used": "2026-10-26T03:58:10.512014+00:00",
+      "cooling_down": false,
+      "is_healthy": true,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-26T03:58:12.104233+00:00",
+      "last_error": "",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "browser"
+    },
+    {
+      "id": "account-1",
+      "label": "備用帳號",
+      "psid": "g.a0****k9qr",
+      "status": "expired",
+      "request_count": 87,
+      "error_count": 0,
+      "active_requests": 0,
+      "last_used": "2026-10-24T14:40:02.338190+00:00",
+      "cooling_down": false,
+      "is_healthy": false,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-24T14:40:05.901123+00:00",
+      "last_error": "Google session expired (login redirect)",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "server"
     }
   ]
 }
 ```
+
+| 欄位 | 說明 |
+|------|------|
+| `active` | 對外 `status` 為 `active` 的帳號數 |
+| `accounts[].status` | `active`：可用；`expired`：工作階段已失效，需要換 cookie —— 包括連續失敗 3 次、上游回 401/403，以及**Google 工作階段被導回登入頁**（此時 `is_healthy` 為 `false`，`last_error` 為空時補上 `Google session expired (login redirect)`）；換上新 cookie 後自動回到 `active`。`disabled`：已停用 |
+| `accounts[].is_healthy` | 用戶端工作階段目前是否可用。`active` 但為 `false` 表示暫時不可用（如網路抖動），尚未判定為工作階段失效 |
+| `accounts[].last_error` / `last_error_at` | 最近一次失敗的去敏摘要與時間 |
+| `accounts[].keepalive_mode` | cookie 由誰保活：`server`（預設，伺服器端定時輪換）/ `browser`（由瀏覽器保活擴充功能推送，伺服器端不輪換，見 `PUT /admin/accounts/{id}/cookies`） |
 
 ### GET /system-info
 
@@ -731,6 +775,8 @@ curl http://localhost:5918/admin/accounts/account-0/check \
 }
 ```
 
+成功後同樣依請求來源記錄 `keepalive_mode`，該帳號立即恢復為 `active`（規則同 `PUT /admin/accounts/{id}/cookies`）。
+
 ### PUT /admin/accounts/{id}/cookies
 
 更新特定帳號的 Cookie。
@@ -750,6 +796,16 @@ curl http://localhost:5918/admin/accounts/account-0/check \
   "message": "Cookies updated"
 }
 ```
+
+**保活方式**：reload 成功後，依請求來源記下這個帳號由誰保活（記在新 PSID 名下，保存在 `data/keepalive-modes.json`，只存 PSID 的雜湊）：
+
+| 請求來源 | `keepalive_mode` | 效果 |
+|------|------|------|
+| 帶請求標頭 `X-Gemini2API-Keepalive`（瀏覽器保活擴充功能 v1.3.0 起會帶，值形如 `gemini2api-plugin/1.3.0`） | `browser` | 伺服器端不再對該帳號呼叫 RotateCookies，由瀏覽器輪換、擴充功能推送 |
+| `Origin` 以 `chrome-extension://` 開頭（相容不帶上述標頭的舊版擴充功能） | `browser` | 同上 |
+| 其他（面板「更新 Cookie」、腳本 / curl） | `server` | 交回伺服器端定時輪換 |
+
+成功後該帳號立即恢復為 `active`、連續失敗數歸零，不需要再呼叫 `/check`。reload 失敗（503）時既不改保活方式，也不改帳號狀態。
 
 ### GET /health-history
 

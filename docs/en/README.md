@@ -133,6 +133,7 @@ Level parameters per protocol (**no level specified → default level**; a reque
 - Dynamic account add/remove via API
 - Health check history for web panel data support
 - **Cookie rotation loop now always runs**: previously the rotation loop was only started when the gateway *failed* to obtain a token at boot, so a normally started gateway never rotated at all and its cookies died after a few hours ([issue #11](https://github.com/xwteam/gemini2api/issues/11)); it is now unconditionally resident
+- **Two keep-alive modes, told apart automatically**: accounts whose cookies the browser extension pushes switch to browser keep-alive and the server stops rotating them (both sides rotating the same session knock each other offline); accounts whose Google session was redirected to the login page are now reported as `expired`, so the extension can come to the rescue
 - **Reject blocks inside HTTP 200 are now recognized**: Gemini sometimes returns a reject block in the body of a 200 response (rate limit / session expired / context too long / CAPTCHA). Such requests used to surface as an "empty reply" and triggered no self-healing at all; they are now turned into an explicit error that goes through cooldown + account failover, and `BARD_ERROR_CODES` lets you attach a meaning to specific codes
 
 ### 🛡 Anti-Detection & Protocol Spoofing
@@ -296,6 +297,23 @@ To manually update cookies, use the Web panel's "Account Management" → "Update
 
 > [!NOTE]
 > Cookie lifetime is affected by Google's risk control policies. Datacenter IPs typically last several hours. If cookies expire frequently, consider using residential IPs or adding more accounts for rotation.
+
+#### Two ways to keep cookies alive: server rotation / browser extension
+
+A Google session can **only be rotated by one side**: when the browser and the server both call RotateCookies, whichever goes second presents an `__Secure-1PSIDTS` the other side has already replaced, gets a 401, and the whole session is logged out (it shows up as "keeps dropping, have to log in again"). So every account uses exactly one of two modes:
+
+- **Server rotation** (default): this service calls RotateCookies every `REFRESH_INTERVAL`. Newly added accounts, and cookies submitted through the panel's "Update Cookie", scripts or curl, all use this mode.
+- **Browser keep-alive**: the companion browser extension [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) runs in your local browser (residential IP); the browser keeps the session alive and the extension pushes the fresh cookies to this service. **An account whose cookies the extension pushed successfully switches to browser keep-alive automatically, and the server stops rotating it** (recognized by the `X-Gemini2API-Keepalive` request header; older extension versions that do not send it are recognized by the `Origin: chrome-extension://…` their requests carry).
+
+More details:
+
+- The panel's account cards show a "Browser keep-alive" tag on such accounts; every account in `GET /admin/status` carries `keepalive_mode` (`server` / `browser`).
+- To hand an account back to server rotation (e.g. you switched to cookies taken from an incognito window — nobody rotates them once the window is closed), submit the cookie again through the panel's "Update Cookie".
+- A browser-kept account depends on that browser: if it stays closed for long, the cookies expire and the account becomes `expired`.
+- The record lives in `data/keepalive-modes.json`, keyed by the first 16 hex characters of the PSID's SHA-256 (the same scheme as the file names under `data/cookies/`); it holds no cookie values. Logging in again (a new PSID) puts the account back on server rotation.
+
+> [!NOTE]
+> Account status `expired` now also covers "**the Google session was redirected to the login page**" (the cookies are no longer valid). Such accounts used to show `active` with only `is_healthy: false`, so the browser extension never noticed and never came to the rescue. While the session is dead the server no longer calls RotateCookies in vain (it only probes the session, so a transient glitch still recovers on its own); once the extension or the panel supplies fresh cookies the account is back to `active` immediately — no need to click "Check".
 
 ### 3. Verification
 

@@ -133,6 +133,7 @@
 - 支持通过 API 动态添加/移除账号
 - 健康检查历史记录，为 Web 面板提供数据支撑
 - **Cookie 轮换循环启动即跑**：以前只有「启动时拿不到 token」才会拉起轮换循环，正常启动的网关从不轮换、Cookie 过几小时就死（[issue #11](https://github.com/xwteam/gemini2api/issues/11)）；现在无条件常驻
+- **两种保活方式自动区分**：浏览器插件推送 cookie 的账号自动改为浏览器保活、服务端不再轮换（双方各自轮换会互相把会话顶下线）；会话被谷歌打回登录页的账号对外如实报 `expired`，插件据此及时补救
 - **识别 HTTP 200 里的拒绝块**：Gemini 有时在 200 响应正文里塞一个拒绝块（限流 / 会话过期 / 上下文超长 / 人机验证）。以前这类请求表现为「空回复」且不触发任何自愈，现在会被转成明确错误并走冷却 + 换号重试，可用 `BARD_ERROR_CODES` 为具体 code 配上语义
 
 ### 🛡 反检测与协议伪装
@@ -296,6 +297,23 @@ gemini2api 内置 Cookie 自动轮换机制：默认每 30 分钟（`REFRESH_INT
 
 > [!NOTE]
 > Cookie 寿命受 Google 风控策略影响，数据中心 IP 通常可维持数小时。如 Cookie 频繁过期，建议使用住宅 IP 或增加账号数量做轮询。
+
+#### 两种保活方式：服务端轮换 / 浏览器插件推送
+
+同一个谷歌会话**只能由一方轮换**：浏览器和服务端各自调 RotateCookies 时，后一方拿着已被对方换掉的旧 `__Secure-1PSIDTS` 去换就会 401、整个会话被踢下线（表现为「经常掉线、要重新登录」）。所以每个账号在两种方式里二选一：
+
+- **服务端轮换**（默认）：本服务按 `REFRESH_INTERVAL` 定时调 RotateCookies。新添加的账号、面板「更新 Cookie」、脚本 / curl 提交的 cookie 都走这种方式。
+- **浏览器保活**：配套浏览器插件 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) 装在你本地的浏览器（住宅 IP）里，由浏览器维持会话，插件把新 cookie 推给本服务。**插件推送成功的账号会自动改为浏览器保活，服务端从此不再轮换它**（按请求头 `X-Gemini2API-Keepalive` 识别；不带这个头的旧版插件按它请求自带的 `Origin: chrome-extension://…` 识别）。
+
+补充说明：
+
+- 面板账号卡片会给浏览器保活的账号显示「浏览器保活」标签；`GET /admin/status` 的每个账号都带 `keepalive_mode`（`server` / `browser`）。
+- 想交回服务端轮换（比如改用无痕窗口取的 cookie——窗口一关就没人轮换了），在面板「更新 Cookie」里重新提交一次即可。
+- 浏览器保活的账号靠那个浏览器维持：浏览器长时间不开，cookie 会过期，账号会变成 `expired`。
+- 记录保存在 `data/keepalive-modes.json`，键是 PSID 的 SHA-256 前 16 位（与 `data/cookies/` 下的文件名同一算法），不含任何 cookie 值；重新登录换了 PSID 后自动回到服务端轮换。
+
+> [!NOTE]
+> 账号状态 `expired` 现在也包括「**谷歌会话被打回登录页**」（cookie 已失效）。以前这种账号仍显示 `active`、只有 `is_healthy` 为 `false`，浏览器插件看不见、不会去救。会话失效期间服务端不再白调 RotateCookies（只探测会话，偶发故障能自己恢复）；插件或面板换上新 cookie 后账号立即回到 `active`，不用再点「检测」。
 
 ### 3. 验证
 

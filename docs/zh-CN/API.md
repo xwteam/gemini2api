@@ -757,25 +757,64 @@ curl http://localhost:5918/admin/status \
 **响应**：
 ```json
 {
-  "total_accounts": 2,
-  "active_accounts": 2,
-  "rotation_strategy": "round-robin",
+  "total": 2,
+  "active": 1,
+  "strategy": "round-robin",
+  "max_concurrent_per_account": 8,
   "accounts": [
     {
       "id": "account-0",
-      "status": "healthy",
-      "requests": 10,
-      "last_check": "2025-05-17T23:35:00"
+      "label": "主账号",
+      "psid": "g.a0****x0yz",
+      "status": "active",
+      "request_count": 152,
+      "error_count": 1,
+      "active_requests": 0,
+      "last_used": "2026-10-26T03:58:10.512014+00:00",
+      "cooling_down": false,
+      "is_healthy": true,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-26T03:58:12.104233+00:00",
+      "last_error": "",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "browser"
     },
     {
       "id": "account-1",
-      "status": "healthy",
-      "requests": 8,
-      "last_check": "2025-05-17T23:35:00"
+      "label": "备用账号",
+      "psid": "g.a0****k9qr",
+      "status": "expired",
+      "request_count": 87,
+      "error_count": 0,
+      "active_requests": 0,
+      "last_used": "2026-10-24T14:40:02.338190+00:00",
+      "cooling_down": false,
+      "is_healthy": false,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-24T14:40:05.901123+00:00",
+      "last_error": "Google session expired (login redirect)",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "server"
     }
   ]
 }
 ```
+
+| 字段 | 说明 |
+|------|------|
+| `active` | 对外 `status` 为 `active` 的账号数 |
+| `accounts[].status` | `active`：可用；`expired`：会话已失效，需要换 cookie —— 包括连续失败 3 次、上游回 401/403，以及**谷歌会话被打回登录页**（此时 `is_healthy` 为 `false`，`last_error` 为空时补上 `Google session expired (login redirect)`）；换上新 cookie 后自动回到 `active`。`disabled`：已停用 |
+| `accounts[].is_healthy` | 客户端会话当前是否可用。`active` 但为 `false` 表示暂时不可用（如网络抖动），尚未判定为会话失效 |
+| `accounts[].last_error` / `last_error_at` | 最近一次失败的脱敏摘要与时间 |
+| `accounts[].keepalive_mode` | cookie 由谁保活：`server`（默认，服务端定时轮换）/ `browser`（由浏览器保活插件推送，服务端不轮换，见 `PUT /admin/accounts/{id}/cookies`） |
 
 ### GET /admin/system-info
 
@@ -921,6 +960,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
   -H "Authorization: Bearer sk-你的API密钥"
 ```
 
+成功后同样按请求来源记录 `keepalive_mode`，该账号立即恢复为 `active`（规则同 `PUT /admin/accounts/{id}/cookies`）。
+
 ### PUT /admin/accounts/{id}/cookies
 
 更新指定账号的 Cookie。
@@ -935,6 +976,16 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
     "psidts": "sidts-新的值"
   }'
 ```
+
+**保活方式**：reload 成功后，按请求来源记下这个账号由谁保活（记在新 PSID 名下，保存在 `data/keepalive-modes.json`，只存 PSID 的哈希）：
+
+| 请求来源 | `keepalive_mode` | 效果 |
+|------|------|------|
+| 带请求头 `X-Gemini2API-Keepalive`（浏览器保活插件 v1.3.0 起会带，值形如 `gemini2api-plugin/1.3.0`） | `browser` | 服务端不再对该账号调 RotateCookies，由浏览器轮换、插件推送 |
+| `Origin` 以 `chrome-extension://` 开头（兼容不带上述请求头的旧版插件） | `browser` | 同上 |
+| 其他（面板「更新 Cookie」、脚本 / curl） | `server` | 交回服务端定时轮换 |
+
+成功后该账号立即恢复为 `active`、连续失败数清零，不需要再调 `/check`。reload 失败（503）时既不改保活方式，也不改账号状态。
 
 ### GET /admin/health-history
 

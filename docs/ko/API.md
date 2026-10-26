@@ -707,13 +707,64 @@ curl http://localhost:5918/admin/status \
 
 ```json
 {
-  "status": "ok",
-  "accounts_total": 2,
-  "accounts_active": 2,
-  "rotation_strategy": "round-robin",
-  "uptime_seconds": 3600
+  "total": 2,
+  "active": 1,
+  "strategy": "round-robin",
+  "max_concurrent_per_account": 8,
+  "accounts": [
+    {
+      "id": "account-0",
+      "label": "메인 계정",
+      "psid": "g.a0****x0yz",
+      "status": "active",
+      "request_count": 152,
+      "error_count": 1,
+      "active_requests": 0,
+      "last_used": "2026-10-26T03:58:10.512014+00:00",
+      "cooling_down": false,
+      "is_healthy": true,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-26T03:58:12.104233+00:00",
+      "last_error": "",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "browser"
+    },
+    {
+      "id": "account-1",
+      "label": "예비 계정",
+      "psid": "g.a0****k9qr",
+      "status": "expired",
+      "request_count": 87,
+      "error_count": 0,
+      "active_requests": 0,
+      "last_used": "2026-10-24T14:40:02.338190+00:00",
+      "cooling_down": false,
+      "is_healthy": false,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-24T14:40:05.901123+00:00",
+      "last_error": "Google session expired (login redirect)",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "server"
+    }
+  ]
 }
 ```
+
+| 필드 | 설명 |
+|------|------|
+| `active` | 외부에 보이는 `status`가 `active`인 계정 수 |
+| `accounts[].status` | `active`: 사용 가능. `expired`: 세션이 만료되어 쿠키 교체가 필요함 — 연속 3회 실패, 업스트림 401/403, 그리고 **Google 세션이 로그인 페이지로 리디렉션된 경우**(이때 `is_healthy`는 `false`이며 `last_error`가 비어 있으면 `Google session expired (login redirect)`가 채워짐). 새 쿠키가 들어오면 자동으로 `active`로 돌아갑니다. `disabled`: 비활성화 |
+| `accounts[].is_healthy` | 클라이언트 세션을 지금 쓸 수 있는지 여부. `active`인데 `false`이면 일시적인 문제(네트워크 흔들림 등)로, 아직 세션 만료로 판정되지 않은 상태 |
+| `accounts[].last_error` / `last_error_at` | 가장 최근 실패의 비식별 요약과 발생 시각 |
+| `accounts[].keepalive_mode` | 쿠키를 누가 유지하는지: `server`(기본, 서버가 주기적으로 로테이션) / `browser`(브라우저 유지 확장 프로그램이 전송, 서버는 로테이션하지 않음 — `PUT /admin/accounts/{id}/cookies` 참고) |
 
 ### GET /admin/system-info
 
@@ -854,6 +905,16 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 {"message": "Cookies updated"}
 ```
 
+**유지 방식**: 리로드에 성공하면 요청 출처에 따라 이 계정의 유지 방식을 기록합니다(새 PSID 기준으로 `data/keepalive-modes.json`에 저장되며, PSID의 해시만 저장):
+
+| 요청 | `keepalive_mode` | 효과 |
+|------|------|------|
+| `X-Gemini2API-Keepalive` 헤더 포함(브라우저 유지 확장 프로그램 v1.3.0부터 전송, 값 형식 `gemini2api-plugin/1.3.0`) | `browser` | 서버는 이 계정에 대해 RotateCookies를 더 이상 호출하지 않으며, 브라우저가 로테이션하고 확장 프로그램이 전송합니다 |
+| `Origin`이 `chrome-extension://`로 시작(이 헤더를 보내지 않는 구버전 확장 프로그램) | `browser` | 위와 같음 |
+| 그 외(패널의 "Cookie 갱신", 스크립트 / curl) | `server` | 서버의 주기적 로테이션으로 되돌립니다 |
+
+성공하면 계정은 즉시 `active`로 돌아가고 연속 실패 수도 초기화됩니다(이어서 `/check`를 호출할 필요 없음). 리로드에 실패하면(503) 유지 방식도 계정 상태도 바뀌지 않습니다.
+
 ### POST /admin/reload-cookies
 
 전체 Cookie 갱신
@@ -870,6 +931,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 ```json
 {"message": "Cookies reloaded"}
 ```
+
+성공하면 요청 출처에 따라 유지 방식을 기록하고 계정은 즉시 `active`로 돌아갑니다(규칙은 `PUT /admin/accounts/{id}/cookies`와 같음).
 
 ### GET /admin/health-history
 

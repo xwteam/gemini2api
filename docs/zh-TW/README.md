@@ -134,6 +134,7 @@
 - 支援透過 API 動態新增/移除帳號
 - 健康檢查歷史記錄，為 Web 面板提供資料支撐
 - **Cookie 輪換迴圈啟動即跑**：以前只有「啟動時拿不到 token」才會拉起輪換迴圈，正常啟動的閘道其實從不輪換、Cookie 過幾小時就死（[issue #11](https://github.com/xwteam/gemini2api/issues/11)）；現在無條件常駐
+- **兩種保活方式自動區分**：瀏覽器擴充功能推送 cookie 的帳號自動改為瀏覽器保活、伺服器端不再輪換（雙方各自輪換會互相把工作階段擠下線）；工作階段被導回登入頁的帳號對外如實回報 `expired`，擴充功能據此及時補救
 - **辨識 HTTP 200 裡的拒絕區塊**：Gemini 有時會在 200 回應內文裡塞一個拒絕區塊（限流／工作階段過期／上下文超長／人機驗證）。以前這類請求表現為「空回覆」且不觸發任何自癒，現在會被轉成明確錯誤並走冷卻 + 換帳號重試，可用 `BARD_ERROR_CODES` 為具體 code 設定語意
 
 ### 🛡 反檢測與協議偽裝
@@ -297,6 +298,23 @@ gemini2api 內置 Cookie 自動輪換機制：預設每 30 分鐘（`REFRESH_INT
 
 > [!NOTE]
 > Cookie 壽命受 Google 風控策略影響，資料中心 IP 通常可維持數小時。如 Cookie 頻繁過期，建議使用住宅 IP 或增加帳號數量做輪詢。
+
+#### 兩種保活方式：伺服器端輪換 / 瀏覽器擴充功能推送
+
+同一個 Google 工作階段**只能由一方輪換**：瀏覽器和伺服器端各自呼叫 RotateCookies 時，後一方拿著已被對方換掉的舊 `__Secure-1PSIDTS` 去換就會 401、整個工作階段被踢下線（表現為「常常斷線、要重新登入」）。所以每個帳號在兩種方式裡二選一：
+
+- **伺服器端輪換**（預設）：本服務依 `REFRESH_INTERVAL` 定時呼叫 RotateCookies。新增的帳號、面板「更新 Cookie」、腳本 / curl 提交的 cookie 都走這種方式。
+- **瀏覽器保活**：配套瀏覽器擴充功能 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) 裝在你本機的瀏覽器（住宅 IP）裡，由瀏覽器維持工作階段，擴充功能把新 cookie 推給本服務。**擴充功能推送成功的帳號會自動改為瀏覽器保活，伺服器端從此不再輪換它**（依請求標頭 `X-Gemini2API-Keepalive` 辨識；不帶這個標頭的舊版擴充功能，依它請求自帶的 `Origin: chrome-extension://…` 辨識）。
+
+補充說明：
+
+- 面板帳號卡片會給瀏覽器保活的帳號顯示「瀏覽器保活」標籤；`GET /admin/status` 的每個帳號都帶 `keepalive_mode`（`server` / `browser`）。
+- 想交回伺服器端輪換（例如改用無痕視窗取得的 cookie——視窗一關就沒人輪換了），在面板「更新 Cookie」裡重新提交一次即可。
+- 瀏覽器保活的帳號靠那個瀏覽器維持：瀏覽器長時間不開，cookie 會過期，帳號會變成 `expired`。
+- 記錄保存在 `data/keepalive-modes.json`，鍵是 PSID 的 SHA-256 前 16 位（與 `data/cookies/` 下的檔名同一演算法），不含任何 cookie 值；重新登入換了 PSID 後自動回到伺服器端輪換。
+
+> [!NOTE]
+> 帳號狀態 `expired` 現在也包括「**Google 工作階段被導回登入頁**」（cookie 已失效）。以前這種帳號仍顯示 `active`、只有 `is_healthy` 為 `false`，瀏覽器擴充功能看不見、不會去救。工作階段失效期間伺服器端不再白白呼叫 RotateCookies（只探測工作階段，偶發故障能自己恢復）；擴充功能或面板換上新 cookie 後帳號立即回到 `active`，不用再點「檢測」。
 
 ### 3. 驗證
 

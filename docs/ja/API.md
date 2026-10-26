@@ -671,21 +671,64 @@ curl http://localhost:5918/admin/status \
 
 ```json
 {
-  "status": "ok",
+  "total": 2,
+  "active": 1,
+  "strategy": "round-robin",
+  "max_concurrent_per_account": 8,
   "accounts": [
     {
       "id": "account-0",
       "label": "メインアカウント",
-      "status": "healthy",
-      "last_used": "2025-05-17T10:30:00Z",
-      "request_count": 150
+      "psid": "g.a0****x0yz",
+      "status": "active",
+      "request_count": 152,
+      "error_count": 1,
+      "active_requests": 0,
+      "last_used": "2026-10-26T03:58:10.512014+00:00",
+      "cooling_down": false,
+      "is_healthy": true,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-26T03:58:12.104233+00:00",
+      "last_error": "",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "browser"
+    },
+    {
+      "id": "account-1",
+      "label": "予備アカウント",
+      "psid": "g.a0****k9qr",
+      "status": "expired",
+      "request_count": 87,
+      "error_count": 0,
+      "active_requests": 0,
+      "last_used": "2026-10-24T14:40:02.338190+00:00",
+      "cooling_down": false,
+      "is_healthy": false,
+      "consecutive_failures": 0,
+      "consecutive_empty": 0,
+      "empty_count": 0,
+      "last_success_at": "2026-10-24T14:40:05.901123+00:00",
+      "last_error": "Google session expired (login redirect)",
+      "last_error_at": null,
+      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models_count": 4,
+      "keepalive_mode": "server"
     }
-  ],
-  "rotation_strategy": "round-robin",
-  "total_requests": 150,
-  "error_count": 2
+  ]
 }
 ```
+
+| フィールド | 説明 |
+|------|------|
+| `active` | 対外 `status` が `active` のアカウント数 |
+| `accounts[].status` | `active`：利用可能。`expired`：セッション失効で Cookie の差し替えが必要 —— 連続 3 回の失敗、上流の 401/403、そして **Google セッションのログインページへのリダイレクト**（このとき `is_healthy` は `false`、`last_error` が空なら `Google session expired (login redirect)` が入ります）。新しい Cookie が入ると自動的に `active` に戻ります。`disabled`：無効 |
+| `accounts[].is_healthy` | クライアントのセッションが現在利用可能か。`active` なのに `false` の場合は一時的な不調（ネットワークの揺らぎなど）で、セッション失効とはまだ判定されていません |
+| `accounts[].last_error` / `last_error_at` | 直近の失敗の秘匿化された要約と発生時刻 |
+| `accounts[].keepalive_mode` | Cookie を誰が保持するか：`server`（デフォルト。サーバーが定期的にローテーション）/ `browser`（ブラウザ保持拡張機能が送信。サーバーはローテーションしない —— `PUT /admin/accounts/{id}/cookies` を参照） |
 
 ### GET /admin/system-info
 
@@ -846,6 +889,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 }
 ```
 
+成功時は送信元から保持方式を記録し、アカウントはただちに `active` に戻ります（ルールは `PUT /admin/accounts/{id}/cookies` と同じ）。
+
 ### PUT /admin/accounts/{id}/cookies
 
 特定アカウントの Cookie を更新します。
@@ -870,6 +915,16 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
   "message": "Cookies updated successfully"
 }
 ```
+
+**保持方式：** リロードに成功すると、リクエストの送信元からこのアカウントの保持方式を記録します（新しい PSID の名義で `data/keepalive-modes.json` に保存。PSID のハッシュのみを保存）：
+
+| リクエスト | `keepalive_mode` | 効果 |
+|------|------|------|
+| `X-Gemini2API-Keepalive` ヘッダー付き（ブラウザ保持拡張機能 v1.3.0 以降が送信。値は `gemini2api-plugin/1.3.0` の形式） | `browser` | サーバーはこのアカウントの RotateCookies を呼ばなくなり、ブラウザがローテーションして拡張機能が送信します |
+| `Origin` が `chrome-extension://` で始まる（このヘッダーを送らない旧版の拡張機能） | `browser` | 同上 |
+| その他（パネルの「Cookie 更新」、スクリプト / curl） | `server` | サーバーの定期ローテーションに戻します |
+
+成功するとアカウントはただちに `active` に戻り、連続失敗数もリセットされます（続けて `/check` を呼ぶ必要はありません）。リロードに失敗した場合（503）は、保持方式もアカウント状態も変わりません。
 
 ### GET /admin/health-history
 
