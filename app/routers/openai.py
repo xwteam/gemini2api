@@ -449,18 +449,13 @@ async def chat_completions(req: ChatRequest, request: Request):
                                                            extended_thinking=False)
                     gemini_conv_id = ""
                     account_id = gem_account_id
-                except Exception:
-                    fb = await _fallback()
-                    if fb is not None:
-                        return JSONResponse(content=fb)
-                    status, err_type, retry_after = classify_error(err)
-                    headers = {"Retry-After": str(retry_after)} if retry_after else None
-                    return JSONResponse(
-                        status_code=status,
-                        content={"error": {"message": str(err), "type": err_type}},
-                        headers=headers,
-                    )
-            else:
+                except Exception as e3:
+                    # 报这次重试自己的错：它才是最后一次失败（比如重试撞上超时，客户端已经又等了
+                    # 一整轮，该拿到 504 timeout_error，而不是第一次那个错误）。与 buffered / 真流式
+                    # 的 _err_chunk(e2) 同口径。
+                    logger.warning(f"full-history retry failed: {e3}")
+                    err = e3
+            if result is None:
                 fb = await _fallback()
                 if fb is not None:
                     return JSONResponse(content=fb)

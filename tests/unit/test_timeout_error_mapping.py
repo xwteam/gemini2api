@@ -233,6 +233,46 @@ def test_openai_nonstream_timeout_in_a_resumed_conversation_is_not_retried_with_
     assert calls.generate[0]["conv"], "前提不成立：第一次本该走续接分支"
 
 
+@pytest.mark.parametrize("retry_error,status,err_type", [
+    (_timed_out(), 504, "timeout_error"),
+    (RuntimeError("No available accounts"), 529, "overloaded_error"),
+], ids=["retry-timed-out", "retry-pool-exhausted"])
+def test_openai_nonstream_full_history_retry_reports_its_own_failure(gem_client, monkeypatch,
+                                                                    retry_error, status, err_type):
+    """续接被谷歌拒了（会话真过期）→ 用完整历史重试，这次重试又失败：报的是这次重试自己的错。
+
+    它才是最后一次失败。重试撞上超时时客户端已经又等了一整轮，该拿到 504 timeout_error，而不是
+    第一次那个 400（SDK 会当成请求有错、不重试）。buffered / 真流式报的本来就是重试的错（_err_chunk(e2)）。
+    """
+    import app.routers.openai as oai
+
+    calls = []
+
+    async def generate(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                       account_id=None, extended_thinking=False):
+        calls.append({"conv": conversation_id, "thinking": extended_thinking})
+        if conversation_id:
+            raise HTTPStatusError(400, "conversation not found")
+        raise retry_error
+
+    monkeypatch.setattr(oai.gemini_client, "generate", generate)
+    monkeypatch.setattr(oai, "conversation_store", _ConvStore({"thread-1": _resumable_conversation()}))
+    monkeypatch.setattr(oai.gemini_client, "account_pinnable", lambda account_id: True, raising=False)
+
+    r = gem_client.post("/v1/chat/completions", json={
+        "model": "gemini-pro", "stream": False, "conversation_id": "thread-1",
+        "messages": [{"role": "user", "content": "first"},
+                     {"role": "assistant", "content": "answer"},
+                     {"role": "user", "content": "second"}],
+    }, headers=_AUTH)
+
+    assert r.status_code == status, r.text
+    assert r.json()["error"]["type"] == err_type
+    assert r.json()["error"]["message"] == str(retry_error)
+    # 前提：续接（思考）→ 续接（退回不思考）→ 完整历史（新开会话）
+    assert [bool(c["conv"]) for c in calls] == [True, True, False], calls
+
+
 def test_openai_buffered_tool_stream_timeout_emits_a_timeout_error_frame(gem_client, monkeypatch):
     import app.routers.openai as oai
 
