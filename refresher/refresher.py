@@ -29,6 +29,11 @@ if _interval_seconds is not None:
 else:
     REFRESH_INTERVAL = int(float(os.environ.get("REFRESH_INTERVAL", "8")) * 60)
 SINGLE_RUN = os.environ.get("SINGLE_RUN", "false").lower() == "true"
+# 告诉主服务：这份 cookie 由浏览器（本边车里的 Chromium）保活。主服务（v1.6.44 起）据此把账号记成
+# 「浏览器保活」、不再自己调 RotateCookies —— 否则两边各自轮换同一个会话，后一方拿着被对方换掉的
+# 旧 PSIDTS 去换就 401、整个会话被踢下线（见主服务 app/core/keepalive_modes.py）。主服务只看这个头
+# 在不在；旧版主服务会忽略它。
+KEEPALIVE_HEADERS = {"X-Gemini2API-Keepalive": "gemini2api-refresher"}
 
 
 def load_accounts():
@@ -121,7 +126,7 @@ def refresh_account(browser, account):
 
 
 def notify_gemini2api(account_id, psid, psidts):
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", **KEEPALIVE_HEADERS}
     # /admin/* 用 ADMIN_KEY（ADMIN_API_KEY 优先，否则回退 API_KEY）。
     if ADMIN_KEY:
         headers["Authorization"] = f"Bearer {ADMIN_KEY}"
