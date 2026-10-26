@@ -32,6 +32,7 @@ class _Client:
         self._auth_expired = auth_expired
         self.reload_ok = reload_ok
         self.reload_calls: list[tuple] = []
+        self.reload_sources: list = []
         self.check_calls = 0
         self._heal_lock = asyncio.Lock()
 
@@ -43,8 +44,9 @@ class _Client:
     def auth_expired(self):
         return self._auth_expired
 
-    async def reload_cookies(self, psid=None, psidts=None):
+    async def reload_cookies(self, psid=None, psidts=None, *, keepalive_mode=None):
         self.reload_calls.append((psid, psidts))
+        self.reload_sources.append(keepalive_mode)
         if self.reload_ok:
             self._healthy = True
             self._auth_expired = False
@@ -348,6 +350,7 @@ def test_post_reload_cookies_from_env_puts_the_account_back(gem_client, singleto
 
     assert r.status_code == 200
     assert client.reload_calls == [("PSID-FROM-ENV", "PSIDTS-FROM-ENV")]
+    assert client.reload_sources == ["server"], "来源在 reload 之前就要算好传进去（兜底轮换据此判定）"
     assert a.status is AccountStatus.ACTIVE
     assert a.consecutive_failures == 0
 

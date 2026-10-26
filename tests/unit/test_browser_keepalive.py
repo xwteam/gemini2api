@@ -583,3 +583,187 @@ def test_admin_status_endpoint_carries_keepalive_mode(gem_client, store, monkeyp
     body = gem_client.get("/admin/status", headers=_AUTH).json()
 
     assert body["accounts"][0]["keepalive_mode"] == "browser"
+
+
+# --------------------------------------------------------------------------
+# 插件推送时 reload 的兜底轮换同样受闸口约束（复审 Minor：新 PSID 还没有记录）
+# --------------------------------------------------------------------------
+
+def _push_client(monkeypatch, *, psid="PSID-OLD", tokens=("", "TOKEN"), healthy=False,
+                 auth_expired=False, post_resp=None):
+    """真的 reload_cookies + 真的 _rotate_cookies（两道闸口都是真的），只把取 token 换成按脚本给结果。"""
+    c, _calls = _rotating_client(
+        monkeypatch, psid=psid,
+        post_resp=post_resp or _Resp(200, {"__Secure-1PSIDTS": "PSIDTS-ROTATED"}),
+    )
+    monkeypatch.setattr(gc, "AsyncSession", lambda *a, **kw: c._http)
+    c._healthy = healthy
+    c._session_token = "GOOD-TOKEN" if healthy else ""
+    if auth_expired:
+        c._auth_expired = True
+    script = list(tokens)
+
+    async def _obtain():
+        c._session_token = script.pop(0) if script else ""
+        if not c._session_token:
+            c._last_reload_error = "Gemini returned HTTP 502"
+
+    async def _heartbeat():
+        return True
+
+    monkeypatch.setattr(c, "_obtain_session_token", _obtain)
+    monkeypatch.setattr(c, "_send_heartbeat", _heartbeat)
+    monkeypatch.setattr(c, "_ensure_refresh_task", lambda: None)
+    return c
+
+
+@pytest.mark.parametrize("headers", [PLUGIN_HEADER, EXTENSION_ORIGIN], ids=["plugin-header", "origin"])
+@pytest.mark.parametrize("tokens,status", [(("", "TOKEN"), 200), (("", ""), 503)], ids=["ok", "failed"])
+def test_a_plugin_push_never_rotates_the_pushed_cookies_in_the_reload_fallback(
+        gem_client, store, monkeypatch, pool_with, headers, tokens, status):
+    """复审：插件第一次推一个新 PSID（浏览器重登之后 / 升级后第一次推）时它还没有记录，闸口按默认
+    server 放行；第一次取 token 碰上瞬时 5xx 就会走 reload 的兜底轮换，拿浏览器正在用的 PSIDTS 调
+    RotateCookies、把它换掉 —— 浏览器下一次轮换就 401 掉线。来源是插件时，兜底轮换同样要挡住。"""
+    c = _push_client(monkeypatch, tokens=tokens)
+    pool_with("account-1", c)
+
+    r = gem_client.put("/admin/accounts/account-1/cookies",
+                       json={"psid": "PSID-NEW", "psidts": "PSIDTS-NEW"}, headers={**_AUTH, **headers})
+
+    assert r.status_code == status
+    assert c._http.posts == [], "浏览器推来的 cookie，服务端一次都不能替它轮换"
+    assert _recorded(store) == ({_key("PSID-NEW"): "browser"} if status == 200 else {})
+
+
+def test_a_plugin_push_via_post_reload_cookies_is_gated_too(gem_client, store, monkeypatch, pool_with):
+    c = _push_client(monkeypatch, tokens=("", "TOKEN"))
+    pool_with("account-0", c)
+
+    r = gem_client.post("/admin/reload-cookies", json={"psid": "PSID-NEW", "psidts": "PSIDTS-NEW"},
+                        headers={**_AUTH, **PLUGIN_HEADER})
+
+    assert r.status_code == 200
+    assert c._http.posts == []
+
+
+def test_a_panel_push_still_gets_the_reload_fallback_rotation(gem_client, store, monkeypatch, pool_with):
+    """零回归：面板 / 脚本推来的（服务端轮换）照旧可以走兜底轮换。"""
+    c = _push_client(monkeypatch, tokens=("", "TOKEN"))
+    pool_with("account-1", c)
+
+    r = gem_client.put("/admin/accounts/account-1/cookies",
+                       json={"psid": "PSID-NEW", "psidts": "PSIDTS-NEW"}, headers={**_AUTH, **PANEL_ORIGIN})
+
+    assert r.status_code == 200
+    assert [url for url, _kw in c._http.posts] == [gc.ROTATE_COOKIES_URL]
+    assert _recorded(store) == {_key("PSID-NEW"): "server"}
+
+
+def test_the_mode_is_recorded_before_the_first_await_after_a_successful_push(gem_client, store,
+                                                                             monkeypatch, pool_with):
+    """reload 成功后先记模式、再动池（池方法要 await）：浏览器推来的新 PSID 从换上到记成 browser 之间，
+    别的协程（刷新循环 / 自愈）插不进来替它轮换。"""
+    c = _push_client(monkeypatch, tokens=("TOKEN",))
+    pool_with("account-1", c)
+    seen = []
+    real_mark = ap.account_pool.mark_cookies_reloaded
+
+    async def _mark(account):
+        seen.append(await c._rotate_cookies())  # 第一个 await 点：模拟此刻插进来的刷新循环
+        await real_mark(account)
+
+    monkeypatch.setattr(ap.account_pool, "mark_cookies_reloaded", _mark)
+
+    r = gem_client.put("/admin/accounts/account-1/cookies",
+                       json={"psid": "PSID-NEW", "psidts": "PSIDTS-NEW"}, headers={**_AUTH, **PLUGIN_HEADER})
+
+    assert r.status_code == 200
+    assert seen == [RotationResult.STILL_VALID]
+    assert c._http.posts == []
+
+
+def test_no_other_path_rotates_the_client_while_a_plugin_push_is_in_flight(store, monkeypatch):
+    """reload 一开头就换上了浏览器推来的 PSID：推送进行中刷新循环 / 自愈若插进来轮换，同样会把浏览器的
+    会话顶掉。推送结束后闸口回到按记录判定（记录由路由在成功之后写）。"""
+    c = _push_client(monkeypatch)
+    during = []
+
+    async def _obtain():
+        during.append(await c._rotate_cookies())  # 推送进行中，别的路径来轮换
+        c._session_token = "TOKEN"
+
+    monkeypatch.setattr(c, "_obtain_session_token", _obtain)
+
+    result = asyncio.run(c.reload_cookies(psid="PSID-NEW", psidts="PSIDTS-NEW", keepalive_mode="browser"))
+
+    assert result == {"success": True}
+    assert during == [RotationResult.STILL_VALID]
+    assert c._http.posts == []
+    asyncio.run(c._rotate_cookies())
+    assert len(c._http.posts) == 1, "推送结束后不能一直挡着（PSID-NEW 没有记录 = server）"
+
+
+def test_the_in_flight_marker_is_cleared_even_if_the_reload_raises(store, monkeypatch):
+    c = _push_client(monkeypatch)
+
+    async def _boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(c, "_obtain_session_token", _boom)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(c.reload_cookies(psid="PSID-NEW", psidts="PSIDTS-NEW", keepalive_mode="browser"))
+
+    assert c._psid == "PSID-OLD", "抛异常的失败推送同样不留痕"
+    asyncio.run(c._rotate_cookies())
+    assert len(c._http.posts) == 1
+
+
+# --------------------------------------------------------------------------
+# 推送失败不留痕：client 不能留着没换上的新 PSID（复审 Minor）
+# --------------------------------------------------------------------------
+
+def test_a_failed_plugin_push_leaves_no_trace_on_an_unhealthy_client(gem_client, store, monkeypatch,
+                                                                      pool_with):
+    """复审：account-0 已记成 browser（PSID-1），会话已死；插件推来浏览器重登后的 PSID-2，这次 reload
+    失败（谷歌临时 5xx）→ 503。client 若留着 PSID-2，保活方式（按 client 当前 PSID 查）就从 browser
+    变成 server，之后池自愈会对浏览器正在用的 PSID-2 调 RotateCookies —— 正是要消除的双方轮换。"""
+    km.set_mode("PSID-1", "browser")
+    c = _push_client(monkeypatch, psid="PSID-1", tokens=(), auth_expired=True)
+    pool_with("account-0", c, psid="PSID-1")
+
+    r = gem_client.put("/admin/accounts/account-0/cookies",
+                       json={"psid": "PSID-2", "psidts": "PSIDTS-2"}, headers={**_AUTH, **PLUGIN_HEADER})
+
+    assert r.status_code == 503
+    assert (c._psid, c._psidts) == ("PSID-1", "PSIDTS-OLD")
+    assert c._cookie_jar.sets[-2:] == [("__Secure-1PSID", "PSID-1"), ("__Secure-1PSIDTS", "PSIDTS-OLD")]
+    assert c.keepalive_mode == "browser"
+    assert gem_client.get("/admin/status", headers=_AUTH).json()["accounts"][0]["keepalive_mode"] == "browser"
+    assert _recorded(store) == {_key("PSID-1"): "browser"}
+
+    asyncio.run(c.reload_cookies())  # 之后的池自愈 / generate 自愈
+    assert c._http.posts == []
+
+
+def test_a_failed_push_to_an_unhealthy_client_restores_its_cookies(store, monkeypatch):
+    """面板 / 脚本推的也一样：失败的推送什么都不改（与健康 client 的整组回滚同一口径），账号仍不健康。"""
+    c = _push_client(monkeypatch, psid="PSID-1", tokens=(), post_resp=_Resp(503))
+
+    result = asyncio.run(c.reload_cookies(psid="PSID-2", psidts="PSIDTS-2"))
+
+    assert result["success"] is False
+    assert (c._psid, c._psidts) == ("PSID-1", "PSIDTS-OLD")
+    assert c.is_healthy is False
+    assert c._session_token == ""
+
+
+def test_a_failed_self_heal_keeps_what_the_fallback_rotation_renewed(store, monkeypatch):
+    """零回归：自愈（不带新 cookie）失败不回滚 —— 兜底轮换换来的新 PSIDTS 是谷歌刚签发的，丢掉它就只剩
+    一份已被替换的旧值。"""
+    c = _push_client(monkeypatch, psid="PSID-1", tokens=())
+
+    result = asyncio.run(c.reload_cookies())
+
+    assert result["success"] is False
+    assert c._psidts == "PSIDTS-ROTATED"

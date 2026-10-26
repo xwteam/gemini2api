@@ -100,7 +100,7 @@ def test_admin_endpoint_writes_back_after_a_successful_reload(gem_client, monkey
     calls = []
 
     class _Client:
-        async def reload_cookies(self, psid=None, psidts=None):
+        async def reload_cookies(self, psid=None, psidts=None, *, keepalive_mode=None):
             return {"success": True}
 
     acc = Account(id="account-1", psid="PSID-1", psidts="PSIDTS-OLD", label="a1")
@@ -126,7 +126,7 @@ def test_admin_endpoint_does_not_write_back_on_failure(gem_client, monkeypatch):
     calls = []
 
     class _Client:
-        async def reload_cookies(self, psid=None, psidts=None):
+        async def reload_cookies(self, psid=None, psidts=None, *, keepalive_mode=None):
             return {"success": False, "error": "SNlM0e token not found"}
 
     acc = Account(id="account-1", psid="PSID-1", psidts="PSIDTS-OLD", label="a1")

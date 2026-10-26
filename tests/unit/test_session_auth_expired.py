@@ -281,13 +281,27 @@ def test_failed_reload_of_a_healthy_client_restores_the_previous_verdict(monkeyp
     assert c.auth_expired is was_expired
 
 
-def test_failed_reload_of_a_dead_client_keeps_the_new_verdict(monkeypatch):
+def test_failed_self_heal_of_a_dead_client_keeps_the_new_verdict(monkeypatch):
+    """自愈（不带新 cookie）失败：判定说的就是这份 cookie，照旧留着。"""
+    c = _reload_client(monkeypatch, healthy=False, auth_expired=False, tokens=["", ""])
+
+    result = asyncio.run(c.reload_cookies())
+
+    assert result["success"] is False
+    assert c.auth_expired is True
+
+
+def test_failed_push_to_a_dead_client_restores_the_previous_cookies_and_verdict(monkeypatch):
+    """推来一份新 cookie 却没换上：client 回到原来那份 cookie（推送失败不留痕），判定也回到原来的 ——
+    新 cookie 的「打回登录页」说的不是它。"""
     c = _reload_client(monkeypatch, healthy=False, auth_expired=False, tokens=["", ""])
 
     result = asyncio.run(c.reload_cookies(psid="PSID-BAD", psidts="PSIDTS-BAD"))
 
     assert result["success"] is False
-    assert c.auth_expired is True
+    assert (c._psid, c._psidts) == ("PSID-OLD", "PSIDTS-OLD")
+    assert c.auth_expired is False
+    assert c.is_healthy is False
 
 
 # --------------------------------------------------------------------------

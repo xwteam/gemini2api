@@ -1519,6 +1519,7 @@ class GeminiWebClient:
     # 类级默认值：测试替身常用 __new__ 绕开 __init__ 造实例，刷新循环 / 状态导出照样读得到它。
     _auth_expired = False
     _rotation_rejected_for: tuple | None = None
+    _browser_pushes_in_flight = 0
 
     def __init__(self, psid: str | None = None, psidts: str | None = None):
         self._psid = psid or settings.gemini_psid
@@ -1542,6 +1543,8 @@ class GeminiWebClient:
         self._auth_expired = False
         # 谷歌对哪一份 cookie（PSID, PSIDTS）的 RotateCookies 明确回过 401（见 _rotation_futile）。
         self._rotation_rejected_for: tuple | None = None
+        # 正在进行中的「浏览器保活插件推来的」reload 个数（见 reload_cookies 的 keepalive_mode）。
+        self._browser_pushes_in_flight = 0
         self._refresh_task: asyncio.Task | None = None
         self._health_check_task: asyncio.Task | None = None
         self._http: AsyncSession | None = None
@@ -1944,7 +1947,10 @@ class GeminiWebClient:
         # RotateCookies，后一方拿着被对方换掉的旧 PSIDTS 去换就 401、整个会话被踢下线
         # （见 app/core/keepalive_modes.py）。不发任何网络请求（轮换抖动也免了），按「现有 cookie
         # 仍有效」返回：既不算成功也不算失败，调用方的 `if rotated:` 照旧往下走去取 token。
-        if self.keepalive_mode == keepalive_modes.MODE_BROWSER:
+        # 插件推来的 reload 进行中也算：新 PSID 的记录要等 reload 成功后才写，这期间按记录查会是
+        # 默认的 server，reload 自己的兜底轮换（或同时插进来的刷新循环 / 自愈）就会替浏览器轮换它
+        # 正在用的会话。
+        if self._browser_pushes_in_flight or self.keepalive_mode == keepalive_modes.MODE_BROWSER:
             logger.debug("RotateCookies skipped: cookies are kept alive by the browser plugin")
             return RotationResult.STILL_VALID
         # 第二道闸口，同样对所有调用方生效（刷新循环、reload 兜底、池 / generate 的自愈）：会话已被
@@ -3131,8 +3137,8 @@ class GeminiWebClient:
         if self._http:
             await self._http.close()
 
-    def _restore_session_state(self, prev: tuple) -> None:
-        """把会话状态回滚到 reload_cookies 调用前（仅当调用前是健康的）。
+    def _restore_session_state(self, prev: tuple, *, cookies_changed: bool = False) -> None:
+        """把会话状态回滚到 reload_cookies 调用前（调用前是健康的，或者这次推来了新 cookie）。
 
         只还原 _healthy 是不够的：函数开头会清空 _session_token 并把新 Cookie 写进 jar，
         一个"健康但没有 SNlM0e token / 拿着别人 Cookie"的 client 会被池照常派活、然后每个
@@ -3140,23 +3146,49 @@ class GeminiWebClient:
         auth_expired 与「谷歌拒绝过哪份 cookie」同理：失败的 reload 拿死 cookie 取 token、兜底
         轮换时会改写它们，不还原的话一个好好的会话会被当成「已被打回登录页」，或者旧 cookie 的
         拒绝记录被新 cookie 的顶掉、刷新循环拿旧 cookie 再白敲一次 401。
+
+        调用前就不健康时：推来了新 cookie（cookies_changed）却没换上，同样回到原来那份 cookie，
+        账号仍不健康 —— 推送失败不留痕。否则 client 会留着这份没验证过的新 PSID：保活方式按
+        client 当前 PSID 查，一个浏览器保活的账号会因为一次失败的推送变回 server，之后池自愈 /
+        刷新循环就会对浏览器正在用的新 PSID 调 RotateCookies（复审发现的双方轮换漏洞）。不带新
+        cookie 的自愈失败则不回滚：兜底轮换若刚换来新 PSIDTS，那是谷歌刚签发的，旧值已被替换。
         """
         psid, psidts, session_token, was_healthy, auth_expired, rotation_rejected_for = prev
-        if not was_healthy:
+        if not was_healthy and not cookies_changed:
             return
         self._psid = psid
         self._psidts = psidts
         self._session_token = session_token
-        self._healthy = True
+        self._healthy = was_healthy
         self._auth_expired = auth_expired
         self._rotation_rejected_for = rotation_rejected_for
         if self._cookie_jar is not None:
             self._cookie_jar.set("__Secure-1PSID", psid)
             if psidts:
                 self._cookie_jar.set("__Secure-1PSIDTS", psidts)
-        logger.warning("Cookie reload failed; restored the previous working session")
+        if was_healthy:
+            logger.warning("Cookie reload failed; restored the previous working session")
+        else:
+            logger.warning("Cookie reload failed; kept the previous cookies (account stays unhealthy)")
 
-    async def reload_cookies(self, psid: str | None = None, psidts: str | None = None) -> dict:
+    async def reload_cookies(self, psid: str | None = None, psidts: str | None = None, *,
+                             keepalive_mode: str | None = None) -> dict:
+        """换上 cookie 并重新取会话：要么换上新会话，要么原样不动（见 _restore_session_state）。
+
+        keepalive_mode：这份 cookie 由谁保活，admin 接口按请求来源算好传进来（keepalive_modes.
+        mode_from_headers）。browser 时，这次 reload 进行期间 _rotate_cookies 一律不轮换 —— 新 PSID
+        的记录要等 reload 成功后才写，不传进来的话闸口会按默认 server 放行，reload 自己的兜底轮换
+        就会拿浏览器正在用的 PSIDTS 调 RotateCookies、把浏览器顶下线。自愈等内部调用不传。
+        """
+        if keepalive_mode != keepalive_modes.MODE_BROWSER:
+            return await self._reload_cookies(psid, psidts)
+        self._browser_pushes_in_flight += 1
+        try:
+            return await self._reload_cookies(psid, psidts)
+        finally:
+            self._browser_pushes_in_flight -= 1
+
+    async def _reload_cookies(self, psid: str | None, psidts: str | None) -> dict:
         # F4（issue #11）：先快照重载前的会话状态。reload 的语义应是"要么换上新会话、
         # 要么原样不动"：旧实现在任何网络操作之前就无条件 self._healthy = False，失败返回
         # 路径却从不恢复，于是一次失败的刷新（面板误填 cookie、Google 临时 5xx、多账号池里
@@ -3170,6 +3202,8 @@ class GeminiWebClient:
             self._psid = psid.strip().strip('"').strip("'").rstrip(";")
         if psidts:
             self._psidts = psidts.strip().strip('"').strip("'").rstrip(";")
+        # 这次是不是推来了另一份 cookie（失败时据此决定要不要回到原来那份，见 _restore_session_state）
+        cookies_changed = (self._psid, self._psidts) != prev_state[:2]
 
         self._session_token = ""
         self._healthy = False
@@ -3210,12 +3244,12 @@ class GeminiWebClient:
 
             error_msg = self._last_reload_error or first_error
             logger.error(f"Cookie reload failed: {error_msg}")
-            self._restore_session_state(prev_state)
+            self._restore_session_state(prev_state, cookies_changed=cookies_changed)
             return {"success": False, "error": error_msg}
         except Exception:
             # 已经换上新会话之后才炸的（如 _send_heartbeat 抛错）不回滚，新会话是好的
             if not self._healthy:
-                self._restore_session_state(prev_state)
+                self._restore_session_state(prev_state, cookies_changed=cookies_changed)
             raise
 
     def _ensure_refresh_task(self):

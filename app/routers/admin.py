@@ -30,26 +30,36 @@ def _masked_status() -> dict:
     return status
 
 
-async def _after_cookie_reload(account, request: Request) -> None:
+def _push_source(request: Request) -> str:
+    """这次推 cookie 的来源 = 这份 cookie 由谁保活（keepalive_modes.mode_from_headers）。
+
+    浏览器保活插件推的（X-Gemini2API-Keepalive 头，或 Origin 为 chrome-extension://）→ browser，
+    服务端从此不再轮换它；面板手动「更新 Cookie」、脚本 → server。在 reload **之前**就算好并传给
+    client.reload_cookies(keepalive_mode=...)：reload 进行中的兜底轮换也要按它挡住（新 PSID 的
+    记录要等成功后才写）。
+    """
+    return keepalive_modes.mode_from_headers(request.headers)
+
+
+async def _after_cookie_reload(account, mode: str) -> None:
     """换 cookie 成功之后的收尾（PUT /accounts/{id}/cookies 与 POST /reload-cookies 共用）。
 
-    1. 池内状态当场回到可用（ACTIVE + consecutive_failures=0），不再依赖调用方随后调 /check。
-    2. 按请求来源记下这个账号由谁保活（keepalive_modes.mode_from_headers）：浏览器保活插件推的
-       （X-Gemini2API-Keepalive 头，或 Origin 为 chrome-extension://）→ browser，服务端从此不再
-       轮换它；面板手动「更新 Cookie」、脚本 → server。只在 reload 成功之后写，写在 reload 之后的
-       **新** PSID 名下（client 自己知道换上的是哪个 PSID，含引号 / 分号清洗之后的值）。
+    1. 记下这个账号由谁保活（mode 见 _push_source）。只在 reload 成功之后写，写在 reload 之后的
+       **新** PSID 名下（client 自己知道换上的是哪个 PSID，含引号 / 分号清洗之后的值）。先写它：
+       从 reload 返回到这里没有 await、写记录本身也是同步的，浏览器推来的新 PSID 从换上到记成
+       browser 之间，刷新循环 / 自愈插不进来替它轮换（reload 进行中由 keepalive_mode 参数挡着）。
+    2. 池内状态当场回到可用（ACTIVE + consecutive_failures=0），不再依赖调用方随后调 /check。
     """
-    await account_pool.mark_cookies_reloaded(account)
-    mode = keepalive_modes.mode_from_headers(request.headers)
     try:
         recorded = account.client.set_keepalive_mode(mode)
     except Exception as e:
         # cookie 已经换上了：记不下保活方式只影响「服务端要不要轮换它」，绝不能把这次成功的
         # 换 cookie 报成失败（插件会当成没推上去、反复重推）。
         logger.warning(f"Account {account.id}: could not record keepalive mode {mode}: {e}")
-        return
+        recorded = False
     if recorded:  # 落盘失败时 keepalive_modes 自己已经告警过
         logger.info(f"Account {account.id}: cookies reloaded, keepalive mode -> {mode}")
+    await account_pool.mark_cookies_reloaded(account)
 
 
 class ReloadCookiesRequest(BaseModel):
@@ -69,13 +79,16 @@ async def reload_cookies(request: Request, req: ReloadCookiesRequest = None):
     # 循环体不执行、result 始终未绑定，后续 result.get(...) 会抛 UnboundLocalError
     # （显式 cookie 分支直接 500，.env 分支被误判为 "Failed to read .env"），
     # 且末尾 "No accounts available" 成为死代码。初始化 result=None 并在循环后兜底返回 503。
+    mode = _push_source(request)
     if req and (req.psid or req.psidts):
         result = None
         for account in account_pool.accounts:
             if account.client:
-                result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
+                result = await account.client.reload_cookies(
+                    psid=req.psid, psidts=req.psidts, keepalive_mode=mode,
+                )
                 if result.get("success"):
-                    await _after_cookie_reload(account, request)
+                    await _after_cookie_reload(account, mode)
                     return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
         if result is None:
             return JSONResponse(
@@ -96,9 +109,10 @@ async def reload_cookies(request: Request, req: ReloadCookiesRequest = None):
                     result = await account.client.reload_cookies(
                         psid=fresh.gemini_psid,
                         psidts=fresh.gemini_psidts,
+                        keepalive_mode=mode,
                     )
                     if result.get("success"):
-                        await _after_cookie_reload(account, request)
+                        await _after_cookie_reload(account, mode)
                         return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
             if result is None:
                 return JSONResponse(
@@ -222,12 +236,15 @@ async def update_account_cookies(account_id: str, req: UpdateCookiesRequest, req
     for account in account_pool.accounts:
         if account.id == account_id:
             if account.client:
-                result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
+                mode = _push_source(request)
+                result = await account.client.reload_cookies(
+                    psid=req.psid, psidts=req.psidts, keepalive_mode=mode,
+                )
                 if result.get("success"):
                     # 回写 accounts.json：否则面板刚救活的账号在下次重启时又拿着添加账号
                     # 那一刻的旧 cookie 起来（启动时的"配置值"就是 accounts.json 里这一份）。
                     account_pool.persist_account_cookies(account_id, req.psid, req.psidts)
-                    await _after_cookie_reload(account, request)
+                    await _after_cookie_reload(account, mode)
                     return {"status": "ok", "message": f"Account {account_id} cookies updated"}
                 return JSONResponse(
                     status_code=503,
