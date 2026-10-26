@@ -680,6 +680,87 @@ def test_buffered_full_history_retry_keeps_the_tool_definitions(wired):
 
 
 # ---------------------------------------------------------------------------
+# 新一轮不是「一条用户消息」：不续接，改发完整历史
+# ---------------------------------------------------------------------------
+# 续接只发上一轮回答之后新来的那一条用户消息。agent 的工具循环里，第二轮是 [问题, assistant(tool_calls),
+# tool(结果)]：过去续接分支只取最后一条 role=user（= 原来的问题），工具结果整段丢了，Gemini 在同一个
+# 会话里又收到一遍同样的问题。上一轮回答之后不止一条、或带工具结果的，一律发完整历史。
+
+TOOL_CALL = {"role": "assistant", "content": None, "tool_calls": [{
+    "id": "call_1", "type": "function",
+    "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"},
+}]}
+TOOL_RESULT = {"role": "tool", "tool_call_id": "call_1", "content": "sunny, 25C"}
+
+
+@pytest.mark.parametrize("mode", ["nonstream", "stream", "buffered"])
+def test_a_turn_carrying_tool_results_resends_the_full_history(wired, mode, caplog):
+    import logging
+
+    w = wired
+    first, idx = _first_turn(w)
+    marks = _call_marks(w)
+
+    kw = {"stream": mode != "nonstream", "tools": _TOOLS if mode == "buffered" else None}
+    with caplog.at_level(logging.INFO, logger="app.routers.openai"):
+        _chat(w, [U1, TOOL_CALL, TOOL_RESULT], **kw)
+
+    new_calls = _calls_since(w, marks)
+    assert len(new_calls) == 1, new_calls
+    call = new_calls[0]
+    assert call["conv"] == "", "接不上（只发一句会丢工具结果）就新开会话，不带续接参数"
+    assert "sunny, 25C" in call["prompt"], "工具结果被丢了"
+    assert "Human: u1" in call["prompt"] and "get_weather" in call["prompt"]
+    assert any("not a single user message" in r.getMessage() for r in caplog.records), \
+        "日志要说清为什么没续接"
+    # 成功后照常记下新会话，下一轮（普通的一条用户消息）恢复续接
+    conv = _stored(w)
+    served = w.ups[int(conv.account_id[-1])]
+    assert json.loads(conv.gemini_conv_id) == served.triple(served._turn)
+
+
+@pytest.mark.parametrize("messages", [
+    [U1, TOOL_CALL, TOOL_RESULT, U2],                                        # 工具结果后又追问
+    [U1, A1, {"role": "user", "content": "u2a"}, {"role": "user", "content": "u2b"}],  # 连发两条
+    [U1, A1, U2, {"role": "assistant", "content": "prefill"}],              # 以 assistant 收尾
+    [U1, A1, {"role": "user", "content": [                                   # Anthropic 式工具结果块
+        {"type": "tool_result", "tool_use_id": "t1", "content": "sunny, 25C"},
+        {"type": "text", "text": "u2"},
+    ]}],
+], ids=["tool-result-then-question", "two-user-messages", "ends-with-assistant",
+        "tool-result-block"])
+def test_anything_but_one_new_user_message_resends_the_full_history(wired, messages):
+    from app.utils.prompt import build_prompt_from_messages
+
+    w = wired
+    _first_turn(w)
+    marks = _call_marks(w)
+
+    _chat(w, messages)
+
+    new_calls = _calls_since(w, marks)
+    assert [(c["prompt"], c["conv"]) for c in new_calls] == \
+        [(build_prompt_from_messages(messages), "")]
+
+
+@pytest.mark.parametrize("messages", [
+    [U1, A1, U2],
+    [{"role": "system", "content": "be brief"}, U1, A1, U2],
+    [{"role": "system", "content": "be brief"}, U2],      # 只发最新一条、靠服务端记上下文的客户端
+    [U2],
+], ids=["plain", "with-system", "latest-only-with-system", "latest-only"])
+def test_one_new_user_message_still_resumes(wired, messages):
+    w = wired
+    first, idx = _first_turn(w)
+
+    _chat(w, messages)
+
+    call = first.calls[-1]
+    assert (call["prompt"], call["conv"]) == ("u2", json.dumps(first.triple(1)))
+    assert w.ups[1 - idx].calls == []
+
+
+# ---------------------------------------------------------------------------
 # 第三方兜底答了这一轮：续接点作废
 # ---------------------------------------------------------------------------
 # 续接真正生效之后，存储里的 [cid, rid, rcid] 必须与客户端的历史同步。某一轮由第三方兜底

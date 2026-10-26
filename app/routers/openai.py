@@ -262,10 +262,37 @@ async def _dispatch_thirdparty(request, req: ChatRequest, resolved_model: str):
     return ok if ok is not None else error
 
 
-def _resume_target(conv, gem_account_id: str | None) -> tuple[str, str | None]:
+def _new_turn_is_one_user_message(messages_raw) -> bool:
+    """续接只发「上一轮回答之后新来的那一条用户消息」：最后一条 assistant 之后（system 不算）
+    恰好是一条普通的用户消息才行。
+
+    带工具结果（role=tool，或用户消息里的 tool_result / tool_use 块）、一口气来了好几条、或以
+    assistant 收尾的，只发最后一条用户消息都会丢东西 —— agent 的工具循环里第二轮是
+    [问题, assistant(tool_calls), tool(结果)]，最后一条用户消息就是原来的问题：工具结果整段没了，
+    Gemini 在同一个会话里又收到一遍同样的问题。
+    """
+    new = []
+    for msg in reversed(messages_raw or []):
+        role = msg.get("role")
+        if role in ("assistant", "model"):
+            break
+        if role in ("system", "developer"):
+            continue
+        new.append(msg)
+    if len(new) != 1 or new[0].get("role") != "user":
+        return False
+    content = new[0].get("content")
+    if isinstance(content, list):
+        return not any(isinstance(b, dict) and b.get("type") in ("tool_result", "tool_use")
+                       for b in content)
+    return True
+
+
+def _resume_target(conv, gem_account_id: str | None, messages_raw=None) -> tuple[str, str | None]:
     """这一轮续不续接上一轮的 Gemini 会话 → (续接参数, 这一轮钉的账号)。
 
-    只有「存储里解析得出有效 cid」并且「能钉回记录的那个账号」才续接：返回
+    只有「存储里解析得出有效 cid」「新的一轮恰好是一条用户消息」（messages_raw 给了才判，见
+    _new_turn_is_one_user_message）并且「能钉回记录的那个账号」才续接：返回
     (encode_conversation_metadata 编好的 [cid, rid, rcid], 会话的账号)，调用方只发最后一条
     用户消息。会话 id 是账号私有的，换个账号就接不上 —— v1.6.44 及以前第二轮按轮询落到哪个
     账号算哪个。
@@ -281,7 +308,10 @@ def _resume_target(conv, gem_account_id: str | None) -> tuple[str, str | None]:
     if meta is None:
         return "", gem_account_id
     conv_account = getattr(conv, "account_id", "") or ""
-    if not conv_account:
+    if messages_raw is not None and not _new_turn_is_one_user_message(messages_raw):
+        reason = ("the new turn is not a single user message "
+                  "(tool results / several messages since the last answer)")
+    elif not conv_account:
         reason = "no recorded account"
     elif gem_account_id and gem_account_id != conv_account:
         reason = f"the gem is bound to {gem_account_id}, the conversation lives on {conv_account}"
@@ -360,10 +390,11 @@ async def chat_completions(req: ChatRequest, request: Request):
     if req.conversation_id:
         # 存储键按访问密钥隔离；回给客户端的仍是它自己给的那个 id（见 _conv_echo_id）
         conv = await conversation_store.get(scoped_conversation_id(req.conversation_id))
-    # 续接（只发最后一句）的前提：存储里有有效的 [cid, rid, rcid]，且钉得回记录的那个账号。
-    # 否则 gemini_conv_id 为空、发完整历史；account_id 是这一轮钉的账号（续接 = 会话的账号，
-    # 否则 = Gem 绑定的账号，没有就不钉）。完整历史重试一律只钉 Gem 的账号（gem_account_id）。
-    gemini_conv_id, account_id = _resume_target(conv, gem_account_id)
+    # 续接（只发最后一句）的前提：存储里有有效的 [cid, rid, rcid]、新的一轮恰好是一条用户消息
+    # （带工具结果的不算），且钉得回记录的那个账号。否则 gemini_conv_id 为空、发完整历史；
+    # account_id 是这一轮钉的账号（续接 = 会话的账号，否则 = Gem 绑定的账号，没有就不钉）。
+    # 完整历史重试一律只钉 Gem 的账号（gem_account_id）。
+    gemini_conv_id, account_id = _resume_target(conv, gem_account_id, messages_raw)
 
     async def _fallback():
         """第三方兜底；兜到了就清掉会话的续接点（见 _forget_resume_point）。"""
