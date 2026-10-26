@@ -65,10 +65,20 @@ _OPTIONAL_MESSAGE_KEYS = ("name", "tool_calls", "tool_call_id")
 
 def _drop_none(message):
     """去掉值为 None 的可选字段。content 原样不动：assistant 工具调用那一轮的 `content: null`
-    正是 SDK 自己发的形态，删掉反而偏离规范。"""
+    正是 SDK 自己发的形态，删掉反而偏离规范。developer 角色转成 system：OpenAI 新版 SDK 用它代替
+    system，严格校验的上游（deepseek / glm / kimi / qwen 等）不认；system 处处都认。"""
     if not isinstance(message, dict):
         return message
-    return {k: v for k, v in message.items() if not (k in _OPTIONAL_MESSAGE_KEYS and v is None)}
+    out = {k: v for k, v in message.items() if not (k in _OPTIONAL_MESSAGE_KEYS and v is None)}
+    if out.get("role") == "developer":
+        out["role"] = "system"
+    return out
+
+
+# 原样转给 OpenAI 兼容上游的可选参数（没给就不带）。stream_options 只在流式时带：OpenAI 规定它只能
+# 和 stream=true 一起出现，兜底探测强制非流式，原样带上会 400。
+_PASSTHROUGH_PARAMS = ("top_p", "stop", "presence_penalty", "frequency_penalty", "seed",
+                       "response_format", "max_completion_tokens", "parallel_tool_calls")
 
 
 def entry_name(entry) -> str:
@@ -121,6 +131,12 @@ def _build_openai_request(entry: ApiKeyEntry, messages: list[dict], req) -> tupl
         payload["tools"] = [t.model_dump(exclude_none=True) for t in req.tools]
     if req.tool_choice is not None:
         payload["tool_choice"] = req.tool_choice
+    for key in _PASSTHROUGH_PARAMS:
+        value = getattr(req, key, None)
+        if value is not None:
+            payload[key] = value
+    if req.stream and getattr(req, "stream_options", None) is not None:
+        payload["stream_options"] = req.stream_options
     effort = getattr(entry, "reasoning_effort", None)
     if effort:
         payload["reasoning_effort"] = effort
@@ -414,13 +430,19 @@ def _openai_messages_to_anthropic(messages: list[dict]) -> tuple[str | None, lis
       - assistant.tool_calls  -> content blocks（文本块 + 每个调用一个 tool_use 块）
       - content is None       -> ""（Anthropic 不接受 null content）
     """
-    system_message = None
+    system_parts: list[str] = []
     anthropic_messages = []
 
     for msg in messages:
         role = msg.get("role")
-        if role == "system":
-            system_message = msg.get("content")
+        if role in ("system", "developer"):
+            # 多条 system / developer 都要留（过去只留最后一条）；内容块数组取其中的文字
+            content = msg.get("content")
+            if isinstance(content, list):
+                content = "\n".join(b.get("text", "") for b in content
+                                    if isinstance(b, dict) and isinstance(b.get("text"), str))
+            if content:
+                system_parts.append(str(content))
             continue
         if role == "tool":
             anthropic_messages.append({
@@ -444,7 +466,7 @@ def _openai_messages_to_anthropic(messages: list[dict]) -> tuple[str | None, lis
             "content": msg.get("content") or "",
         })
 
-    return system_message, anthropic_messages
+    return ("\n\n".join(system_parts) or None), anthropic_messages
 
 
 async def _forward_anthropic(
@@ -478,6 +500,16 @@ async def _forward_anthropic(
 
     if system_message:
         payload["system"] = system_message
+    # 采样参数：Anthropic 认 temperature / top_p / stop_sequences（其余 OpenAI 专有参数不带）
+    if req.temperature is not None:
+        payload["temperature"] = req.temperature
+    if getattr(req, "top_p", None) is not None:
+        payload["top_p"] = req.top_p
+    stop = getattr(req, "stop", None)
+    if stop:
+        payload["stop_sequences"] = [stop] if isinstance(stop, str) else list(stop)
+    if not req.max_tokens and getattr(req, "max_completion_tokens", None):
+        payload["max_tokens"] = req.max_completion_tokens
 
     if req.tools:
         anthropic_tools = []

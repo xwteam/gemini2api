@@ -1,5 +1,6 @@
 import json
 import time
+import shutil
 import asyncio
 import logging
 from enum import Enum
@@ -46,6 +47,40 @@ EMPTY_STREAK_THRESHOLD = 3
 # 非流式生成超时只在这次尝试几乎没收到数据时才算模型熔断的「疑似故障」（规格 I.4）。实测卡住时
 # 收到的是 39～184 字节（响应头 + 一两个空心跳帧）；一个正常的长回答超过预算时早已收到成 KB 的正文。
 BREAKER_TIMEOUT_MAX_BYTES = 1024
+
+
+DEFAULT_ACCOUNTS_FILE = "data/accounts.json"
+LEGACY_ACCOUNTS_FILE = "accounts.json"
+_DOCKERENV = Path("/.dockerenv")
+
+
+def _prepare_accounts_file() -> Path:
+    """启动时定位多账号文件（v1.6.49）。
+
+    - 用的是默认路径、新位置还没有文件、旧默认位置（工作目录下的 accounts.json，源码直跑的部署）
+      有文件 → 复制过去（旧文件保留），之后读写都在新位置；
+    - 在容器里、而配置的路径不在挂载卷 data/ 下（多半是照旧 .env.example 写的 ACCOUNTS_FILE=accounts.json）
+      → WARNING：容器重建（升级）后面板里加的账号会丢。显式配置照旧尊重，不擅自改。
+    """
+    path = Path(settings.accounts_file)
+    legacy = Path(LEGACY_ACCOUNTS_FILE)
+    if settings.accounts_file == DEFAULT_ACCOUNTS_FILE and not path.exists() and legacy.is_file():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy, path)
+            logger.warning(f"Accounts file moved to the new default {path} (copied from {legacy}; "
+                           f"the old file is kept but no longer read)")
+        except OSError as e:
+            # 这一次先从旧文件读；之后面板一保存就写到新位置，下次启动读新文件
+            logger.error(f"Could not copy {legacy} to {path}, reading the old file this time: {e}")
+            return legacy
+    if _DOCKERENV.exists():
+        data_dir = Path("data").resolve()
+        if data_dir not in path.resolve().parents:
+            logger.warning(f"ACCOUNTS_FILE={settings.accounts_file} is not under the mounted data/ volume: "
+                           f"accounts added in the panel will be lost when the container is recreated "
+                           f"(e.g. on upgrade). Set ACCOUNTS_FILE=data/accounts.json to keep them.")
+    return path
 
 
 def _breaker_counts(exc: Exception) -> bool:
@@ -252,7 +287,7 @@ class AccountPool:
         return len(self._accounts)
 
     async def initialize(self):
-        accounts_path = Path(settings.accounts_file)
+        accounts_path = _prepare_accounts_file()
         if accounts_path.exists():
             self._load_from_file(accounts_path)
             logger.info(f"Loaded {len(self._accounts)} accounts from {accounts_path}")

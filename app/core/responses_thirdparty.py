@@ -51,6 +51,26 @@ def _tool_choice_for(tool_defs, tool_choice):
     return tool_choice
 
 
+def _response_format(request_params: dict) -> dict | None:
+    """Responses 的 text.format → chat 的 response_format（json_schema 的字段从平铺挪进 json_schema）。"""
+    fmt = (request_params.get("text") or {}).get("format") if isinstance(request_params.get("text"), dict) else None
+    if not isinstance(fmt, dict) or fmt.get("type") in (None, "text"):
+        return None
+    if fmt.get("type") == "json_schema":
+        schema = {k: fmt[k] for k in ("name", "description", "schema", "strict") if k in fmt}
+        return {"type": "json_schema", "json_schema": schema}
+    return {"type": fmt["type"]}
+
+
+def _sampling_params(request_params: dict) -> dict:
+    """转给第三方的采样 / 格式参数（Gemini 路径用不上）。"""
+    return {"temperature": request_params.get("temperature"),
+            "max_tokens": request_params.get("max_output_tokens"),
+            "top_p": request_params.get("top_p"),
+            "parallel_tool_calls": request_params.get("parallel_tool_calls"),
+            "response_format": _response_format(request_params)}
+
+
 def _call_id(raw_id) -> str:
     return raw_id or f"call_{uuid.uuid4().hex[:24]}"
 
@@ -96,8 +116,7 @@ async def _dispatch_non_stream(request, resolved_model, messages_raw, tools_raw,
     tool_defs = _to_tool_defs(tools_raw)
     chat_req = ChatRequest(model=resolved_model, messages=_to_chat_messages(messages_raw),
                           stream=False, tools=tool_defs, tool_choice=_tool_choice_for(tool_defs, tool_choice),
-                          temperature=request_params.get("temperature"),
-                          max_tokens=request_params.get("max_output_tokens"))
+                          **_sampling_params(request_params))
 
     async def attempt(entry):
         resp = await forward_to_provider(entry, messages_raw, chat_req)
@@ -144,8 +163,7 @@ async def _dispatch_stream(request, resolved_model, messages_raw, tools_raw, too
     tool_defs = _to_tool_defs(tools_raw)
     chat_req = ChatRequest(model=resolved_model, messages=_to_chat_messages(messages_raw),
                           stream=True, tools=tool_defs, tool_choice=_tool_choice_for(tool_defs, tool_choice),
-                          temperature=request_params.get("temperature"),
-                          max_tokens=request_params.get("max_output_tokens"))
+                          **_sampling_params(request_params))
     response_id = new_response_id()
     enc = ResponsesStreamEncoder(response_id, resolved_model, request_params)
     yield enc.created()

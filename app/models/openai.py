@@ -32,6 +32,16 @@ class ChatRequest(BaseModel):
     tool_choice: Any = None
     conversation_id: str | None = None
     reasoning_effort: str | None = None
+    # 下面这些 Gemini 网页版用不上，只原样转给第三方模型 / 兜底（过去模型里没有字段，被直接丢弃）
+    top_p: float | None = None
+    stop: str | list[str] | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    seed: int | None = None
+    response_format: dict | None = None
+    max_completion_tokens: int | None = None
+    stream_options: dict | None = None
+    parallel_tool_calls: bool | None = None
 
 
 class ChoiceMessage(BaseModel):

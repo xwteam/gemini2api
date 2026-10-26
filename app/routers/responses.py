@@ -55,7 +55,7 @@ def _stream_failed(enc: ResponsesStreamEncoder, exc: Exception) -> str:
 def _request_params(body: dict) -> dict:
     params = {}
     for key in ("tools", "tool_choice", "temperature", "top_p", "max_output_tokens",
-               "store", "truncation", "parallel_tool_calls"):
+               "store", "truncation", "parallel_tool_calls", "text"):
         if key in body and body[key] is not None:
             params[key] = body[key]
     return params

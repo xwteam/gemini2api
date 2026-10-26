@@ -104,7 +104,9 @@ class Settings(BaseSettings):
     rate_limit_max: int = 10
     health_check_enabled: bool = True
     health_check_interval: int = 5
-    accounts_file: str = "accounts.json"
+    # 多账号文件。默认放在挂载卷 data/ 里（v1.6.49 起）：过去默认 accounts.json 落在容器层，
+    # `docker compose pull && up -d` 重建容器后，面板里加的账号全丢。旧默认位置有文件时启动会复制过来。
+    accounts_file: str = "data/accounts.json"
     rotation_strategy: str = "round-robin"
     max_concurrent_per_account: int = 8
     # 并发满载时，acquire 排队等待可用槽位的上限（秒）。等不到才报错，

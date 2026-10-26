@@ -124,13 +124,15 @@ def build_prompt_from_messages(messages: list[dict], system: str | None = None,
             if call_parts:
                 content = "\n".join([content, *call_parts]) if content else "\n".join(call_parts)
 
-        if role == "system":
+        # developer：OpenAI 新版 SDK / Codex 用它代替 system 发说明（Codex 的权限、沙箱规则就在里面），
+        # 过去没有这个分支、整段被丢掉。function：旧版 OpenAI 的工具结果角色。
+        if role in ("system", "developer"):
             parts.append(f"System: {content}")
         elif role == "user":
             parts.append(f"Human: {content}")
         elif role in ("assistant", "model"):
             parts.append(f"Assistant: {content}")
-        elif role == "tool":
+        elif role in ("tool", "function"):
             parts.append(f"Tool result: {content}")
 
     if tool_prompt:
