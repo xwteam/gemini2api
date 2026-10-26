@@ -310,10 +310,12 @@ gemini2api 内置 Cookie 自动轮换机制：默认每 30 分钟（`REFRESH_INT
 - 面板账号卡片会给浏览器保活的账号显示「浏览器保活」标签；`GET /admin/status` 的每个账号都带 `keepalive_mode`（`server` / `browser`）。
 - 想交回服务端轮换（比如改用无痕窗口取的 cookie——窗口一关就没人轮换了），在面板「更新 Cookie」里重新提交一次即可。
 - 浏览器保活的账号靠那个浏览器维持：浏览器长时间不开，cookie 会过期，账号会变成 `expired`。
-- 记录保存在 `data/keepalive-modes.json`，键是 PSID 的 SHA-256 前 16 位（与 `data/cookies/` 下的文件名同一算法），不含任何 cookie 值；重新登录换了 PSID 后自动回到服务端轮换。
+- 记录保存在 `data/keepalive-modes.json`，键是 PSID 的 SHA-256 前 16 位（与 `data/cookies/` 下的文件名同一算法），不含任何 cookie 值。记录跟着 PSID 走：重新登录换了 PSID，旧记录就不再适用，新 PSID 由谁推来就按谁记——插件推来的仍是浏览器保活；面板 / 脚本推来的，以及通过面板「添加账号」加进来的（包括删掉后用同一份 cookie 加回来的）是服务端轮换。
+- 仓库自带的 Playwright 续期边车（`docker compose --profile refresher`）本身就是一个浏览器，推送时带同一个请求头，它推过的账号同样记为浏览器保活。
+- **插件请绑定账号 ID**（插件侧边栏顶部「绑定本浏览器负责的账号 ID」）。没绑定时，插件 v1.2.3 只要在 `/admin/status` 里看到任何 `expired` 账号，每轮轮询（默认 60 秒）都会先刷新一次浏览器里的 Gemini 标签页、再按 PSID 匹配账号：池里有不属于这个浏览器的账号失效时，你正在用的 Gemini 页面会被反复刷新，正在输入的内容可能会丢。现在「会话被打回登录页」也报 `expired`，这种情况比以前常见。浏览器自己也掉了登录时同样会每轮刷新，在浏览器里重新登录即可。
 
 > [!NOTE]
-> 账号状态 `expired` 现在也包括「**谷歌会话被打回登录页**」（cookie 已失效）。以前这种账号仍显示 `active`、只有 `is_healthy` 为 `false`，浏览器插件看不见、不会去救。会话失效期间服务端不再白调 RotateCookies（只探测会话，偶发故障能自己恢复）；插件或面板换上新 cookie 后账号立即回到 `active`，不用再点「检测」。
+> 账号状态 `expired` 现在也包括「**谷歌会话被打回登录页**」（cookie 已失效）。以前这种账号仍显示 `active`、只有 `is_healthy` 为 `false`，浏览器插件看不见、不会去救。会话被打回登录页、且谷歌已对这份 cookie 的 RotateCookies 回过 401 之后，服务端（刷新循环和自愈都一样）不再拿同一份 cookie 白调 RotateCookies，只继续探测会话，偶发故障能自己恢复；只是被打回登录页、谷歌还没拒绝过的会话照旧轮换（PSIDTS 过期的会话往往一次轮换就能救回来）；插件或面板换上新 cookie 后账号立即回到 `active`，不用再点「检测」。
 
 ### 3. 验证
 

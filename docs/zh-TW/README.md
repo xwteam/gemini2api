@@ -311,10 +311,12 @@ gemini2api 內置 Cookie 自動輪換機制：預設每 30 分鐘（`REFRESH_INT
 - 面板帳號卡片會給瀏覽器保活的帳號顯示「瀏覽器保活」標籤；`GET /admin/status` 的每個帳號都帶 `keepalive_mode`（`server` / `browser`）。
 - 想交回伺服器端輪換（例如改用無痕視窗取得的 cookie——視窗一關就沒人輪換了），在面板「更新 Cookie」裡重新提交一次即可。
 - 瀏覽器保活的帳號靠那個瀏覽器維持：瀏覽器長時間不開，cookie 會過期，帳號會變成 `expired`。
-- 記錄保存在 `data/keepalive-modes.json`，鍵是 PSID 的 SHA-256 前 16 位（與 `data/cookies/` 下的檔名同一演算法），不含任何 cookie 值；重新登入換了 PSID 後自動回到伺服器端輪換。
+- 記錄保存在 `data/keepalive-modes.json`，鍵是 PSID 的 SHA-256 前 16 位（與 `data/cookies/` 下的檔名同一演算法），不含任何 cookie 值。記錄跟著 PSID 走：重新登入換了 PSID，舊記錄就不再適用，新 PSID 由誰推來就依誰記——擴充功能推來的仍是瀏覽器保活；面板 / 腳本推來的，以及透過面板「新增帳號」加進來的（包括刪掉後用同一份 cookie 加回來的）是伺服器端輪換。
+- 倉庫自帶的 Playwright 續期邊車（`docker compose --profile refresher`）本身就是一個瀏覽器，推送時帶同一個請求標頭，它推過的帳號同樣記為瀏覽器保活。
+- **擴充功能請綁定帳號 ID**（擴充功能側邊欄頂部「綁定本瀏覽器負責的帳號 ID」）。沒綁定時，擴充功能 v1.2.3 只要在 `/admin/status` 裡看到任何 `expired` 帳號，每輪輪詢（預設 60 秒）都會先重新整理一次瀏覽器裡的 Gemini 分頁、再依 PSID 比對帳號：池裡有不屬於這個瀏覽器的帳號失效時，你正在用的 Gemini 頁面會被反覆重新整理，正在輸入的內容可能會遺失。現在「工作階段被導回登入頁」也回報 `expired`，這種情況比以前常見。瀏覽器自己也掉了登入時同樣會每輪重新整理，在瀏覽器裡重新登入即可。
 
 > [!NOTE]
-> 帳號狀態 `expired` 現在也包括「**Google 工作階段被導回登入頁**」（cookie 已失效）。以前這種帳號仍顯示 `active`、只有 `is_healthy` 為 `false`，瀏覽器擴充功能看不見、不會去救。工作階段失效期間伺服器端不再白白呼叫 RotateCookies（只探測工作階段，偶發故障能自己恢復）；擴充功能或面板換上新 cookie 後帳號立即回到 `active`，不用再點「檢測」。
+> 帳號狀態 `expired` 現在也包括「**Google 工作階段被導回登入頁**」（cookie 已失效）。以前這種帳號仍顯示 `active`、只有 `is_healthy` 為 `false`，瀏覽器擴充功能看不見、不會去救。工作階段被導回登入頁、且 Google 已對這份 cookie 的 RotateCookies 回過 401 之後，伺服器端（輪換迴圈和自癒都一樣）不再拿同一份 cookie 白白呼叫 RotateCookies，只繼續探測工作階段，偶發故障能自己恢復；只是被導回登入頁、Google 還沒拒絕過的工作階段照舊輪換（PSIDTS 過期的工作階段往往一次輪換就能救回來）；擴充功能或面板換上新 cookie 後帳號立即回到 `active`，不用再點「檢測」。
 
 ### 3. 驗證
 

@@ -814,6 +814,8 @@ curl -X POST http://localhost:5918/admin/accounts \
 }
 ```
 
+新しく追加したアカウントも送信元から `keepalive_mode` を記録します（ルールは `PUT /admin/accounts/{id}/cookies` と同じ。パネルの「アカウント追加」やスクリプトで追加したものは `server`）。アカウントを削除してもその PSID の記録は消えませんが、同じ Cookie で追加し直すと今回の送信元で記録し直します。
+
 ### DELETE /admin/accounts/{id}
 
 アカウントを削除します。
@@ -920,11 +922,11 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 
 | リクエスト | `keepalive_mode` | 効果 |
 |------|------|------|
-| `X-Gemini2API-Keepalive` ヘッダー付き（ブラウザ保持拡張機能 v1.3.0 以降が送信。値は `gemini2api-plugin/1.3.0` の形式） | `browser` | サーバーはこのアカウントの RotateCookies を呼ばなくなり、ブラウザがローテーションして拡張機能が送信します |
+| `X-Gemini2API-Keepalive` ヘッダー付き（ブラウザ保持拡張機能 v1.3.0 以降が送信。値は `gemini2api-plugin/1.3.0` の形式。リポジトリ付属の Playwright 更新サイドカーは `gemini2api-refresher` を送信） | `browser` | サーバーはこのアカウントの RotateCookies を呼ばなくなり、ブラウザがローテーションして拡張機能が送信します |
 | `Origin` が `chrome-extension://` で始まる（このヘッダーを送らない旧版の拡張機能） | `browser` | 同上 |
 | その他（パネルの「Cookie 更新」、スクリプト / curl） | `server` | サーバーの定期ローテーションに戻します |
 
-成功するとアカウントはただちに `active` に戻り、連続失敗数もリセットされます（続けて `/check` を呼ぶ必要はありません）。リロードに失敗した場合（503）は、保持方式もアカウント状態も変わりません。
+成功するとアカウントはただちに `active` に戻り、連続失敗数もリセットされます（続けて `/check` を呼ぶ必要はありません）。リロードに失敗した場合（503）は何も変わりません。その Cookie には切り替わらず、保持方式もアカウント状態もそのままです。送信元がブラウザ保持拡張機能の場合は、このリロード自体でも RotateCookies を呼びません（トークン取得に失敗したときの予備のローテーションも行わないので、ブラウザが使用中のセッションをサーバーが差し替えることはありません）。
 
 ### GET /admin/health-history
 

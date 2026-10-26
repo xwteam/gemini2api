@@ -845,6 +845,8 @@ curl -X POST http://localhost:5918/admin/accounts \
 }
 ```
 
+새로 추가한 계정도 요청 출처에 따라 `keepalive_mode`를 기록합니다(규칙은 `PUT /admin/accounts/{id}/cookies`와 같으며, 패널의 "계정 추가"나 스크립트로 추가한 계정은 `server`). 계정을 삭제해도 그 PSID의 기록은 지워지지 않지만, 같은 쿠키로 다시 추가하면 이번 요청 출처에 따라 다시 기록합니다.
+
 ### DELETE /admin/accounts/{id}
 
 계정 삭제
@@ -909,11 +911,11 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 
 | 요청 | `keepalive_mode` | 효과 |
 |------|------|------|
-| `X-Gemini2API-Keepalive` 헤더 포함(브라우저 유지 확장 프로그램 v1.3.0부터 전송, 값 형식 `gemini2api-plugin/1.3.0`) | `browser` | 서버는 이 계정에 대해 RotateCookies를 더 이상 호출하지 않으며, 브라우저가 로테이션하고 확장 프로그램이 전송합니다 |
+| `X-Gemini2API-Keepalive` 헤더 포함(브라우저 유지 확장 프로그램 v1.3.0부터 전송, 값 형식 `gemini2api-plugin/1.3.0`; 저장소에 포함된 Playwright 갱신 사이드카는 `gemini2api-refresher`를 전송) | `browser` | 서버는 이 계정에 대해 RotateCookies를 더 이상 호출하지 않으며, 브라우저가 로테이션하고 확장 프로그램이 전송합니다 |
 | `Origin`이 `chrome-extension://`로 시작(이 헤더를 보내지 않는 구버전 확장 프로그램) | `browser` | 위와 같음 |
 | 그 외(패널의 "Cookie 갱신", 스크립트 / curl) | `server` | 서버의 주기적 로테이션으로 되돌립니다 |
 
-성공하면 계정은 즉시 `active`로 돌아가고 연속 실패 수도 초기화됩니다(이어서 `/check`를 호출할 필요 없음). 리로드에 실패하면(503) 유지 방식도 계정 상태도 바뀌지 않습니다.
+성공하면 계정은 즉시 `active`로 돌아가고 연속 실패 수도 초기화됩니다(이어서 `/check`를 호출할 필요 없음). 리로드에 실패하면(503) 아무것도 바뀌지 않습니다. 그 쿠키로 바꾸지 않고, 유지 방식도 계정 상태도 그대로입니다. 요청 출처가 브라우저 유지 확장 프로그램이면 이번 리로드 자체에서도 RotateCookies를 호출하지 않습니다(토큰을 가져오지 못했을 때의 예비 로테이션도 건너뛰므로, 브라우저가 쓰고 있는 세션을 서버가 바꿔 버리지 않습니다).
 
 ### POST /admin/reload-cookies
 

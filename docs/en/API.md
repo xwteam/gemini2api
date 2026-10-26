@@ -793,6 +793,8 @@ curl -X POST http://localhost:5918/admin/accounts \
 }
 ```
 
+A newly added account also gets its `keepalive_mode` recorded from the request source (same rules as `PUT /admin/accounts/{id}/cookies`; accounts added through the panel's "Add Account" or by a script are `server`). Deleting an account does not clear the record for its PSID, but adding it back with the same cookies records it again from the new request.
+
 ### DELETE /admin/accounts/{id}
 
 Remove an account.
@@ -858,11 +860,11 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 
 | Request | `keepalive_mode` | Effect |
 |------|------|------|
-| Carries the `X-Gemini2API-Keepalive` header (sent by the browser keep-alive extension from v1.3.0, value like `gemini2api-plugin/1.3.0`) | `browser` | The server stops calling RotateCookies for this account; the browser rotates and the extension pushes |
+| Carries the `X-Gemini2API-Keepalive` header (sent by the browser keep-alive extension from v1.3.0, value like `gemini2api-plugin/1.3.0`; the bundled Playwright refresher sidecar sends `gemini2api-refresher`) | `browser` | The server stops calling RotateCookies for this account; the browser rotates and the extension pushes |
 | `Origin` starts with `chrome-extension://` (older extension versions that do not send the header) | `browser` | Same as above |
 | Anything else (the panel's "Update Cookie", scripts / curl) | `server` | Handed back to the server's scheduled rotation |
 
-On success the account is back to `active` with its consecutive failures reset right away — no follow-up `/check` needed. A failed reload (503) changes neither the keep-alive mode nor the account state.
+On success the account is back to `active` with its consecutive failures reset right away — no follow-up `/check` needed. A failed reload (503) changes nothing: the cookies are not swapped in, and neither the keep-alive mode nor the account state changes. When the request comes from the browser keep-alive extension, the reload itself does not call RotateCookies either (the fallback rotation after a failed token fetch is skipped too, so the server never replaces the session the browser is using).
 
 ### POST /admin/reload-cookies
 

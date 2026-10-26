@@ -892,6 +892,8 @@ curl -X POST http://localhost:5918/admin/accounts \
 }
 ```
 
+新添加的账号同样按请求来源记录 `keepalive_mode`（规则同 `PUT /admin/accounts/{id}/cookies`，面板「添加账号」和脚本添加的是 `server`）。删除账号不会清掉它那个 PSID 的记录，但用同一份 cookie 加回来时会按这次的来源重新记录。
+
 ### DELETE /admin/accounts/{id}
 
 删除指定账号。
@@ -981,11 +983,11 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 
 | 请求来源 | `keepalive_mode` | 效果 |
 |------|------|------|
-| 带请求头 `X-Gemini2API-Keepalive`（浏览器保活插件 v1.3.0 起会带，值形如 `gemini2api-plugin/1.3.0`） | `browser` | 服务端不再对该账号调 RotateCookies，由浏览器轮换、插件推送 |
+| 带请求头 `X-Gemini2API-Keepalive`（浏览器保活插件 v1.3.0 起会带，值形如 `gemini2api-plugin/1.3.0`；仓库自带的 Playwright 续期边车带 `gemini2api-refresher`） | `browser` | 服务端不再对该账号调 RotateCookies，由浏览器轮换、插件推送 |
 | `Origin` 以 `chrome-extension://` 开头（兼容不带上述请求头的旧版插件） | `browser` | 同上 |
 | 其他（面板「更新 Cookie」、脚本 / curl） | `server` | 交回服务端定时轮换 |
 
-成功后该账号立即恢复为 `active`、连续失败数清零，不需要再调 `/check`。reload 失败（503）时既不改保活方式，也不改账号状态。
+成功后该账号立即恢复为 `active`、连续失败数清零，不需要再调 `/check`。reload 失败（503）时什么都不改：不换上这份 cookie，也不改保活方式和账号状态。来源是浏览器保活插件时，这次 reload 本身也不会调 RotateCookies（取 token 失败后的兜底轮换同样跳过，免得替浏览器把它正在用的会话换掉）。
 
 ### GET /admin/health-history
 
