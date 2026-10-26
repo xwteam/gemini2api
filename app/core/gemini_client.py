@@ -1515,6 +1515,9 @@ def _rand_reqid() -> int:
 
 
 class GeminiWebClient:
+    # 类级默认值：测试替身常用 __new__ 绕开 __init__ 造实例，刷新循环 / 状态导出照样读得到它。
+    _auth_expired = False
+
     def __init__(self, psid: str | None = None, psidts: str | None = None):
         self._psid = psid or settings.gemini_psid
         self._psidts = psidts or settings.gemini_psidts
@@ -1532,6 +1535,9 @@ class GeminiWebClient:
         # 防止指纹轮换瞬间对同一个 _http 双重 close + 互相覆盖新 session 致泄漏（双重检查锁）。
         self._session_lock = asyncio.Lock()
         self._healthy = False
+        # 会话已被谷歌打回登录页（见 auth_expired）。与 _healthy 分开记：不健康的原因很多
+        # （网络抖动、5xx、页面解析失败……），只有这一种必须换 cookie 才能恢复。
+        self._auth_expired = False
         self._refresh_task: asyncio.Task | None = None
         self._health_check_task: asyncio.Task | None = None
         self._http: AsyncSession | None = None
@@ -1648,6 +1654,20 @@ class GeminiWebClient:
     def is_healthy(self) -> bool:
         return self._healthy
 
+    @property
+    def auth_expired(self) -> bool:
+        """会话已被谷歌打回登录页（cookie 已失效，换新的才能恢复）。只读。
+
+        只在**产生**「打回登录页」判定的地方置位（_detect_login_redirect：_obtain_session_token
+        与 check_account 读的是同一个 /app 页面）；成功拿到 SNlM0e、reload_cookies 成功时清掉。
+        RotateCookies 回 401 本身不置位 —— 以随后的 token 获取结果为准。
+
+        用途：①AccountPool.get_status 把「池里还标着 ACTIVE、其实会话已死」的账号对外报成
+        expired（浏览器保活插件只认 expired）；②置位期间 _auto_refresh_loop 不再白敲
+        RotateCookies，只探测 token。
+        """
+        return self._auth_expired
+
     def _model_table(self) -> dict:
         """**本账号**当前可路由的模型表：契约 family 的写死行 + 本账号心跳发现到的。
 
@@ -1733,10 +1753,12 @@ class GeminiWebClient:
                 token_match = re.search(r'"SNlM0e":"([^"]+)"', body)
 
                 if token_match:
-                    self._session_token = token_match.group(1)
-                    self._push_id = _extract_push_id(body)
+                    self._adopt_session_token(token_match.group(1), body)
                     self._healthy = True
                     await self._send_heartbeat()  # 拉取账号真实可用模型
+                else:
+                    # 与 _obtain_session_token 同一判定：健康检查循环、/check 看到登录页也要记下来
+                    self._detect_login_redirect(body)
 
                 # models_count 只认 RPC 的结果：之前还会拿 HTML 正则抓一遍模型名兜底，
                 # 而那条正则要求"数字.数字"（gemini-\d+\.\d+...），匹配不到 gemini-3-pro
@@ -1788,6 +1810,22 @@ class GeminiWebClient:
         except Exception:
             pass
 
+    def _adopt_session_token(self, token: str, body: str) -> None:
+        """拿到了 SNlM0e：换上新 token。能拿到 token 就说明会话没被打回登录页。"""
+        self._session_token = token
+        self._push_id = _extract_push_id(body)
+        self._auth_expired = False
+
+    def _detect_login_redirect(self, body: str) -> bool:
+        """/app 页面被谷歌打回了登录页 → 置 auth_expired 并返回 True。
+
+        这是 auth_expired 唯一的置位点（_obtain_session_token 与 check_account 都经过这里）。
+        """
+        if "accounts.google.com" in body or "ServiceLogin" in body:
+            self._auth_expired = True
+            return True
+        return False
+
     async def _obtain_session_token(self):
         try:
             await self._ensure_session_current()
@@ -1821,12 +1859,11 @@ class GeminiWebClient:
             body = resp.text
             token_match = re.search(r'"SNlM0e":"([^"]+)"', body)
             if token_match:
-                self._session_token = token_match.group(1)
-                self._push_id = _extract_push_id(body)
+                self._adopt_session_token(token_match.group(1), body)
                 logger.info("Session token acquired")
             else:
                 self._session_token = ""
-                if "accounts.google.com" in body or "ServiceLogin" in body:
+                if self._detect_login_redirect(body):
                     msg = "Cookie expired - redirected to Google login page"
                 elif len(body) < 1000:
                     msg = f"Invalid response (body too short: {len(body)} bytes)"
@@ -2351,12 +2388,21 @@ class GeminiWebClient:
         while True:
             await asyncio.sleep(interval * random_delay_factor())
             try:
-                rotated = await self._rotate_cookies()
-                if not rotated:
-                    consecutive_failures += 1
-                    logger.warning(f"Cookie rotation failed ({consecutive_failures}x)")
+                if self.auth_expired:
+                    # 会话已被打回登录页：死会话换 PSIDTS 也是 401（线上一个死账号 37 小时敲了
+                    # 220+ 次），白敲谷歌还平添风控面。只做下面的 token 探测：瞬时故障能自己
+                    # 恢复；换上好 cookie（reload_cookies 成功）也会清掉判定，下一轮恢复轮换。
+                    logger.info(
+                        "Auto-refresh: session expired (login redirect); "
+                        "skipping RotateCookies, probing the token only"
+                    )
                 else:
-                    consecutive_failures = 0
+                    rotated = await self._rotate_cookies()
+                    if not rotated:
+                        consecutive_failures += 1
+                        logger.warning(f"Cookie rotation failed ({consecutive_failures}x)")
+                    else:
+                        consecutive_failures = 0
 
                 # _obtain_session_token() 失败时会把 token 清空（任何异常都被它吞掉），
                 # 所以先留一份已知可用的 token：一次抖动不该既降级账号、又把好 token 丢掉
@@ -3013,14 +3059,17 @@ class GeminiWebClient:
         只还原 _healthy 是不够的：函数开头会清空 _session_token 并把新 Cookie 写进 jar，
         一个"健康但没有 SNlM0e token / 拿着别人 Cookie"的 client 会被池照常派活、然后每个
         请求都失败，3 次就被标 EXPIRED —— 比不还原更糟。所以整组状态一起回滚。
+        auth_expired 同理：失败的 reload 拿死 cookie 取 token 时会把它置上，不还原的话一个
+        好好的会话会被当成「已被打回登录页」，刷新循环从此不再给它轮换。
         """
-        psid, psidts, session_token, was_healthy = prev
+        psid, psidts, session_token, was_healthy, auth_expired = prev
         if not was_healthy:
             return
         self._psid = psid
         self._psidts = psidts
         self._session_token = session_token
         self._healthy = True
+        self._auth_expired = auth_expired
         if self._cookie_jar is not None:
             self._cookie_jar.set("__Secure-1PSID", psid)
             if psidts:
@@ -3032,7 +3081,7 @@ class GeminiWebClient:
         # 要么原样不动"：旧实现在任何网络操作之前就无条件 self._healthy = False，失败返回
         # 路径却从不恢复，于是一次失败的刷新（面板误填 cookie、Google 临时 5xx、多账号池里
         # /reload-cookies 拿同一份 cookie 挨个试）就把一个本来健康的 client 永久拉黑。
-        prev_state = (self._psid, self._psidts, self._session_token, self._healthy)
+        prev_state = (self._psid, self._psidts, self._session_token, self._healthy, self._auth_expired)
 
         if psid:
             self._psid = psid.strip().strip('"').strip("'").rstrip(";")
@@ -3056,6 +3105,7 @@ class GeminiWebClient:
             await self._obtain_session_token()
             if self._session_token:
                 self._healthy = True
+                self._auth_expired = False
                 self._ensure_refresh_task()
                 await self._send_heartbeat()  # 拉取账号真实可用模型
                 logger.info("Cookies reloaded successfully")
@@ -3068,6 +3118,7 @@ class GeminiWebClient:
                 await self._obtain_session_token()
                 if self._session_token:
                     self._healthy = True
+                    self._auth_expired = False
                     self._ensure_refresh_task()
                     logger.info("Cookies reloaded after rotation")
                     return {"success": True}
