@@ -60,7 +60,8 @@ def test_nonstream_rejection_raises_instead_of_returning_empty():
 def test_normal_response_is_untouched():
     out = _client()._parse_output(_raw(_text_line("hello")))
     assert out["text"] == "hello"
-    assert out["conversation_id"] == "['c_1']"
+    # v1.6.45 起会话元数据存成 [cid, rid, rcid] 的 JSON（不再是 Python repr "['c_1']"）
+    assert json.loads(out["conversation_id"]) == ["c_1", None, None]
 
 
 def test_model_talking_about_the_error_type_is_not_a_rejection():

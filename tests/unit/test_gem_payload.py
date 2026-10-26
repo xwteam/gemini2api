@@ -27,7 +27,9 @@ def test_encode_payload_injects_gem_at_index_19():
 
 def test_encode_payload_gem_with_attachments():
     c = _c()
-    out = c._encode_payload("hi", "gemini-pro", "conv1", [("fid", "f.png")], gem_id="g1")
+    conv = json.dumps(["c_1", "r_1", "rc_1"])
+    out = c._encode_payload("hi", "gemini-pro", conv, [("fid", "f.png")], gem_id="g1")
     inner = json.loads(json.loads(out)[1])
     assert inner[19] == "g1"
-    assert inner[2] == "conv1"
+    # 续接参数是 [cid, rid, rcid] 列表，绝不是字符串（v1.6.45）
+    assert inner[2] == ["c_1", "r_1", "rc_1"]

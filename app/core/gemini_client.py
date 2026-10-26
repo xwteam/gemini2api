@@ -1,4 +1,5 @@
 import re
+import ast
 import json
 import time
 import uuid
@@ -1461,12 +1462,114 @@ def _scan_complete_wrb_frames(buf: str) -> tuple[list, int]:
     return frames, consumed
 
 
+# ---------------------------------------------------------------------------
+# 多轮续接的会话元数据 [cid, rid, rcid]
+# ---------------------------------------------------------------------------
+# Gemini 网页版续接一个会话靠三个 id（口径同参考实现 refs/gemini-web-to-api
+# internal/modules/providers/gemini_chat_session.go 的 buildMetadata、HanaokaYuzu Gemini-API
+# 的 ChatSession.metadata）：
+#   cid   会话 id（c_…）            响应 payload[1][0]（实测 payload[1] 是 ["c_…", "r_…"]）
+#   rid   这一轮回答的 id（r_…）     响应 payload[1][1]
+#   rcid  被采用的候选的 id（rc_…）  响应 payload[4][0][0]（候选数组第 0 位）
+# 请求时放在内层数组第 2 格，**必须是列表**（缺的位置 None）。v1.6.44 及以前存的是
+# str(payload[1])（Python repr "['c_…', 'r_…']"），下一轮把这个字符串原样塞进第 2 格，
+# 思考路径（默认档上线后几乎所有请求）干脆不带；两种谷歌都当成新会话 —— 第二轮起每一轮
+# 其实都开了新会话、只发了最后一句。
+_CID_RE = re.compile(r"^c_[0-9A-Za-z_.-]{1,128}$")
+_RID_RE = re.compile(r"^r_[0-9A-Za-z_.-]{1,128}$")
+_RCID_RE = re.compile(r"^rc_[0-9A-Za-z_.-]{1,128}$")
+# 存储里的值超过这个长度一律当坏值：三个 id 加起来远到不了，也免得 literal_eval 去啃大输入。
+_CONV_META_MAX_LEN = 1024
+
+
+def _normalize_conversation_metadata(value) -> list | None:
+    """列表 / 元组 → [cid, rid, rcid]（rid、rcid 不合格的位置填 None）；cid 不合格 → None。
+
+    只认长得像 Gemini id 的值：一个坏 cid 塞进 payload，谷歌多半静默开新会话 —— 正是要堵的
+    「悄悄丢上下文」。不记日志（流式每帧都会走这里）。
+    """
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    cid = value[0]
+    if not (isinstance(cid, str) and _CID_RE.match(cid)):
+        return None
+    rid = value[1] if len(value) > 1 else None
+    rcid = value[2] if len(value) > 2 else None
+    return [
+        cid,
+        rid if isinstance(rid, str) and _RID_RE.match(rid) else None,
+        rcid if isinstance(rcid, str) and _RCID_RE.match(rcid) else None,
+    ]
+
+
+def parse_conversation_metadata(raw) -> list | None:
+    """续接元数据 → [cid, rid, rcid]；没有可续接的会话 → None。
+
+    读取一律走这里（路由决定续不续接、两个 payload 编码器决定第 2 格放什么）。认：
+      - JSON 列表 '["c_…", "r_…", "rc_…"]'（v1.6.45 起的存储格式，见 encode_conversation_metadata）
+      - 旧的 Python repr "['c_…', 'r_…']"（v1.6.44 及以前存的；ast.literal_eval 只认字面量）
+      - 纯 "c_…" 字符串 → [cid, None, None]
+      - 已经是列表 / 元组
+    空值 → None（不记日志）；其它坏值 → None 并记一行日志：调用方据此改发完整历史、新开会话，
+    绝不把坏值塞进 payload 让谷歌静默开新会话。
+    """
+    if not raw:
+        return None
+    value = raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if _CID_RE.match(text):
+            return [text, None, None]
+        value = None
+        if text.startswith("[") and len(text) <= _CONV_META_MAX_LEN:
+            try:
+                value = json.loads(text)
+            except (ValueError, RecursionError):
+                try:
+                    value = ast.literal_eval(text)
+                except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+                    value = None
+    meta = _normalize_conversation_metadata(value)
+    if meta is None:
+        logger.warning("Unusable conversation metadata %r; not resuming, starting a new conversation",
+                       str(raw)[:120])
+    return meta
+
+
+def encode_conversation_metadata(meta) -> str:
+    """[cid, rid, rcid] → 存储用的 JSON 字符串（Conversation.gemini_conv_id）；没有有效 cid → ""。"""
+    meta = _normalize_conversation_metadata(meta)
+    return json.dumps(meta) if meta else ""
+
+
+def _response_conversation_metadata(payload: list) -> list | None:
+    """从一帧响应 payload 里取续接三元组（流式与非流式共用，口径必须一致）。
+
+    payload[1] 实测是 ["c_…", "r_…"]，个别帧只给一个 "c_…" 字符串（参考实现
+    gemini_video.go 的 conversationIDFromPayload 两种都认）；rcid 取被采用的候选
+    payload[4][0] 的第 0 格。
+    """
+    head = payload[1] if len(payload) > 1 else None
+    if isinstance(head, str):
+        cid, rid = head, None
+    elif isinstance(head, list) and head:
+        cid = head[0]
+        rid = head[1] if len(head) > 1 else None
+    else:
+        return None
+    rcid = None
+    cands = payload[4] if len(payload) > 4 else None
+    if isinstance(cands, list) and cands and isinstance(cands[0], list) and cands[0]:
+        rcid = cands[0][0]
+    return _normalize_conversation_metadata([cid, rid, rcid])
+
+
 def _extract_text_from_wrb(elem: list) -> tuple[str | None, str, str]:
-    """从单个 wrb.fr 帧提取 (累积文本, 会话ID, 思维链)。非文本帧返回 (None, "", "")。
-    文本路径 payload[4][0][1][0]；会话ID 用 str(payload[1])，与非流式 _parse_output
-    逐字节一致（会话ID 会存进 conversation_store，下轮回传给 _encode_payload 续接会话，
-    流式与非流式必须同格式，否则多轮对话续接会错乱）。思维链路径 payload[4][0][37][0][0]
-    （extended thinking 开启时才有，与 _parse_output 保持一致）。
+    """从单个 wrb.fr 帧提取 (累积文本, 会话元数据, 思维链)。非文本帧返回 (None, "", "")。
+    文本路径 payload[4][0][1][0]；会话元数据是 encode_conversation_metadata 编出来的
+    [cid, rid, rcid] JSON，与非流式 _parse_output 逐字节一致（它会存进 conversation_store，
+    下轮回传给 payload 编码器续接会话，流式与非流式必须同格式，否则多轮对话续接会错乱）。
+    思维链路径 payload[4][0][37][0][0]（extended thinking 开启时才有，与 _parse_output 保持一致）。
     """
     try:
         if not isinstance(elem, list) or len(elem) < 3 or elem[0] != "wrb.fr":
@@ -1477,7 +1580,7 @@ def _extract_text_from_wrb(elem: list) -> tuple[str | None, str, str]:
         payload = json.loads(rp)
         if not isinstance(payload, list) or len(payload) < 5:
             return None, "", ""
-        conv = str(payload[1]) if payload[1] else ""
+        conv = encode_conversation_metadata(_response_conversation_metadata(payload))
         text = None
         cands = payload[4]
         c0 = None
@@ -2540,7 +2643,9 @@ class GeminiWebClient:
 
     def _encode_payload(self, prompt: str, model: str, conversation_id: str = "",
                         file_ids: list | None = None, gem_id: str | None = None) -> str:
-        conv_param = conversation_id if conversation_id else None
+        # 续接：第 2 格放 [cid, rid, rcid] 列表（缺的位置 None）；新会话 / 坏值放 null，与改动前
+        # 逐字节一致。绝不放字符串（见 parse_conversation_metadata）。
+        conv_param = parse_conversation_metadata(conversation_id)
         if file_ids:
             # 有附件：第 0 位用带文件的 message_content 替换纯 [prompt]
             file_data = [[[fid], fname] for fid, fname in file_ids]
@@ -2570,10 +2675,15 @@ class GeminiWebClient:
             message_content = [prompt, 0, None, None, None, None, 0]
         mn = _model_number(model, self._model_table(), self.__dict__.get("_family_model"))
         uuid_val = str(uuid.uuid4()).upper()
+        conv_meta = parse_conversation_metadata(conversation_id)
         inner: list = [None] * 81
         inner[0] = message_content
         inner[1] = ["en"]
-        inner[2] = DEFAULT_METADATA          # conversation continuation not used on thinking path (spec §4.3)
+        # 续接时第 2 格放 [cid, rid, rcid]（参考实现 refs/gemini-web-to-api gemini_service.go 的
+        # generateContent：同一种 81 格 payload，metadata 非空就覆盖 inner[2]）；新会话保持原来的
+        # DEFAULT_METADATA，逐字节不变。过去这里不管传什么都发 DEFAULT_METADATA —— 思考路径
+        # （默认档上线后几乎所有请求）根本没在续接。
+        inner[2] = conv_meta if conv_meta else DEFAULT_METADATA
         inner[6] = [1]
         inner[7] = 1                          # STREAMING_FLAG_INDEX
         inner[10] = 1
@@ -3029,7 +3139,7 @@ class GeminiWebClient:
         lines = raw.strip().split("\n")
         text_content = ""
         thoughts_content = ""
-        conv_id = ""
+        conv_meta = None
         images: list[dict] = []
         canvases: list[dict] = []
 
@@ -3087,8 +3197,9 @@ class GeminiWebClient:
                 if cvs:
                     _warn_if_canvas_list_shrank(canvases, cvs)
                     canvases = cvs
-                if payload[1]:
-                    conv_id = str(payload[1])
+                meta = _response_conversation_metadata(payload)
+                if meta:
+                    conv_meta = meta
 
         # 生图/找图时模型文本里会带 googleusercontent 占位 URL（无实际意义，真图在 images 里；
         # image_retrieval/image_collection 是检索占位客户端访问无效），无条件过滤，避免显示成网址。
@@ -3097,7 +3208,8 @@ class GeminiWebClient:
         text_content, thoughts_content = _restore_body(text_content, canvases, thoughts_content)
         text_content = _strip_image_placeholders(text_content, images)
 
-        return {"text": text_content, "conversation_id": conv_id, "images": images, "thoughts": thoughts_content}
+        return {"text": text_content, "conversation_id": encode_conversation_metadata(conv_meta),
+                "images": images, "thoughts": thoughts_content}
 
     @staticmethod
     def _extract_generated_images(candidate: list) -> list[dict]:
