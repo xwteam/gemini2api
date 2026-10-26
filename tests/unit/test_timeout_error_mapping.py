@@ -362,6 +362,57 @@ def test_openai_real_stream_timeout_after_partial_output_keeps_the_text_and_repo
 
 
 # ---------------------------------------------------------------------------
+# OpenAI images/generations
+# ---------------------------------------------------------------------------
+# 生图是最慢、最容易撞上生成预算的一条路径。它过去只接 (RuntimeError, ValueError)：超时和上游
+# HTTP 错误一路冒到 ASGI 层，客户端拿到纯文本的 500。
+
+def test_openai_images_timeout_is_a_504_json_error(gem_client, monkeypatch):
+    import app.routers.openai as oai
+
+    calls = _patch_timeouts(monkeypatch, oai)
+    r = gem_client.post("/v1/images/generations", json={"prompt": "a cat"}, headers=_AUTH)
+
+    body = _assert_json_504(r)
+    assert "timed out" in body["error"]["message"]
+    assert len(calls.generate) == 1, calls.generate
+
+
+@pytest.mark.parametrize("status,err_type", [
+    (429, "rate_limit_error"),
+    (503, "api_error"),
+    (400, "invalid_request_error"),
+])
+def test_openai_images_upstream_http_errors_are_json_errors(gem_client, monkeypatch, status, err_type):
+    import app.routers.openai as oai
+
+    async def boom(*a, **k):
+        raise HTTPStatusError(status, "upstream said no")
+
+    monkeypatch.setattr(oai.gemini_client, "generate", boom)
+    r = gem_client.post("/v1/images/generations", json={"prompt": "a cat"}, headers=_AUTH)
+
+    assert r.status_code == status, r.text
+    assert r.headers["content-type"].startswith("application/json"), r.headers
+    assert r.json()["error"]["type"] == err_type
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("No available accounts"), ValueError("bad model")])
+def test_openai_images_other_failures_keep_their_old_500(gem_client, monkeypatch, exc):
+    """零回归：RuntimeError / ValueError 在生图接口上照旧是 500 api_error（与超时无关的口径不动）。"""
+    import app.routers.openai as oai
+
+    async def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(oai.gemini_client, "generate", boom)
+    r = gem_client.post("/v1/images/generations", json={"prompt": "a cat"}, headers=_AUTH)
+
+    assert r.status_code == 500, r.text
+    assert r.json()["error"] == {"message": str(exc), "type": "api_error"}
+
+
+# ---------------------------------------------------------------------------
 # Anthropic messages
 # ---------------------------------------------------------------------------
 

@@ -994,9 +994,17 @@ async def images_generations(req: ImageGenerationRequest):
     model = _resolve_model(requested_model)
     try:
         result = await gemini_client.generate(prompt, req.model or "gemini-pro")
-    except (RuntimeError, ValueError) as e:
-        return JSONResponse(status_code=500,
-            content={"error": {"message": str(e), "type": "api_error"}})
+    except GENERATION_ERRORS as e:
+        if isinstance(e, (RuntimeError, ValueError)):
+            # 既有口径不变：这两类在生图接口上一直是 500 api_error
+            return JSONResponse(status_code=500,
+                content={"error": {"message": str(e), "type": "api_error"}})
+        # 超时与上游 HTTP 错误过去不在这里，一路冒到 ASGI 层变成纯文本 500（生图是最慢、最容易
+        # 撞上生成预算的一条路径）。按 classify_error 回：超时 504 timeout_error，HTTP 错误按状态码。
+        status, err_type, retry_after = classify_error(e)
+        headers = {"Retry-After": str(retry_after)} if retry_after else None
+        return JSONResponse(status_code=status,
+            content={"error": {"message": str(e), "type": err_type}}, headers=headers)
 
     images = result.get("images") or []
     if not images:
