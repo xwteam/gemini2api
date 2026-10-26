@@ -305,6 +305,7 @@ curl -X POST http://localhost:5918/openai/v1/responses \
 - `{"type":"message","role":"user"|"assistant"|"system","content":[...]}` — 콘텐츠 파트: `{"type":"input_text","text":...}`, `{"type":"input_image","image_url":"..."}`, `{"type":"output_text","text":...}`
 - `{"type":"function_call","call_id","name","arguments"}` — 이전 어시스턴트의 도구 호출 턴 (멀티턴 히스토리는 직접 다시 전송)
 - `{"type":"function_call_output","call_id","output"}` (또는 `"tool_result"`) — 다시 전달하는 도구 실행 결과
+- 서드파티 모델(API 관리에서 설정한 모델)로 요청할 때는 `function_call` / `function_call_output`을 OpenAI 네이티브 형식(`assistant.tool_calls`와 `tool_call_id`가 붙은 `tool` 메시지, 연속된 호출은 하나의 assistant 메시지로 합침)으로 전달합니다. `function` 타입 도구만 전달하고 `web_search` 같은 내장 도구는 건너뜁니다. 서드파티가 반환한 도구 호출(스트리밍 포함)은 `function_call` 출력 항목이 됩니다(v1.6.48부터).
 
 **지원하지 않음(조용히 무시하지 않고 명시적으로 오류 반환)**: `previous_response_id` — 이 서버는 서버 측 대화 상태를 유지하지 않습니다. 이 필드를 보내면 조용히 무시하는 대신 400 `invalid_request_error`를 반환합니다. 매 요청마다 전체 대화 내용을 `input`에 담아 다시 보내세요 (Codex CLI는 이미 이렇게 동작합니다).
 

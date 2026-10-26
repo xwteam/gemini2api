@@ -287,6 +287,7 @@ curl -X POST http://localhost:5918/openai/v1/responses \
 - `{"type":"message","role":"user"|"assistant"|"system","content":[...]}` — content のパーツ: `{"type":"input_text","text":...}`、`{"type":"input_image","image_url":"..."}`、`{"type":"output_text","text":...}`
 - `{"type":"function_call","call_id","name","arguments"}` — 直前のアシスタントによるツール呼び出しターン（複数ターンの履歴として自身で再送する場合に使用）
 - `{"type":"function_call_output","call_id","output"}`（または `"tool_result"`）— 送り返すツールの実行結果
+- サードパーティモデル（API 管理で設定したもの）へのリクエストでは、`function_call` / `function_call_output` を OpenAI ネイティブ形式（`assistant.tool_calls` と `tool_call_id` 付きの `tool` メッセージ。連続する呼び出しは 1 つの assistant メッセージにまとめる）で転送します。転送するのは `function` 型のツールだけで、`web_search` などの組み込みツールは除外します。サードパーティが返したツール呼び出し（ストリーミングを含む）は `function_call` 出力項目になります（v1.6.48 以降）。
 
 **サポートされていません（暗黙の無視ではなく明示的エラー）:** `previous_response_id` — 本サーバーはサーバー側で会話状態を保持しません。指定した場合、黙って無視するのではなく 400 の `invalid_request_error` を返します。毎回のリクエストで会話全体を `input` に含めて送信してください（Codex CLI は既にこの方式で動作しています）。
 

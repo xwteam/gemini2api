@@ -296,6 +296,7 @@ curl -X POST http://localhost:5918/openai/v1/responses \
 - `{"type":"message","role":"user"|"assistant"|"system","content":[...]}` — content parts: `{"type":"input_text","text":...}`, `{"type":"input_image","image_url":"..."}`, `{"type":"output_text","text":...}`
 - `{"type":"function_call","call_id","name","arguments"}` — a prior assistant tool-call turn (for multi-turn history you resend yourself)
 - `{"type":"function_call_output","call_id","output"}` (or `"tool_result"`) — a tool's result you're sending back
+- When the requested model is a third-party model (configured under API management), `function_call` / `function_call_output` items are forwarded in native OpenAI form (`assistant.tool_calls` plus `tool` messages carrying `tool_call_id`; consecutive calls share one assistant message). Only `function` tools are forwarded; built-in tools such as `web_search` are skipped. Tool calls returned by the third party, streaming included, become `function_call` output items (since v1.6.48).
 
 **Not supported (explicit, not silent):** `previous_response_id` — this server does not keep server-side conversation state. Sending it returns a 400 `invalid_request_error` rather than silently ignoring it. Resend the full conversation in `input` on every request (this is what Codex CLI already does).
 

@@ -258,6 +258,7 @@ curl -X POST http://localhost:5918/openai/v1/responses \
 - `{"type":"message","role":"user"|"assistant"|"system","content":[...]}` —— 內容區塊：`{"type":"input_text","text":...}`、`{"type":"input_image","image_url":"..."}`、`{"type":"output_text","text":...}`
 - `{"type":"function_call","call_id","name","arguments"}` —— 歷史裡助手呼叫工具的那一輪（多輪續聊需要客戶端自己重發完整歷史）
 - `{"type":"function_call_output","call_id","output"}`（或 `"tool_result"`）—— 客戶端回傳的工具執行結果
+- 請求的是第三方模型（API 管理裡設定的）時，`function_call` / `function_call_output` 按 OpenAI 原生格式轉發（`assistant.tool_calls` + 帶 `tool_call_id` 的 `tool` 訊息，連續的呼叫併進同一條 assistant 訊息）；只轉發 `function` 類型的工具，`web_search` 等內建工具會被略過；第三方回傳的工具呼叫（含串流）會變成 `function_call` 輸出項（v1.6.48 起）。
 
 **明確不支援（會報錯，不會假裝支援）**：`previous_response_id`——本服務不儲存伺服器端對話狀態，傳了這個欄位會回傳 400 `invalid_request_error`，而不是悄悄忽略。請每次請求都在 `input` 裡帶上完整對話歷史（Codex CLI 本身就是這麼做的）。
 
