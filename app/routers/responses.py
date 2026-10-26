@@ -150,8 +150,11 @@ async def create_response(request: Request):
 
     if resolved_model not in gemini_client.models and _resolve_model(resolved_model) not in GEMINI_MODELS:
         from app.core.responses_thirdparty import dispatch_thirdparty_responses
+        # 第三方走 OpenAI chat 原生的 tool_calls / tool_call_id（Gemini 路径仍用拍成文本的 messages_raw）
         result = await dispatch_thirdparty_responses(
-            request, resolved_model, messages_raw, tools_raw, tool_choice, stream, request_params,
+            request, resolved_model,
+            parse_responses_input(input_data, instructions, native_tool_calls=True),
+            tools_raw, tool_choice, stream, request_params,
         )
         if result is not None:
             return result

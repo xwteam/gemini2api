@@ -181,3 +181,64 @@ def test_send_type_field_cannot_be_overridden_by_payload():
     frame = enc._send("response.created", {"type": "some.other.type", "response": {}})
     _, data = _parse_frame(frame)
     assert data["type"] == "response.created"
+
+
+# ---------------------------------------------------------------------------
+# 第三方路径（native_tool_calls=True）：OpenAI chat 原生的 tool_calls / tool_call_id
+# ---------------------------------------------------------------------------
+
+def test_native_tool_loop_uses_tool_calls_and_tool_call_id():
+    msgs = parse_responses_input([
+        {"type": "message", "role": "user", "content": "列一下目录"},
+        {"type": "function_call", "call_id": "call_abc", "name": "run_shell",
+         "arguments": '{"cmd": "ls"}'},
+        {"type": "function_call_output", "call_id": "call_abc", "output": "a.txt"},
+    ], native_tool_calls=True)
+    assert msgs == [
+        {"role": "user", "content": "列一下目录"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_abc", "type": "function",
+             "function": {"name": "run_shell", "arguments": '{"cmd": "ls"}'}}]},
+        {"role": "tool", "tool_call_id": "call_abc", "content": "a.txt"},
+    ]
+
+
+def test_native_parallel_calls_share_one_assistant_message():
+    msgs = parse_responses_input([
+        {"type": "message", "role": "user", "content": "hi"},
+        {"type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}"},
+        {"type": "function_call", "call_id": "c2", "name": "b", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c1", "output": "x"},
+        {"type": "function_call_output", "call_id": "c2", "output": "y"},
+    ], native_tool_calls=True)
+    assert [m["role"] for m in msgs] == ["user", "assistant", "tool", "tool"]
+    assert [c["id"] for c in msgs[1]["tool_calls"]] == ["c1", "c2"]
+    assert [m["tool_call_id"] for m in msgs[2:]] == ["c1", "c2"]
+
+
+def test_native_call_right_after_assistant_text_joins_that_message():
+    msgs = parse_responses_input([
+        {"type": "message", "role": "user", "content": "hi"},
+        {"type": "message", "role": "assistant",
+         "content": [{"type": "output_text", "text": "我先看一下目录"}]},
+        {"type": "function_call", "call_id": "c1", "name": "run_shell", "arguments": {"cmd": "ls"}},
+        {"type": "function_call_output", "call_id": "c1",
+         "output": [{"type": "input_text", "text": "a.txt"}, {"type": "input_text", "text": "b.txt"}]},
+    ], native_tool_calls=True)
+    assert msgs[1] == {"role": "assistant", "content": "我先看一下目录", "tool_calls": [
+        {"id": "c1", "type": "function",
+         "function": {"name": "run_shell", "arguments": '{"cmd": "ls"}'}}]}
+    assert msgs[2] == {"role": "tool", "tool_call_id": "c1", "content": "a.txt\nb.txt"}
+
+
+def test_gemini_path_keeps_the_text_rendering():
+    items = [
+        {"type": "message", "role": "user", "content": "hi"},
+        {"type": "function_call", "call_id": "c1", "name": "run_shell", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c1", "output": "a.txt"},
+    ]
+    assert parse_responses_input(items)[1:] == [
+        {"role": "assistant", "content": "(called tool run_shell with arguments {})"},
+        {"role": "tool", "content": "a.txt"},
+    ]
+

@@ -234,3 +234,132 @@ def test_dispatch_thirdparty_responses_stream_returns_streaming_response(monkeyp
     assert "response.output_text.delta" in body
     assert "response.completed" in body
     assert pool.last_used == ["e1"]
+
+
+# ---------------------------------------------------------------------------
+# 工具调用（v1.6.48）
+# ---------------------------------------------------------------------------
+
+def test_only_function_tools_are_forwarded():
+    import app.core.responses_thirdparty as rt
+
+    defs = rt._to_tool_defs([
+        {"type": "function", "name": "shell", "parameters": {"type": "object"}},
+        {"type": "web_search"},
+        {"type": "custom", "name": "apply_patch"},
+        {"type": "function", "name": ""},
+    ])
+    assert [d.function.name for d in defs] == ["shell"]
+    assert rt._to_tool_defs([{"type": "web_search"}]) is None
+    assert rt._tool_choice_for(None, "auto") is None
+    assert rt._tool_choice_for(defs, {"type": "web_search"}) is None
+    assert rt._tool_choice_for(defs, "required") == "required"
+
+
+def test_non_stream_keeps_text_and_tool_calls():
+    import app.core.responses_thirdparty as rt
+
+    body = {"id": "x", "choices": [{"message": {"role": "assistant", "content": "我先看一下", "tool_calls": [
+        {"id": "call_1", "type": "function", "function": {"name": "shell", "arguments": '{"cmd":"ls"}'}},
+        {"type": "function", "function": {"name": "read", "arguments": {"path": "a"}}},
+    ]}}]}
+    out = rt._chat_response_to_responses_object(body, "deepseek-chat", {})["output"]
+    assert [o["type"] for o in out] == ["message", "function_call", "function_call"]
+    assert out[0]["content"][0]["text"] == "我先看一下"
+    assert out[1]["call_id"] == "call_1" and out[1]["arguments"] == '{"cmd":"ls"}'
+    assert out[2]["call_id"].startswith("call_") and out[2]["arguments"] == '{"path": "a"}'
+
+    only_calls = {"id": "y", "choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "call_2", "type": "function", "function": {"name": "shell", "arguments": "{}"}}]}}]}
+    out = rt._chat_response_to_responses_object(only_calls, "deepseek-chat", {})["output"]
+    assert [o["type"] for o in out] == ["function_call"], "只有工具调用时不塞空 message"
+
+
+def _run_stream(monkeypatch, chunks):
+    import asyncio
+    import json as _json
+    import app.core.responses_thirdparty as rt
+    from fastapi.responses import StreamingResponse
+
+    async def _body():
+        for c in chunks:
+            yield f"data: {_json.dumps(c)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    async def fake_open_stream(entry, messages, req):
+        return StreamingResponse(_body(), media_type="text/event-stream"), None
+
+    class _Entry:
+        id = "e1"
+
+    class _Pool:
+        def update_last_used(self, entry_id):
+            pass
+
+        def mark_unhealthy(self, entry_id, cooldown):
+            pass
+
+    monkeypatch.setattr(rt, "open_stream", fake_open_stream)
+
+    async def _collect():
+        out = []
+        async for frame in rt._dispatch_stream(
+                request=None, resolved_model="deepseek-chat",
+                messages_raw=[{"role": "user", "content": "hi"}],
+                tools_raw=[{"type": "function", "name": "shell"}], tool_choice=None,
+                request_params={}, entries=[_Entry()], pool=_Pool()):
+            out.append(frame)
+        return out
+
+    events = []
+    for frame in asyncio.run(_collect()):
+        lines = frame.strip().split("\n")
+        events.append((lines[0][len("event: "):], _json.loads(lines[1][len("data: "):])))
+    return events
+
+
+def _tc(index, *, id=None, name=None, args=None):
+    fn = {}
+    if name is not None:
+        fn["name"] = name
+    if args is not None:
+        fn["arguments"] = args
+    call = {"index": index, "function": fn}
+    if id is not None:
+        call.update(id=id, type="function")
+    return {"choices": [{"delta": {"tool_calls": [call]}}]}
+
+
+def test_stream_tool_calls_become_function_call_items(monkeypatch):
+    events = _run_stream(monkeypatch, [
+        _tc(0, id="call_1", name="shell", args=""),
+        _tc(0, args='{"cmd":'),
+        _tc(0, args=' "ls"}'),
+        _tc(1, id="call_2", name="read", args='{"path": "a"}'),
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ])
+    types = [e for e, _ in events]
+    assert "response.output_text.delta" not in types
+    added = [d["item"] for e, d in events if e == "response.output_item.added"]
+    assert [i["type"] for i in added] == ["function_call", "function_call"], "只有工具调用时不出空 message"
+    done = [d for e, d in events if e == "response.function_call_arguments.done"]
+    assert [d["arguments"] for d in done] == ['{"cmd": "ls"}', '{"path": "a"}']
+    assert [d["output_index"] for d in done] == [0, 1]
+    final = [d for e, d in events if e == "response.completed"][0]["response"]["output"]
+    assert [(o["type"], o["call_id"], o["name"]) for o in final] == [
+        ("function_call", "call_1", "shell"), ("function_call", "call_2", "read")]
+    seq = [d["sequence_number"] for _, d in events]
+    assert seq == sorted(seq)
+
+
+def test_stream_text_then_tool_call_keeps_both_in_order(monkeypatch):
+    events = _run_stream(monkeypatch, [
+        {"choices": [{"delta": {"content": "我先看一下"}}]},
+        _tc(0, id="call_1", name="shell", args="{}"),
+    ])
+    final = [d for e, d in events if e == "response.completed"][0]["response"]["output"]
+    assert [o["type"] for o in final] == ["message", "function_call"]
+    assert final[0]["content"][0]["text"] == "我先看一下"
+    fc_added = [d for e, d in events if e == "response.output_item.added" and d["item"]["type"] == "function_call"]
+    assert fc_added[0]["output_index"] == 1
+

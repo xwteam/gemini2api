@@ -51,7 +51,62 @@ def _input_item_to_internal(item: dict) -> dict | None:
     return None
 
 
-def parse_responses_input(input_data, instructions: str | None = None) -> list[dict]:
+def _tool_output_text(output) -> str:
+    """function_call_output 的 output：字符串原样；内容块数组取其中的文本；其它序列化成 JSON。"""
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        return "\n".join(p["text"] for p in output
+                         if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return "" if output is None else json.dumps(output, ensure_ascii=False)
+
+
+def _flat_text(content) -> str | None:
+    """assistant 文本内容（字符串或文本块数组）→ 字符串；没有文本时 None（OpenAI 的工具调用轮次形态）。"""
+    if isinstance(content, list):
+        content = "\n".join(p["text"] for p in content
+                            if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return content or None
+
+
+def _append_native_tool_item(messages: list[dict], item: dict) -> bool:
+    """第三方路径：function_call / function_call_output 转成 OpenAI chat 的原生形态
+    （assistant.tool_calls + 带 tool_call_id 的 tool 消息）。处理了返回 True。
+
+    严格按 OpenAI SDK 校验的上游（书生端砚的 deepseek / glm / kimi / qwen 等）不认「assistant 纯文本
+    描述的调用 + 不带 tool_call_id 的 tool 消息」，Codex 的工具循环第二轮必 400。连续的调用（并行
+    工具调用）、以及紧跟在 assistant 文本后面的调用，并进同一条 assistant 消息。
+    """
+    itype = item.get("type")
+    if itype == "function_call":
+        args = item.get("arguments", "")
+        if not isinstance(args, str):
+            args = json.dumps(args, ensure_ascii=False)
+        call = {"id": item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+                "type": "function",
+                "function": {"name": item.get("name") or "", "arguments": args or "{}"}}
+        last = messages[-1] if messages else None
+        if last is not None and last.get("role") == "assistant":
+            last["content"] = _flat_text(last.get("content"))
+            last["tool_calls"] = [*(last.get("tool_calls") or []), call]
+        else:
+            messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
+        return True
+    if itype in ("function_call_output", "tool_result"):
+        call_id = item.get("call_id") or item.get("tool_use_id") or item.get("id") or ""
+        messages.append({"role": "tool", "tool_call_id": call_id,
+                         "content": _tool_output_text(item.get("output", item.get("content", "")))})
+        return True
+    return False
+
+
+def parse_responses_input(input_data, instructions: str | None = None, *,
+                          native_tool_calls: bool = False) -> list[dict]:
+    """Responses 的 input → 内部 chat 形态的 messages。
+
+    native_tool_calls=False（Gemini 路径，默认）：工具调用与结果拍成文本，Gemini 的 prompt 拼装不变。
+    native_tool_calls=True（第三方路径）：转成 OpenAI chat 原生的 tool_calls / tool_call_id。
+    """
     messages: list[dict] = []
     if instructions:
         messages.append({"role": "system", "content": instructions})
@@ -63,6 +118,8 @@ def parse_responses_input(input_data, instructions: str | None = None) -> list[d
     items = input_data if isinstance(input_data, list) else [input_data]
     for item in items:
         if not isinstance(item, dict):
+            continue
+        if native_tool_calls and _append_native_tool_item(messages, item):
             continue
         converted = _input_item_to_internal(item)
         if converted:

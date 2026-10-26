@@ -165,3 +165,25 @@ def test_responses_stream_with_tools_buffers_and_emits_function_call_done(gem_cl
         body = "".join(r.iter_text())
     assert "response.function_call_arguments.done" in body
     assert "response.completed" in body
+
+
+def test_responses_sends_native_tool_history_to_thirdparty(gem_client, monkeypatch):
+    """第三方收到的是 OpenAI 原生的 assistant.tool_calls + 带 tool_call_id 的 tool 消息（v1.6.48）。"""
+    from fastapi.responses import JSONResponse
+    seen = {}
+
+    async def fake_dispatch(request, resolved_model, messages_raw, tools_raw, tool_choice,
+                            stream, request_params):
+        seen["messages"] = messages_raw
+        return JSONResponse(content={"object": "response", "output": []})
+
+    monkeypatch.setattr("app.core.responses_thirdparty.dispatch_thirdparty_responses", fake_dispatch)
+    r = gem_client.post("/v1/responses", json={"model": "deepseek-chat", "input": [
+        {"type": "message", "role": "user", "content": "列目录"},
+        {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "call_1", "output": "a.txt"},
+    ]}, headers=_AUTH)
+    assert r.status_code == 200
+    assert seen["messages"][1]["tool_calls"][0]["id"] == "call_1"
+    assert seen["messages"][2] == {"role": "tool", "tool_call_id": "call_1", "content": "a.txt"}
+
