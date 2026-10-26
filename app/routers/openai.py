@@ -200,6 +200,23 @@ async def _maybe_fallback_stream(request, req: ChatRequest, messages_raw: list, 
         yield sse
 
 
+async def _conversation_for_stream(conv, req, model: str):
+    """流式路径记续接点用的会话记录：已有就用它；客户端自带了 conversation_id、存储里还没有时
+    新建一条（与非流式同口径，键同样按访问密钥隔离）。
+
+    过去流式只在记录已存在时回写：一直用 stream:true 的客户端第一轮什么都不落盘，之后每一轮都发
+    完整历史、新开会话，永远续接不上。没带 conversation_id 时不建：流式响应里没有地方把服务端
+    生成的 id 回给客户端（非流式会在响应体里回 conversation_id）。
+    """
+    if conv is not None:
+        return conv
+    conv_id = getattr(req, "conversation_id", None) if req is not None else None
+    if not conv_id:
+        return None
+    store_id = scoped_conversation_id(conv_id)
+    return await conversation_store.get(store_id) or await conversation_store.create(store_id, model)
+
+
 async def _forget_resume_point(conv) -> None:
     """这一轮答完了、存储里却记不下它的续接点：清掉旧的，下一轮发完整历史、新开会话。
 
@@ -814,6 +831,8 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
 
     # 持久化对话（与 buffered 子路径一致：流式只存 assistant，
     # 多轮续接靠 gemini_conv_id，user 消息已在请求里）
+    if new_conv_id:
+        conv = await _conversation_for_stream(conv, req, model)
     if new_conv_id and conv:
         conv.gemini_conv_id = new_conv_id
         conv.account_id = new_account_id
@@ -941,6 +960,8 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
         text = (md + "\n" + text.strip()) if text.strip() else md
     new_conv_id = result.get("conversation_id", "")
 
+    if new_conv_id:
+        conv = await _conversation_for_stream(conv, req, model)
     if new_conv_id and conv:
         conv.gemini_conv_id = new_conv_id
         conv.account_id = result.get("account_id") or ""

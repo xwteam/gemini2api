@@ -680,6 +680,66 @@ def test_buffered_full_history_retry_keeps_the_tool_definitions(wired):
 
 
 # ---------------------------------------------------------------------------
+# 一直用流式的客户端：自带 conversation_id 时同样建会话记录
+# ---------------------------------------------------------------------------
+# 过去只有非流式会新建会话记录，流式只在记录已存在时回写：一直用 stream:true、自带
+# conversation_id 的客户端，第一轮什么都不落盘，之后每一轮都发完整历史、新开会话，永远续接不上。
+
+@pytest.mark.parametrize("mode", ["stream", "buffered"])
+def test_a_streaming_client_with_its_own_conversation_id_gets_continuation(wired, mode):
+    w = wired
+    kw = {"stream": True, "tools": _TOOLS if mode == "buffered" else None}
+
+    _chat(w, [U1], **kw)
+
+    conv = _stored(w)
+    assert conv is not None, "流式第一轮没建会话记录，之后每一轮都续接不上"
+    served = [i for i, u in enumerate(w.ups) if u.calls]
+    assert len(served) == 1, [u.calls for u in w.ups]
+    idx = served[0]
+    first = w.ups[idx]
+    assert conv.account_id == f"account-{idx}"
+    assert json.loads(conv.gemini_conv_id) == first.triple(1)
+
+    _chat(w, [U1, A1, U2], **kw)
+
+    assert w.ups[1 - idx].calls == [], "第二轮没钉住"
+    call = first.calls[-1]
+    assert call["conv"] == json.dumps(first.triple(1))
+    assert "u2" in call["prompt"] and "Human: u1" not in call["prompt"]
+    assert json.loads(_stored(w).gemini_conv_id) == first.triple(2)
+
+
+@pytest.mark.parametrize("mode", ["stream", "buffered"])
+def test_a_streaming_request_without_a_conversation_id_stores_nothing(wired, mode):
+    """流式响应里没有地方把服务端生成的 id 回给客户端：没带 conversation_id 就不建记录。"""
+    w = wired
+    body = {"model": "gemini-pro", "messages": [U1], "stream": True}
+    if mode == "buffered":
+        body["tools"] = _TOOLS
+    with w.http.stream("POST", "/v1/chat/completions", json=body, headers=_AUTH) as r:
+        text = "".join(r.iter_text())
+    assert r.status_code == 200, text
+    assert asyncio.run(w.store.list_all()) == []
+
+
+def test_a_streaming_turn_answered_by_the_fallback_creates_no_record(with_fallback):
+    """兜底答了的那一轮 Gemini 根本没见过：流式第一轮由兜底回答时不建记录（下一轮照常发完整历史）。"""
+    from app.core.gemini_client import GenerationTimedOut
+
+    w = with_fallback
+    for u in w.ups:
+        u.reject_resume = None
+
+        def boom(*a, **k):
+            raise GenerationTimedOut(120, 120.5, TimeoutError())
+
+        u._answer = boom
+    _chat(w, [U1], stream=True)
+    assert _stored(w) is None
+
+
+# ---------------------------------------------------------------------------
 # 新一轮不是「一条用户消息」：不续接，改发完整历史
 # ---------------------------------------------------------------------------
 # 续接只发上一轮回答之后新来的那一条用户消息。agent 的工具循环里，第二轮是 [问题, assistant(tool_calls),

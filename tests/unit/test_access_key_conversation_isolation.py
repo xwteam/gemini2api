@@ -127,3 +127,31 @@ def test_env_api_key_keeps_using_the_raw_conversation_id(wired):
     """零回归：.env 的 API_KEY（无访问密钥上下文）存取的键就是客户端给的原值。"""
     assert _chat(wired.client, "sk-test-key", "plain").status_code == 200
     assert list(wired.convs.records) == ["plain"], list(wired.convs.records)
+
+
+def test_a_streaming_request_creates_its_record_under_the_access_keys_namespace(wired, monkeypatch):
+    """流式请求现在也会新建会话记录（客户端自带 conversation_id 时）：同样要收进这把密钥自己的
+    命名空间，不能落在客户端给的裸 id 上。"""
+    from app.routers import openai as openai_router
+
+    alice = wired.store.create("alice").key
+
+    async def fake_stream(prompt, model, conversation_id="", attachments=None, **kw):
+        wired.calls.append({"model": model, "conv": conversation_id})
+        yield {"type": "delta", "text": "hi"}
+        yield {"type": "final", "text": "hi", "images": [], "thoughts": "",
+               "conversation_id": _meta(9), "account_id": "account-0"}
+
+    monkeypatch.setattr(openai_router.gemini_client, "generate_stream", fake_stream)
+    with wired.client.stream("POST", "/v1/chat/completions", json={
+        "model": _MODEL, "stream": True, "conversation_id": "1",
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers={"Authorization": f"Bearer {alice}"}) as r:
+        body = "".join(r.iter_text())
+
+    assert r.status_code == 200, body
+    assert "1" not in wired.convs.records, "流式建的记录落在了客户端给的裸 id 上"
+    assert len(wired.convs.records) == 1, list(wired.convs.records)
+    (key,) = wired.convs.records
+    assert key.startswith("ak") and key.endswith(".1"), key
+    assert wired.convs.records[key].gemini_conv_id == _meta(9)
