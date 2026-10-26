@@ -137,7 +137,7 @@ def set_mode(psid: Optional[str], mode: str, path: _PathLike = None) -> bool:
         except OSError as e:
             logger.warning(f"Could not persist keepalive mode to {target}: {e}")
             return False
-    logger.info(f"Keepalive mode for account {key} set to {mode}")
+    logger.debug(f"Keepalive mode for account {key} set to {mode}")
     return True
 
 

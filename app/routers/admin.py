@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config import APP_VERSION, mask_secret
+from app.core import keepalive_modes
 from app.core.account_pool import account_pool
 
 logger = logging.getLogger(__name__)
@@ -29,12 +30,26 @@ def _masked_status() -> dict:
     return status
 
 
-async def _after_cookie_reload(account) -> None:
+async def _after_cookie_reload(account, request: Request) -> None:
     """换 cookie 成功之后的收尾（PUT /accounts/{id}/cookies 与 POST /reload-cookies 共用）。
 
-    池内状态当场回到可用（ACTIVE + consecutive_failures=0），不再依赖调用方随后调 /check。
+    1. 池内状态当场回到可用（ACTIVE + consecutive_failures=0），不再依赖调用方随后调 /check。
+    2. 按请求来源记下这个账号由谁保活（keepalive_modes.mode_from_headers）：浏览器保活插件推的
+       （X-Gemini2API-Keepalive 头，或 Origin 为 chrome-extension://）→ browser，服务端从此不再
+       轮换它；面板手动「更新 Cookie」、脚本 → server。只在 reload 成功之后写，写在 reload 之后的
+       **新** PSID 名下（client 自己知道换上的是哪个 PSID，含引号 / 分号清洗之后的值）。
     """
     await account_pool.mark_cookies_reloaded(account)
+    mode = keepalive_modes.mode_from_headers(request.headers)
+    try:
+        recorded = account.client.set_keepalive_mode(mode)
+    except Exception as e:
+        # cookie 已经换上了：记不下保活方式只影响「服务端要不要轮换它」，绝不能把这次成功的
+        # 换 cookie 报成失败（插件会当成没推上去、反复重推）。
+        logger.warning(f"Account {account.id}: could not record keepalive mode {mode}: {e}")
+        return
+    if recorded:  # 落盘失败时 keepalive_modes 自己已经告警过
+        logger.info(f"Account {account.id}: cookies reloaded, keepalive mode -> {mode}")
 
 
 class ReloadCookiesRequest(BaseModel):
@@ -49,7 +64,7 @@ class AddAccountRequest(BaseModel):
 
 
 @router.post("/reload-cookies")
-async def reload_cookies(req: ReloadCookiesRequest = None):
+async def reload_cookies(request: Request, req: ReloadCookiesRequest = None):
     # 修复：result 仅在 `if account.client:` 内赋值，若账号池为空或所有账号无 client，
     # 循环体不执行、result 始终未绑定，后续 result.get(...) 会抛 UnboundLocalError
     # （显式 cookie 分支直接 500，.env 分支被误判为 "Failed to read .env"），
@@ -60,7 +75,7 @@ async def reload_cookies(req: ReloadCookiesRequest = None):
             if account.client:
                 result = await account.client.reload_cookies(psid=req.psid, psidts=req.psidts)
                 if result.get("success"):
-                    await _after_cookie_reload(account)
+                    await _after_cookie_reload(account, request)
                     return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
         if result is None:
             return JSONResponse(
@@ -83,7 +98,7 @@ async def reload_cookies(req: ReloadCookiesRequest = None):
                         psidts=fresh.gemini_psidts,
                     )
                     if result.get("success"):
-                        await _after_cookie_reload(account)
+                        await _after_cookie_reload(account, request)
                         return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
             if result is None:
                 return JSONResponse(
@@ -203,7 +218,7 @@ class UpdateCookiesRequest(BaseModel):
 
 
 @router.put("/accounts/{account_id}/cookies")
-async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
+async def update_account_cookies(account_id: str, req: UpdateCookiesRequest, request: Request):
     for account in account_pool.accounts:
         if account.id == account_id:
             if account.client:
@@ -212,7 +227,7 @@ async def update_account_cookies(account_id: str, req: UpdateCookiesRequest):
                     # 回写 accounts.json：否则面板刚救活的账号在下次重启时又拿着添加账号
                     # 那一刻的旧 cookie 起来（启动时的"配置值"就是 accounts.json 里这一份）。
                     account_pool.persist_account_cookies(account_id, req.psid, req.psidts)
-                    await _after_cookie_reload(account)
+                    await _after_cookie_reload(account, request)
                     return {"status": "ok", "message": f"Account {account_id} cookies updated"}
                 return JSONResponse(
                     status_code=503,

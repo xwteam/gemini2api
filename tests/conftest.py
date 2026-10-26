@@ -32,6 +32,7 @@ TEST_API_KEY = os.environ["API_KEY"]
 # app.config 在 import 期就会回放它。测试必须既不读也不写开发者/CI 的真实文件，
 # 所以在任何 `app.*` 被导入之前就把路径重定向到一个临时目录。
 import tempfile  # noqa: E402
+import uuid  # noqa: E402
 import app.core.settings_overrides as _settings_overrides  # noqa: E402
 
 _settings_overrides.OVERRIDES_PATH = (
@@ -42,9 +43,15 @@ _settings_overrides.OVERRIDES_PATH = (
 # 换 cookie 成功时会写。测试绝不能读到或改动开发者/CI 的真实文件。
 import app.core.keepalive_modes as _keepalive_modes  # noqa: E402
 
-_keepalive_modes.MODES_PATH = (
-    Path(tempfile.mkdtemp(prefix="g2a-keepalive-")) / "keepalive-modes.json"
-)
+_KEEPALIVE_DIR = Path(tempfile.mkdtemp(prefix="g2a-keepalive-"))
+_keepalive_modes.MODES_PATH = _KEEPALIVE_DIR / "keepalive-modes.json"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_keepalive_modes(monkeypatch):
+    """每个测试一份空的保活方式记录：某个测试把 PSID "p" 记成 browser，不能把后面别的测试
+    里同名 PSID 的轮换闸口一起关掉（那种失败只在特定执行顺序下出现，极难查）。"""
+    monkeypatch.setattr(_keepalive_modes, "MODES_PATH", _KEEPALIVE_DIR / f"{uuid.uuid4().hex}.json")
 
 
 @pytest.fixture

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from app.core.gemini_client import (
     GeminiWebClient, HTTPStatusError, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG,
 )
+from app.core import keepalive_modes
 from app.core.access_context import current_bound_account_ids
 from app.core.fallback import is_empty_result
 from app.config import settings
@@ -158,6 +159,18 @@ def _session_expired(a: Account) -> bool:
         and not client.is_healthy
         and bool(getattr(client, "auth_expired", False))
     )
+
+
+def _keepalive_mode(a: Account) -> str:
+    """这个账号的 cookie 由谁保活（browser / server，见 app/core/keepalive_modes.py）。
+
+    以 client **当前**的 PSID 为准（POST /admin/reload-cookies 换了 PSID 不回写 Account.psid）；
+    没有 client、或 client 不提供这个属性时，按账号配置里的 PSID 查。
+    """
+    mode = getattr(a.client, "keepalive_mode", None) if a.client is not None else None
+    if mode in keepalive_modes.MODES:
+        return mode
+    return keepalive_modes.get_mode(a.psid)
 
 
 class AccountPool:
@@ -945,6 +958,8 @@ class AccountPool:
                 "last_error_at": a.last_error_at.isoformat() if a.last_error_at else None,
                 "models": self.models if a.client else [],
                 "models_count": len(self.models) if a.client else 0,
+                # browser = cookie 由浏览器保活插件推送、服务端不轮换；server = 服务端轮换（默认）
+                "keepalive_mode": _keepalive_mode(a),
             })
         return {
             "total": self.total_count,

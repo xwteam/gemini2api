@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from curl_cffi.requests import AsyncSession, RequestsError
 
 from app.config import settings
+from app.core import keepalive_modes
 from app.core.fingerprint.config import fingerprint_config
 from app.core.fingerprint.header_builder import header_builder
 from app.core.fingerprint.cookie_jar import PersistentCookieJar
@@ -1645,6 +1646,12 @@ class GeminiWebClient:
         #   `if c.autoRefresh { go c.startAutoRefresh() }`）。
         # 日志由 _ensure_refresh_task() 自己打一句 "Auto-refresh loop started"，
         # 两条分支各恰好一句，不重复。
+        if self.keepalive_mode == keepalive_modes.MODE_BROWSER:
+            # 循环照起（token 探测、心跳照旧），只是 RotateCookies 交给浏览器（见 _rotate_cookies）。
+            logger.info(
+                "Cookies of this account are kept alive by the browser plugin; server-side "
+                "RotateCookies is off (update the cookie from the panel to hand it back)"
+            )
         self._ensure_refresh_task()
 
         if settings.health_check_enabled:
@@ -1667,6 +1674,19 @@ class GeminiWebClient:
         RotateCookies，只探测 token。
         """
         return self._auth_expired
+
+    @property
+    def keepalive_mode(self) -> str:
+        """这个账号的 cookie 由谁保活：browser（浏览器保活插件推送，服务端不轮换）/ server（默认）。
+
+        按**当前** PSID 查 data/keepalive-modes.json（PSID 在轮换中不变、重新登录才变）。每次都读盘，
+        运维手改记录不用重启。getattr 兜底：测试替身常用 __new__ 造实例、不一定有 _psid。
+        """
+        return keepalive_modes.get_mode(getattr(self, "_psid", ""))
+
+    def set_keepalive_mode(self, mode: str) -> bool:
+        """把**当前** PSID 记成 mode（admin 接口在 reload 成功之后按请求来源调用）。落盘失败返回 False。"""
+        return keepalive_modes.set_mode(self._psid, mode)
 
     def _model_table(self) -> dict:
         """**本账号**当前可路由的模型表：契约 family 的写死行 + 本账号心跳发现到的。
@@ -1885,6 +1905,14 @@ class GeminiWebClient:
             self._session_token = ""
 
     async def _rotate_cookies(self) -> RotationResult:
+        # 浏览器保活的账号服务端一律不轮换。这是**唯一**的闸口：刷新循环、reload 兜底、启动重试、
+        # 自愈都经过这里，不必逐个改调用方。浏览器和服务端共用同一个谷歌会话，两边各自调
+        # RotateCookies，后一方拿着被对方换掉的旧 PSIDTS 去换就 401、整个会话被踢下线
+        # （见 app/core/keepalive_modes.py）。不发任何网络请求（轮换抖动也免了），按「现有 cookie
+        # 仍有效」返回：既不算成功也不算失败，调用方的 `if rotated:` 照旧往下走去取 token。
+        if self.keepalive_mode == keepalive_modes.MODE_BROWSER:
+            logger.debug("RotateCookies skipped: cookies are kept alive by the browser plugin")
+            return RotationResult.STILL_VALID
         try:
             await apply_jitter("cookie_rotate")
             await self._ensure_session_current()
