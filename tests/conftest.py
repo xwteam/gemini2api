@@ -38,6 +38,14 @@ _settings_overrides.OVERRIDES_PATH = (
     Path(tempfile.mkdtemp(prefix="g2a-overrides-")) / "settings-overrides.json"
 )
 
+# 同理：账号保活方式的记录（data/keepalive-modes.json）每次轮换、每次 /admin/status 都会读，
+# 换 cookie 成功时会写。测试绝不能读到或改动开发者/CI 的真实文件。
+import app.core.keepalive_modes as _keepalive_modes  # noqa: E402
+
+_keepalive_modes.MODES_PATH = (
+    Path(tempfile.mkdtemp(prefix="g2a-keepalive-")) / "keepalive-modes.json"
+)
+
 
 @pytest.fixture
 def app_main():
