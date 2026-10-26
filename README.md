@@ -802,7 +802,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 
 7. **模型故障熔断**：谷歌某个模型族整体故障时（例如 gemini-flash 所有账号都在排队卡住或秒回失败套话），窗口内有 `MODEL_BREAKER_THRESHOLD`（默认 2）个不同请求在这个族上疑似故障地失败（失败套话、几乎没收到数据的生成超时、一次进展都没有的流式超时），熔断就打开 `MODEL_BREAKER_COOLDOWN`（默认 60）秒：这期间**开了 `FALLBACK_ENABLED` 且有兜底候选**的 `/v1/chat/completions` 请求直接走第三方兜底，不再先白等一个预算；到期后放一个真实请求去试探谷歌，试探失败开放期翻倍（封顶 `MODEL_BREAKER_MAX_COOLDOWN`），任何成功都立即恢复。没开兜底的请求和 Claude / Gemini 原生 / Responses 一律照常调谷歌（它们的结果照样更新熔断状态）；只影响故障的那个族，同账号的其它族照常。状态见面板账号页顶部的提示和 `/admin/status` 的 `model_breakers`；进程重启后清空。
 
-8. **谷歌的失败套话**：谷歌侧故障时 Gemini 有时会秒回一句固定的 `I seem to be encountering an error. Can I try something else for you?` 代替回答。整段回答恰好是这句（或 `GEMINI_FAILURE_REPLIES` 里追加的某句）时按上游失败处理——换号重试、`/v1/chat/completions` 可走兜底、否则回 502 `api_error`——不会当成正常回答返回，也不会写进会话记录；流式请求会先扣住还可能长成这句的开头，确认不是才放出去（回答开头最多晚几个字）。
+8. **谷歌的失败套话**：谷歌侧故障时 Gemini 有时会秒回一句固定的 `I seem to be encountering an error. Can I try something else for you?` 代替回答。整段回答恰好是这句（或 `GEMINI_FAILURE_REPLIES` 里追加的某句）时按上游失败处理——换号重试、`/v1/chat/completions` 可走兜底、否则回 502 `api_error`——不会当成正常回答返回，也不会写进会话记录；流式请求会先扣住还可能长成这句的开头，确认不是才放出去（回答开头最多晚几个字）。 v1.6.47 起，谷歌的「语言模型」类拒答套话（如 `我只是一个语言模型，无法提供这方面的帮助。`、`I'm just a language model, so I can't help you with that.`）同样内置识别、同样换号 / 兜底 / 502，但不计入模型熔断（它也可能是某个问题每次都会触发的真拒答）。
 
 ---
 
