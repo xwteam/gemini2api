@@ -4,6 +4,16 @@
 
 ---
 
+## [1.6.49] - 2026-10-26
+
+### Fixed
+
+- 🧩 **Gemini 路径不再丢 `developer` 消息**：Codex 和 OpenAI 新版 SDK 用 `developer` 角色代替 `system` 发说明（Codex 的权限、沙箱规则就在里面），过去拼提示词时没有这个分支，整段被丢掉（10-26 中转站复现：让模型「回答以喵开头」的 developer 说明完全没生效）。现在按 `System:` 拼进提示词；旧版 OpenAI 的 `function` 角色按工具结果处理。转给第三方时 `developer` 改成 `system`（严格的上游不认）。
+- 🧩 **采样 / 格式参数转给第三方模型和兜底**：`top_p`、`stop`、`presence_penalty`、`frequency_penalty`、`seed`、`response_format`、`max_completion_tokens`、`parallel_tool_calls`、`stream_options` 过去在请求模型里没有字段、被直接丢弃（复现：`stop: ["5"]` 时 deepseek 照样数到 9）。现在原样转给 OpenAI 兼容上游（空值不带；`stream_options` 只在流式时带，兜底探测是非流式，带上会 400；`parallel_tool_calls` 只在带了工具时才带）。Anthropic 上游合并全部 system / developer（过去只留最后一条），并带上 `stop_sequences`；`temperature` / `top_p` 刻意不转（新版 Claude 不接受两者同时出现）。`/v1/responses` 走第三方时同样转 `top_p`、`parallel_tool_calls`，`text.format` 转成 `response_format`。
+- 💾 **面板里加的账号升级不再丢**：`ACCOUNTS_FILE` 默认值从 `accounts.json` 改为 `data/accounts.json`。docker-compose 只挂载 `./data`，旧默认位置在容器层里，`docker compose pull && up -d` 重建容器后面板加的账号全丢。旧默认位置有文件时启动会复制过来（旧文件保留）；复制是原子写，失败（包括旧文件不是 UTF-8）不会留下半截文件，会退回读旧文件。显式配置照旧尊重，但在容器里配置的路径不在 `data/` 下时会打 WARNING，并给出 `docker cp` 的处置命令；旧文件还在、或 `.env` 的 `GEMINI_PSID` 对不上任何已载入账号时也会提醒。`.env.example` 与 README 的多账号说明同步改成 `data/accounts.json`。
+- 💾 **面板的「第三方兜底」开关升级不再被顶回去**：这个开关过去只写容器内镜像层的 `/app/.env`（宿主机 `.env` 在容器里不可见），升级重建容器后就变回宿主机 `.env` 的值（10-26 中转站：面板 22:13 关掉兜底，宿主机 `.env` 仍是 true，下一次部署会悄悄重新打开）。现在与设置页同一套持久化：写进 `data/settings-overrides.json`（挂载卷、启动回放、优先级高于环境变量），任一步失败整体回滚。
+- 🙅 拒答套话再收一句：`身为一个语言模型，我没办法提供这方面的帮助。`（10-26 22:23 gemini-pro 对一句「你好」回的）。
+
 ## [1.6.48] - 2026-10-26
 
 ### Fixed
