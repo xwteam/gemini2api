@@ -242,3 +242,16 @@ def test_gemini_path_keeps_the_text_rendering():
         {"role": "tool", "content": "a.txt"},
     ]
 
+
+def test_native_maps_developer_to_system_and_flattens_assistant_parts():
+    msgs = parse_responses_input([
+        {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "规则"}]},
+        {"type": "message", "role": "user", "content": "hi"},
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "好的"}]},
+    ], native_tool_calls=True)
+    assert msgs == [{"role": "system", "content": "规则"}, {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "好的"}]
+    # Gemini 路径不变
+    assert parse_responses_input([{"type": "message", "role": "developer", "content": "规则"}])[0]["role"] \
+        == "developer"
+

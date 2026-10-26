@@ -2,6 +2,7 @@
 把 Responses 输入转成现有 ChatRequest 格式发给 forward_to_provider/open_stream（零改动复用），
 再把返回的 Chat 补全结果转换回 Responses 输出格式。"""
 import json
+import time
 import uuid
 
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -11,6 +12,7 @@ from app.core.api_forwarder import empty_upstream_error, forward_to_provider, op
 from app.core.fallback import openai_data_is_empty
 from app.models.openai import ChatRequest, ChatMessage, ToolDef, ToolFunction
 from app.core.responses_protocol import build_responses_object, new_response_id, ResponsesStreamEncoder
+from app.core.stream import SSE_KEEPALIVE_FRAME, SSE_KEEPALIVE_INTERVAL
 
 
 def _to_chat_messages(messages_raw: list[dict]) -> list[ChatMessage]:
@@ -164,7 +166,12 @@ async def _dispatch_stream(request, resolved_model, messages_raw, tools_raw, too
     full_text = ""
     # 上游流式的工具调用增量（OpenAI 形态：按 index 分槽，id / name 只在第一片，arguments 分片拼接）。
     # 过去这里只看 content，模型发起的工具调用整个丢掉 —— Codex（恒流式）的工具循环根本跑不起来。
-    calls: dict[int, dict] = {}
+    # 有的上游并行调用全给 index 0、或者干脆不给 index：带了与当前槽不同的 id 就另开一槽；没有 index
+    # 的续片接在最后一槽后面。
+    calls: list[dict] = []
+    by_index: dict[int, dict] = {}
+    # 工具调用要攒到最后才发：攒的这段（长补丁可能几十秒）按保活间隔发心跳，免得被中间代理当空闲掐断
+    last_out = time.monotonic()
     buf = ""
     async for raw in stream_resp.body_iterator:
         buf += raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
@@ -181,14 +188,19 @@ async def _dispatch_stream(request, resolved_model, messages_raw, tools_raw, too
             except Exception:
                 continue
             delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
-            for pos, tc in enumerate(delta.get("tool_calls") or []):
+            for tc in delta.get("tool_calls") or []:
                 if not isinstance(tc, dict):
                     continue
-                idx = tc.get("index")
-                slot = calls.setdefault(idx if isinstance(idx, int) else pos,
-                                        {"id": "", "name": "", "arguments": ""})
+                idx = tc.get("index") if isinstance(tc.get("index"), int) else None
+                tc_id = tc.get("id") or ""
+                slot = by_index.get(idx) if idx is not None else (calls[-1] if calls else None)
+                if slot is None or (tc_id and slot["id"] and tc_id != slot["id"]):
+                    slot = {"id": "", "name": "", "arguments": ""}
+                    calls.append(slot)
+                    if idx is not None:
+                        by_index[idx] = slot
                 fn = tc.get("function") or {}
-                slot["id"] = slot["id"] or (tc.get("id") or "")
+                slot["id"] = slot["id"] or tc_id
                 slot["name"] = slot["name"] or (fn.get("name") or "")
                 if isinstance(fn.get("arguments"), str):
                     slot["arguments"] += fn["arguments"]
@@ -200,8 +212,12 @@ async def _dispatch_stream(request, resolved_model, messages_raw, tools_raw, too
                     started = True
                 full_text += text_piece
                 yield enc.text_delta(msg_id, 0, text_piece)
+                last_out = time.monotonic()
+            elif time.monotonic() - last_out >= SSE_KEEPALIVE_INTERVAL:
+                yield SSE_KEEPALIVE_FRAME
+                last_out = time.monotonic()
 
-    function_calls = [slot for _, slot in sorted(calls.items()) if slot["name"]]
+    function_calls = [slot for slot in calls if slot["name"]]
     output = []
     # 有文本、或者什么都没有时才出 message 项（只有工具调用的回合不塞一个空 message）
     if started or not function_calls:

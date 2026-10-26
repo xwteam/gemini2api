@@ -655,6 +655,13 @@ async def _convert_anthropic_stream(
 async def _anthropic_stream_to_openai(response: httpx.Response, model: str) -> AsyncGenerator[str, None]:
     """把已建立的 Anthropic SSE 响应逐行转换为 OpenAI chunk（内部 helper，连接由调用方持有）。"""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    # Anthropic 的 content block 序号 → OpenAI tool_calls 的 index（只给 tool_use 块编号）
+    tool_blocks: dict = {}
+
+    def _tool_chunk(call: dict) -> str:
+        chunk = {"id": completion_id, "object": "chat.completion.chunk", "created": 0, "model": model,
+                 "choices": [{"index": 0, "delta": {"tool_calls": [call]}, "finish_reason": None}]}
+        return f"data: {json.dumps(chunk)}\n\n"
 
     async for line in response.aiter_lines():
         if not line.strip() or not line.startswith("data: "):
@@ -686,9 +693,25 @@ async def _anthropic_stream_to_openai(response: httpx.Response, model: str) -> A
                 }
                 yield f"data: {json.dumps(chunk)}\n\n"
 
+            elif event_type == "content_block_start":
+                # 过去不处理：Anthropic 上游的流式工具调用整个丢掉（/v1/chat/completions 与
+                # /v1/responses 的第三方流式都受影响）
+                block = event.get("content_block") or {}
+                if block.get("type") == "tool_use":
+                    tool_index = len(tool_blocks)
+                    tool_blocks[event.get("index")] = tool_index
+                    yield _tool_chunk({"index": tool_index, "id": block.get("id") or "",
+                                       "type": "function",
+                                       "function": {"name": block.get("name") or "", "arguments": ""}})
+
             elif event_type == "content_block_delta":
                 delta = event.get("delta", {})
-                if delta.get("type") == "text_delta":
+                if delta.get("type") == "input_json_delta":
+                    tool_index = tool_blocks.get(event.get("index"))
+                    if tool_index is not None:
+                        yield _tool_chunk({"index": tool_index,
+                                           "function": {"arguments": delta.get("partial_json") or ""}})
+                elif delta.get("type") == "text_delta":
                     text = delta.get("text", "")
                     chunk = {
                         "id": completion_id,

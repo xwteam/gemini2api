@@ -122,6 +122,12 @@ def parse_responses_input(input_data, instructions: str | None = None, *,
         if native_tool_calls and _append_native_tool_item(messages, item):
             continue
         converted = _input_item_to_internal(item)
+        if converted and native_tool_calls:
+            # 严格的 chat 上游不认 developer 角色（Codex 会发），assistant / system 也只收字符串
+            if converted.get("role") == "developer":
+                converted["role"] = "system"
+            if converted.get("role") in ("system", "assistant") and isinstance(converted.get("content"), list):
+                converted["content"] = _flat_text(converted["content"]) or ""
         if converted:
             messages.append(converted)
     return messages
