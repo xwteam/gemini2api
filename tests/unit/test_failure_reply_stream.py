@@ -240,6 +240,60 @@ def test_a_stream_with_generated_images_is_never_judged(monkeypatch):
     assert events[-1]["type"] == "final" and len(events[-1]["images"]) == 1
 
 
+def test_a_non_cumulative_frame_that_turns_the_body_into_the_phrase_still_raises(monkeypatch):
+    """放行之后不再逐帧检查（A.5），但非累积的替换帧可以把整段正文换掉（帧循环里「非累积/缩短帧」
+    那条分支本来就在防它）。正文从 "Let me check" 整段换成了套话：已经发出的几个字收不回来，可这句
+    套话绝不能作为 final.text 交出去 —— 路由拿 final.text 存会话记录（A.6）。照样按上游失败抛出。"""
+    client = _client(monkeypatch, stream_raw=_raw(("Let me check", None), (PHRASE, None)))
+    events, err = _collect(client.generate_stream("hi", "gemini-flash"))
+
+    assert isinstance(err, gc.GeminiFailureReply), (events, err)
+    assert _deltas(events) == ["Let me check"]
+    assert not [e for e in events if e["type"] == "final"]
+
+
+def test_a_non_cumulative_frame_with_a_normal_answer_still_finishes(monkeypatch):
+    """零回归：替换成的是正常回答时照旧收尾（final 带权威全文）。"""
+    client = _client(monkeypatch, stream_raw=_raw(("Let me check", None), ("Here is the answer.", None)))
+    events, err = _collect(client.generate_stream("hi", "gemini-flash"))
+
+    assert err is None, err
+    assert _deltas(events) == ["Let me check"]
+    assert events[-1]["type"] == "final" and events[-1]["text"] == "Here is the answer."
+
+
+def test_openai_stream_never_stores_a_phrase_that_replaced_the_body(gem_client, monkeypatch, tmp_path):
+    """端到端（真池 + 真 client，只有 HTTP 层是替身）：客户端在已发出的正文之后收到 api_error 帧，
+    会话记录里没有这句套话（过去 final.text 被当成整段回答存了进去，客户端看到的却是 "Let me check"）。"""
+    import app.core.conversation_store as store_module
+    import app.routers.openai as oai
+    from app.core.conversation_store import ConversationStore
+
+    monkeypatch.setattr(store_module, "DATA_DIR", tmp_path / "conversations")
+    store = ConversationStore()
+    monkeypatch.setattr(oai, "conversation_store", store)
+    client = _client(monkeypatch, stream_raw=_raw(("Let me check", None), (PHRASE, None)))
+    monkeypatch.setattr(oai, "gemini_client", _pool([client]))
+
+    with gem_client.stream("POST", "/v1/chat/completions", json={
+        "model": "gemini-flash", "stream": True, "conversation_id": "thread-1",
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers=_AUTH) as r:
+        body = "".join(r.iter_text())
+
+    datas = [json.loads(line[5:].strip()) for line in body.splitlines()
+             if line.startswith("data:") and line[5:].strip() not in ("", "[DONE]")]
+    content = "".join((ch.get("delta") or {}).get("content") or ""
+                      for d in datas for ch in d.get("choices") or [])
+    assert content == "Let me check", body
+    assert [(d["error"]["type"], d["error"]["code"]) for d in datas if "error" in d] == [("api_error", 502)]
+    assert not [d for d in datas for ch in d.get("choices") or [] if ch.get("finish_reason") == "stop"]
+    conv = asyncio.run(store.get(oai.scoped_conversation_id("thread-1")))
+    assert PHRASE not in json.dumps(conv.messages if conv else [], ensure_ascii=False)
+    files = list((tmp_path / "conversations").glob("*.json"))
+    assert all(PHRASE not in f.read_text(encoding="utf-8") for f in files)
+
+
 def test_configured_phrases_are_held_too(monkeypatch):
     monkeypatch.setattr(gc.settings, "gemini_failure_replies", "我好像遇到了错误。", raising=False)
     client = _client(monkeypatch, stream_raw=_raw(("我好像", None), ("我好像遇到了错误。", None)))

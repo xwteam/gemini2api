@@ -3284,14 +3284,17 @@ class GeminiWebClient:
 
         final = await self._finalize_stream(last_text, last_conv, last_images, last_thoughts,
                                             last_canvases)
-        if holding:
-            # 一直扣着到流结束：整段命中套话（且无图、回声保护不成立）→ 按上游失败抛出。此时正文
-            # 一个字都没发出去，池还能换号（没发过思考的话）、路由可以兜底。判定与非流式同一个纯函数。
-            if is_generic_failure_reply(final.get("text"), last_images, prompt):
-                raise GeminiFailureReply(str(final.get("text") or "").strip())
-            # 不是套话（例如整个回答就是 "I"）：先把扣住的正文作为增量补发，再发 final。
-            if held:
-                yield {"type": "delta", "text": held}
+        # 整段正文命中套话（且无图、回声保护不成立）→ 按上游失败抛出。判定与非流式同一个纯函数。
+        # 一直扣着到流结束是常见情形：正文一个字都没发出去，池还能换号（没发过思考的话）、路由可以兜底。
+        # 已经放行过的流按理不会命中（帧是累积式的，分叉之后正文只会变长），唯一的例外是非累积的替换帧
+        # （上面「非累积/缩短帧」那条分支）把整段正文换成了套话：替换前的几个字已经发出去、收不回来，
+        # 但这句套话绝不能作为 final.text 交出去 —— 路由拿 final.text 存会话记录（规格 A.6）。照样抛出：
+        # 路由在已发出的正文之后补一个错误帧，什么都不落盘。
+        if is_generic_failure_reply(final.get("text"), last_images, prompt):
+            raise GeminiFailureReply(str(final.get("text") or "").strip())
+        if holding and held:
+            # 一直扣着、但不是套话（例如整个回答就是 "I"）：先把扣住的正文作为增量补发，再发 final。
+            yield {"type": "delta", "text": held}
         yield final
 
     def _images_from_wrb(self, elem: list) -> list:
