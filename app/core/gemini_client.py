@@ -578,7 +578,8 @@ def classify_error(exc: Exception) -> tuple[int, str, int | None]:
     if is_timeout_error(exc):
         # 生成期超时（谷歌那边卡住、我们按预算掐断）：504 + timeout_error。过去落到最后的
         # 500 api_error，客户端分不出「网关坏了」和「上游太慢」，也不会按超时去重试。
-        # timeout_error 是 Anthropic SDK 认识的类型；504 对应它的 GatewayTimeoutError。
+        # timeout_error 是 Anthropic 错误体里的类型（SDK 的 GatewayTimeoutError 模型），HTTP 504
+        # 在 Anthropic SDK 里是 DeadlineExceededError，SDK 对 >=500 自动重试。
         return 504, "timeout_error", None
     if isinstance(exc, RuntimeError):
         msg = str(exc)
