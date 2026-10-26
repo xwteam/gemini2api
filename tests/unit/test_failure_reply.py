@@ -127,6 +127,10 @@ def test_configured_phrases_are_added_and_blank_entries_ignored(monkeypatch):
     # 空条目绝不能把空回答（或任何回答）判成套话
     assert gc.is_generic_failure_reply("", [], "hi") is False
     assert gc.is_generic_failure_reply("ok", [], "hi") is False
+    # 规格 A.1「空条目忽略」：套话表里压根不能有空串（它是一切文本的前缀，流式扣住会永远扣着）
+    assert gc.failure_reply_phrases() == (
+        PHRASE.casefold(), "我好像遇到了错误，换个问题试试？", "something went wrong.",
+    )
 
 
 def test_the_exception_is_a_502_http_status_error():

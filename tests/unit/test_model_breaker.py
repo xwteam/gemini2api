@@ -222,6 +222,32 @@ def test_a_stale_ticket_never_releases_someone_elses_probe():
     assert b.should_bypass(FAM, probe_timeout=200).bypass is True
 
 
+def test_every_transition_bumps_the_epoch_and_tickets_carry_it():
+    """I.5：每次状态转换 epoch+1 并清空探测位，票据带着发放时的 epoch。
+
+    （探测票据另带一个全局唯一的 token，迟到的 release 单靠它也放不掉别人的探测位；epoch 按规格
+    保留，这里钉住它确实随每次转换前进。）"""
+    b, clock, _ = _breaker()
+    _fail(b, clock, "req-a")
+    closed = b.should_bypass(FAM, probe_timeout=200)
+    _fail(b, clock, "req-b")                                        # closed → open
+    opened = b.should_bypass(FAM, probe_timeout=200)
+    assert opened.bypass and opened.epoch == closed.epoch + 1
+    clock.t += 61
+    probe = b.should_bypass(FAM, probe_timeout=200)                 # open → half_open（惰性）
+    assert probe.is_probe and probe.epoch == opened.epoch + 1
+    _fail(b, clock, "req-c")                                        # half_open → open（翻倍）
+    reopened = b.should_bypass(FAM, probe_timeout=200)
+    assert reopened.bypass and reopened.epoch == probe.epoch + 1
+    clock.t += 121
+    probe2 = b.should_bypass(FAM, probe_timeout=200)                # open → half_open
+    assert probe2.epoch == reopened.epoch + 1
+    b.record_success(FAM, started_at=clock.t)                       # half_open → closed
+    after = b.should_bypass(FAM, probe_timeout=200)
+    assert not after.bypass and after.epoch == probe2.epoch + 1
+    assert b.snapshot()[FAM]["probe_in_flight"] is False
+
+
 def test_releasing_a_non_probe_ticket_is_a_no_op():
     b, clock, _ = _breaker()
     _open(b, clock)
