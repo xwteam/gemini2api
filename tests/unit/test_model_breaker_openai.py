@@ -506,3 +506,17 @@ def test_two_different_resumed_requests_still_count_as_two(resumed, mode):
     _resumed_chat(resumed, mode, "thread-1")
     _resumed_chat(resumed, mode, "thread-2")
     assert model_breaker.snapshot()["flash"]["state"] == "open"
+
+
+@pytest.mark.parametrize("stream,tools", [(False, None), (True, None), (True, _TOOLS)],
+                         ids=["non-stream", "real-stream", "buffered"])
+def test_a_probe_that_gets_a_refusal_frees_the_slot_and_stays_half_open(world, monkeypatch, stream,
+                                                                        tools):
+    """拒答套话不计入熔断（v1.6.47）：探测请求碰上它既不关闭也不重开熔断，但探测位必须放掉。"""
+    _half_open(monkeypatch)
+    world.gemini_error = gc.GeminiRefusalReply("我只是一个语言模型，无法提供这方面的帮助。")
+    status, body = _chat(world, stream=stream, tools=tools)
+    snap = model_breaker.snapshot()["flash"]
+    assert snap["state"] == "half_open" and snap["probe_in_flight"] is False
+    assert model_breaker.should_bypass("flash", probe_timeout=10).is_probe, "下一个请求接着探测"
+

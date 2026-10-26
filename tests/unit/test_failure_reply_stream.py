@@ -421,3 +421,31 @@ def test_a_chinese_answer_that_merely_starts_like_a_refusal_is_released(monkeypa
     assert err is None, err
     assert _deltas(events) == ["我是 Gemini", "，很高兴认识你"]
 
+
+def test_after_thoughts_a_refusal_is_accounted_as_a_transient_fault_too(monkeypatch, caplog):
+    client = _client(monkeypatch, stream_raw=_raw((None, "先想一想"), ("我只是", "先想一想"),
+                                                  (_REFUSAL, "先想一想")))
+    pool = _pool([client])
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            events, err = _collect(pool.generate_stream("hi", "gemini-flash", extended_thinking=1))
+            assert isinstance(err, gc.GeminiRefusalReply)
+            assert [e["type"] for e in events] == ["thoughts"]
+
+    account = pool.accounts[0]
+    assert account.status == AccountStatus.ACTIVE, "3 次「先思考、正文是拒答套话」把账号推成了 EXPIRED"
+    assert account.consecutive_failures == 0 and account.cooldown_until > 0
+    assert account.last_error == "GeminiRefusalReply (HTTP 502)"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(account.id in w and "canned refusal" in w for w in warnings), warnings
+
+
+def test_curly_quotes_are_held_and_judged_like_straight_ones(monkeypatch):
+    curly = "I\u2019m just a language model, so I can\u2019t help you with that."
+    client = _client(monkeypatch, stream_raw=_raw(("I\u2019m just", None), (curly, None)))
+    events, err = _collect(client.generate_stream("hi", "gemini-flash"))
+
+    assert isinstance(err, gc.GeminiRefusalReply), (events, err)
+    assert _deltas(events) == []
+

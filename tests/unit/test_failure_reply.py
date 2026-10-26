@@ -734,3 +734,20 @@ def test_openai_nonstream_refusal_falls_back_to_a_third_party(gem_client, monkey
     assert r.status_code == 200, r.text
     assert r.json()["choices"][0]["message"]["content"] == "from fallback"
 
+
+@pytest.mark.parametrize("phrase", gc._BUILTIN_REFUSAL_REPLIES)
+def test_every_builtin_refusal_is_recognised(phrase):
+    assert gc.failure_reply_kind(phrase, [], "hi") == gc.REFUSAL_REPLY
+
+
+def test_refusal_echo_guard_with_curly_quotes_in_the_prompt():
+    straight = "I'm just a language model, so I can't help you with that."
+    prompt = "Repeat exactly: I\u2019m just a language model, so I can\u2019t help you with that."
+    assert gc.failure_reply_kind(straight, [], prompt) is None
+
+
+def test_an_operator_configured_refusal_counts_as_a_failure_reply(monkeypatch):
+    """GEMINI_FAILURE_REPLIES 里追加的一律按失败套话处理（计入熔断），哪怕它也在内置拒答表里。"""
+    monkeypatch.setattr(gc.settings, "gemini_failure_replies", REFUSAL)
+    assert gc.failure_reply_kind(REFUSAL, [], "hi") == gc.FAILURE_REPLY
+
