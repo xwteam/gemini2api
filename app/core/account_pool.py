@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from app.core.gemini_client import (
     GeminiFailureReply, GeminiRefusalReply, GeminiWebClient, GenerationStalled, GenerationTimedOut,
-    HTTPStatusError, ModelUnavailable, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable,
+    HTTPStatusError, ModelUnavailable, NO_HEALTHY_ACCOUNT_MSG, _resolve_model, BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable,
     is_timeout_error, model_family,
 )
 from app.core import keepalive_modes
@@ -840,6 +840,32 @@ class AccountPool:
             return
         await self.release(account, success=False, error=_error_summary(exc))
 
+    async def release_unused(self, account: Account):
+        """中性释放、也不算一次请求：这个账号根本服务不了这个请求（没有该模型），没打上游。"""
+        async with self._cond:
+            account.active_requests = max(0, account.active_requests - 1)
+            self._cond.notify(1)
+
+    def _raise_busy_if_model_holders_wait(self, last_err: Exception, model: str, tried: set) -> None:
+        """换号换到没有候选（failover 时 acquire 不排队），而唯一的原因是试过的账号都没有这个模型：
+        若还有「有这个模型、只是满载或冷却中」的账号，按池忙报（529，客户端会重试），别误报 400。"""
+        if not isinstance(last_err, ModelUnavailable):
+            return
+        bound = current_bound_account_ids()
+        for a in self._accounts:
+            if a.id in tried or (bound is not None and a.id not in bound):
+                continue
+            if a.status != AccountStatus.ACTIVE or a.client is None or not a.client.is_healthy:
+                continue
+            try:
+                has_model = _resolve_model(model, getattr(a.client, "_family_model", None)) \
+                    in a.client._model_table()
+            except Exception:  # noqa: BLE001 — 判不出来就当有，宁可报忙也不误报 400
+                has_model = True
+            if has_model:
+                raise RuntimeError(f"All accounts busy (max_concurrent={self._max_concurrent}): "
+                                   f"the accounts that have {model} are all in use")
+
     async def release_disconnected(self, account: Account):
         """中性释放：客户端断连/请求被取消时只归还槽位，不计成功也不计失败（issue #11 F6）。
 
@@ -1162,6 +1188,7 @@ class AccountPool:
             except RuntimeError:
                 # 没有（更多）账号可用：抛出最后一次可重试错误（若有），否则抛 acquire 的错
                 if last_err is not None:
+                    self._raise_busy_if_model_holders_wait(last_err, model, tried)
                     raise last_err
                 # 锁定账号场景：其它账号已被全部 exclude，acquire 报「无更多账号可故障切换」
                 # 其实是绑定账号本身不可用（expired/busy/cooldown），换更准确的文案。
@@ -1188,18 +1215,19 @@ class AccountPool:
                 await self.release_disconnected(account)
                 released = True
                 raise
+            except ModelUnavailable as e:
+                # 这个账号没有这个模型（没打上游）：不是账号的错——不计失败、不冷却、不算一次请求，
+                # 换下一个账号；一个都没有才把它（400）抛给调用方。别的账号报过的真实错误优先。
+                if last_err is None:
+                    last_err = e
+                tried.add(account.id)
+                await self.release_unused(account)
+                released = True
+                continue
             except Exception as e:
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
                 # 换号分支与 _release_failed 分支都要记（规格 I.1），所以记在分叉之前
                 self._breaker_failure(model, prompt, conversation_id, attempt_started, e)
-                if isinstance(e, ModelUnavailable):
-                    # 这个账号没有这个模型：不是账号的错，不计失败、不冷却，换下一个账号；
-                    # 一个都没有才把它（400）抛给调用方
-                    last_err = e
-                    tried.add(account.id)
-                    await self.release_disconnected(account)
-                    released = True
-                    continue
                 if _is_retryable(e):
                     # 可重试：5xx 冷却该账号、401/403 标 expired，换下一个账号重试
                     last_err = e
@@ -1238,6 +1266,7 @@ class AccountPool:
                 account = await self.acquire(exclude=tried if tried else None)
             except RuntimeError:
                 if last_err is not None:
+                    self._raise_busy_if_model_holders_wait(last_err, model, tried)
                     raise last_err
                 # 锁定账号场景：其它账号已被全部 exclude，真实原因是绑定账号本身不可用
                 if account_id:
@@ -1287,20 +1316,23 @@ class AccountPool:
                 await self.release_disconnected(account)
                 released = True
                 raise
+            except ModelUnavailable as e:
+                if emitted_any:
+                    raise
+                # 这个账号没有这个模型：同非流式（中性释放、不算请求、换号，真实错误优先）
+                if last_err is None:
+                    last_err = e
+                tried.add(account.id)
+                await self.release_unused(account)
+                released = True
+                failover = True
             except Exception as e:
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
                 if not breaker_recorded:
                     # 换号分支与 _release_failed 分支都要记（规格 I.1）；已经记过成功的不再记失败
                     self._breaker_failure(model, prompt, conversation_id, attempt_started, e)
                 # 只有「还没吐任何内容」+「可重试」+「还有别的账号」才 failover
-                if isinstance(e, ModelUnavailable) and not emitted_any:
-                    # 这个账号没有这个模型：中性释放、换号（同非流式）
-                    last_err = e
-                    tried.add(account.id)
-                    await self.release_disconnected(account)
-                    released = True
-                    failover = True
-                elif _is_retryable(e) and not emitted_any:
+                if _is_retryable(e) and not emitted_any:
                     last_err = e
                     tried.add(account.id)
                     await self.release(account, success=False, cooldown=_is_5xx(e), error=_error_summary(e))

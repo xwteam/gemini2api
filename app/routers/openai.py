@@ -2,11 +2,14 @@ import json
 import time
 import uuid
 import asyncio
+from pathlib import PurePosixPath
 import logging
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+
+from app.core.auth import STATIC_EXTENSIONS
 
 from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
@@ -506,6 +509,12 @@ async def list_models(request: Request):
 async def retrieve_model(model_id: str, request: Request):
     """OpenAI SDK 的 models.retrieve：与 /models 列表同一个口径（含白名单、访问密钥可见范围），
     不在列表里就按 OpenAI 的格式回 404。"""
+    # 带静态资源后缀（.js / .png / .html…）的路径被全局鉴权放行（见 app.core.auth），这里一律 404、
+    # 不查列表，免得未鉴权的请求探出模型列表
+    if PurePosixPath(model_id).suffix.lower() in STATIC_EXTENSIONS:
+        return JSONResponse(status_code=404, content={"error": {
+            "message": f"The model '{model_id}' does not exist", "type": "invalid_request_error",
+            "param": None, "code": "model_not_found"}})
     listed = await list_models(request)
     for info in listed.data:
         if info.id == model_id:

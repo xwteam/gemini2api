@@ -154,3 +154,71 @@ def test_retrieve_an_unknown_model_is_an_openai_style_404(gem_client):
     r = gem_client.get("/v1/models/no-such-model", headers=_AUTH)
     assert r.status_code == 404
     assert r.json()["error"]["code"] == "model_not_found"
+
+
+# ---------------------------------------------------------------------------
+# 审查补充：真实错误优先、有模型的账号只是忙时报 529、不算一次请求、静态后缀、不退回不思考、
+# client 内层检查不被包成 RuntimeError
+# ---------------------------------------------------------------------------
+
+class _Failing(_Client):
+    def __init__(self, exc):
+        super().__init__(True)
+        self.exc = exc
+
+    async def generate(self, *a, **kw):
+        self.calls += 1
+        raise self.exc
+
+
+@pytest.mark.parametrize("order", ["5xx-first", "lacking-first"])
+def test_a_real_upstream_error_wins_over_model_unavailable(order):
+    busy = _Failing(gc.HTTPStatusError(503, "unavailable"))
+    clients = (busy, _Client(False)) if order == "5xx-first" else (_Client(False), busy)
+    pool = _pool(*clients)
+    with pytest.raises(gc.HTTPStatusError) as ei:
+        asyncio.run(pool.generate("hi", "gemini-argon"))
+    assert ei.value.status_code == 503
+
+
+def test_when_the_account_with_the_model_is_just_busy_it_is_a_529_not_a_400():
+    lacking, having = _Client(False), _Client(True)
+    having._model_table = lambda: dict(gc._BASE_MODELS, **{"gemini-argon": {"id": "x", "capacity": 2}})
+    pool = _pool(lacking, having)
+    pool.accounts[1].active_requests = pool._max_concurrent        # 满载
+    with pytest.raises(RuntimeError) as ei:
+        asyncio.run(pool.generate("hi", "gemini-argon"))
+    assert "All accounts busy" in str(ei.value)
+    assert gc.classify_error(ei.value)[0] == 529
+
+
+def test_a_lacking_attempt_is_not_counted_as_a_request():
+    pool = _pool(_Client(False), _Client(True))
+    asyncio.run(pool.generate("hi", "gemini-argon"))
+    assert pool.accounts[0].request_count == 0 and pool.accounts[0].active_requests == 0
+
+
+def test_model_unavailable_is_not_retried_without_thinking():
+    assert gc.should_retry_without_thinking(gc.ModelUnavailable("x"), 1) is False
+
+
+def test_the_client_does_not_wrap_an_inner_model_unavailable(monkeypatch):
+    client = gc.GeminiWebClient.__new__(gc.GeminiWebClient)
+    client._healthy = True
+    client._heal_lock = asyncio.Lock()
+    client._family_model = {}
+    calls = []
+
+    async def send(*a, **kw):
+        calls.append(1)
+        raise gc.ModelUnavailable("Model 'gemini-pro' unavailable. Options: gemini-flash")
+
+    monkeypatch.setattr(client, "_send_request", send)
+    with pytest.raises(gc.ModelUnavailable):
+        asyncio.run(client.generate("hi", "gemini-pro"))
+    assert len(calls) == 1, "不能原样重发，也不能被包成 RuntimeError"
+
+
+def test_static_suffix_model_ids_are_404_without_auth(gem_client):
+    r = gem_client.get("/v1/models/gemini-pro.js")          # 不带鉴权：静态后缀被全局放行
+    assert r.status_code == 404 and r.json()["error"]["code"] == "model_not_found"

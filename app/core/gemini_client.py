@@ -523,7 +523,8 @@ def should_retry_without_thinking(exc: BaseException, extended_thinking) -> bool
     打上游，跟思考 payload 无关 —— 钉着同一个账号退回不思考再试只会原样失败，还把这一轮白白降成
     不思考。
     """
-    if isinstance(exc, PinnedAccountUnavailable):
+    if isinstance(exc, (PinnedAccountUnavailable, ModelUnavailable)):
+        # ModelUnavailable 同理：所有账号都没有这个模型，退回不思考也一样没有
         return False
     return bool(extended_thinking) and isinstance(exc, THINKING_RETRYABLE_ERRORS)
 
@@ -3035,6 +3036,10 @@ class GeminiWebClient:
             try:
                 return await self._send_request(prompt, model, conversation_id, attachments, gem_id,
                                                  extended_thinking)
+            except ModelUnavailable:
+                # 账号没有这个模型（_send_request 里的那道检查，心跳刚好改了模型表时才会走到）：
+                # 原样重发没用，也不能被下面包成 RuntimeError —— 交给池换号
+                raise
             except HTTPStatusError as e:
                 last_err = e
                 status = e.status_code
