@@ -536,7 +536,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `CORS_ALLOW_CREDENTIALS` | ❌ | `true` | CORS 자격 증명 전송 허용 여부 |
 | `IMAGE_DOWNLOAD_SIZE_SUFFIX` | ❌ | `=s2048` | 이미지 생성 대리 다운로드 크기 접미사(`=s0`은 전체 해상도 원본) |
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 단일 이미지 다운로드 HTTP 타임아웃(초) |
-| `FALLBACK_ENABLED` | ❌ | `false` | Gemini→타사 폴백 활성화: 임의의 Gemini 모델(flash/pro/thinking)이 오류를 내거나 빈 응답을 반환하면 API Key 풀의 타사 모델로 자동 전환하여 "네이티브 재시도" |
+| `FALLBACK_ENABLED` | ❌ | `false` | Gemini→타사 폴백 활성화: 임의의 Gemini 모델(flash/pro/thinking)이 오류를 내거나 빈 응답을 반환하면 API Key 풀의 타사 모델로 자동 전환하여 "네이티브 재시도"(패널 'API 관리' 페이지의 폴백 스위치는 `data/settings-overrides.json`에 저장되며 이 값보다 우선하고 업그레이드 후에도 유지됩니다) |
 | `FALLBACK_MODELS` | ❌ | — | 폴백 모델(쉼표 구분, 순서대로 시도); 비워두면 풀에서 "채팅에 적합한" 모든 타사 모델을 자동 선택(이름으로 image/video/audio/embedding 등 비채팅 모델 제외)하여 무작위 로테이션, 하나가 실패(오류/빈 응답)하면 다음으로 전환 |
 | `DEFAULT_THINKING_LEVEL` | ❌ | `low` | 클라이언트가 수준을 지정하지 않을 때의 수준: `off` / `low` / `medium` / `high`. `low`는 실측상 요청당 평균 약 5초 더 걸리고 `off`가 가장 빠름. 패널 "설정 → 사고"에서 즉시 전환 가능. 클라이언트가 사고를 전혀 요청하지 않은 경우 기본 수준으로 켠 사고는 클라이언트에 반환하지 않음 |
 | `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 사고 마스터 스위치(고급·호환용): `false` = 네 프로토콜 모두 사고 안 함. 클라이언트가 명시적으로 요청해도 무시 |

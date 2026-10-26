@@ -655,7 +655,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `CORS_ALLOW_CREDENTIALS` | ❌ | `true` | CORS で資格情報の送信を許可するか |
 | `IMAGE_DOWNLOAD_SIZE_SUFFIX` | ❌ | `=s2048` | 生図代理ダウンロードのサイズサフィックス（`=s0` でフル解像度の原画像） |
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 画像ダウンロード 1 回あたりの HTTP タイムアウト（秒） |
-| `FALLBACK_ENABLED` | ❌ | `false` | Gemini → 第三者フォールバックを有効化：任意の Gemini モデル（flash/pro/thinking）がエラーまたは空レスポンスを返した場合、API キープール内の第三者モデルに自動で切り替えて「ネイティブにリトライ」 |
+| `FALLBACK_ENABLED` | ❌ | `false` | Gemini → 第三者フォールバックを有効化：任意の Gemini モデル（flash/pro/thinking）がエラーまたは空レスポンスを返した場合、API キープール内の第三者モデルに自動で切り替えて「ネイティブにリトライ」（パネルの「API 管理」ページのフォールバック切替は `data/settings-overrides.json` に保存され、こちらより優先し、アップグレードでも消えません） |
 | `FALLBACK_MODELS` | ❌ | — | フォールバックモデル（カンマ区切り、順に試行）；空の場合はプール内のすべての「チャットに適した」第三者を自動選択（名前で image/video/audio/embedding などの非チャットモデルを除外）してランダムにローテーション、1 つが失敗（エラー/空）したら次へ切り替え |
 | `DEFAULT_THINKING_LEVEL` | ❌ | `low` | クライアントがレベルを指定しないときのレベル：`off` / `low` / `medium` / `high`。`low` は実測で 1 リクエストあたり平均約 5 秒遅く、`off` が最速。パネルの「設定 → 思考」で即時切り替え可。クライアントが思考を一切要求していない場合、既定レベルで有効にした思考はクライアントに返しません |
 | `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 思考のマスタースイッチ（上級者向け・互換用）：`false` = 4 つのプロトコルすべてで思考しない。クライアントが明示的に要求しても無視 |

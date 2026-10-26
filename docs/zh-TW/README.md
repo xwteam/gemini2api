@@ -654,7 +654,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `CORS_ALLOW_CREDENTIALS` | ❌ | `true` | CORS 是否允許攜帶憑據 |
 | `IMAGE_DOWNLOAD_SIZE_SUFFIX` | ❌ | `=s2048` | 生圖代下載尺寸後綴（`=s0` 為全解析度原圖） |
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 單次圖片下載 HTTP 超時（秒） |
-| `FALLBACK_ENABLED` | ❌ | `false` | 啟用 Gemini→第三方兜底：任意 Gemini 模型（flash/pro/thinking）報錯或回傳空回應時，自動改用 API Key 池中的第三方模型「原生重試」 |
+| `FALLBACK_ENABLED` | ❌ | `false` | 啟用 Gemini→第三方兜底：任意 Gemini 模型（flash/pro/thinking）報錯或回傳空回應時，自動改用 API Key 池中的第三方模型「原生重試」（面板「API 管理」頁的兜底開關會寫進 `data/settings-overrides.json`，優先級高於這裡，升級不丟） |
 | `FALLBACK_MODELS` | ❌ | — | 兜底模型（逗號分隔、按序嘗試）；留空＝自動選用池中所有「適合聊天」的第三方（按名稱排除 image/video/audio/embedding 等非聊天模型）並隨機輪詢、一個失敗（報錯/空）就換下一個 |
 | `DEFAULT_THINKING_LEVEL` | ❌ | `low` | 客戶端沒指定檔位時使用的檔位：`off` / `low` / `medium` / `high`。`low` 實測每請求平均多約 5 秒，`off` 最快；面板「設定 → 思考」可即時切換。客戶端完全沒提思考時，依預設檔開的思考不回傳給客戶端 |
 | `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 思考總開關（進階/相容項）：`false` = 四個協議一律不思考，連客戶端明確要求的也忽略 |

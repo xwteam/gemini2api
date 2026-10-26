@@ -606,7 +606,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 ## ⚙ 配置说明
 
 > [!IMPORTANT]
-> **面板改过的设置项优先级高于环境变量。** 在 Web 面板「设置」页保存过的项会写进
+> **面板改过的设置项优先级高于环境变量。** 在 Web 面板「设置」页（以及「API 管理」页的兜底开关）保存过的项会写进
 > `data/settings-overrides.json`（`data/` 是 docker-compose 的持久化 bind mount），
 > 并在每次启动时回放、**覆盖**下表中对应的环境变量。
 > 这是刻意的：面板上关掉 `LOG_BODIES_ENABLED` 之后，`docker compose restart` 不能把它
@@ -653,7 +653,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `CORS_ALLOW_CREDENTIALS` | ❌ | `true` | CORS 是否允许携带凭据 |
 | `IMAGE_DOWNLOAD_SIZE_SUFFIX` | ❌ | `=s2048` | 生图代下载尺寸后缀（`=s0` 为全分辨率原图） |
 | `IMAGE_DOWNLOAD_TIMEOUT` | ❌ | `25.0` | 单次图片下载 HTTP 超时（秒） |
-| `FALLBACK_ENABLED` | ❌ | `false` | 启用 Gemini→第三方兜底：任意 Gemini 模型（flash/pro/thinking）报错或返回空响应时，自动改用 API Key 池中的第三方模型原生重试 |
+| `FALLBACK_ENABLED` | ❌ | `false` | 启用 Gemini→第三方兜底：任意 Gemini 模型（flash/pro/thinking）报错或返回空响应时，自动改用 API Key 池中的第三方模型原生重试（面板「API 管理」页的兜底开关会写进 `data/settings-overrides.json`，优先级高于这里，升级不丢） |
 | `FALLBACK_MODELS` | ❌ | — | 兜底模型（逗号分隔、按序尝试）；留空=自动选用池中所有"适合聊天"的第三方（按名称排除 image/video/audio/embedding 等非聊天模型）并随机轮询、一个失败（报错/空）就换下一个 |
 | `DEFAULT_THINKING_LEVEL` | ❌ | `low` | 客户端没指定档位时用的档位：`off` / `low` / `medium` / `high`。`low` 实测每请求平均多约 5 秒，`off` 最快；面板「设置 → 思考」可即时切换。客户端完全没提思考时，按默认档开的思考不回传给客户端 |
 | `EXTENDED_THINKING_ENABLED` | ❌ | `true` | 思考总闸（高级/兼容项）：`false` = 四个协议一律不思考，连客户端明确要求的也忽略 |
