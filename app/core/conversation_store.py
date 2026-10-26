@@ -40,9 +40,14 @@ def _safe_file_id(conv_id: str) -> str:
 
 
 class Conversation:
-    def __init__(self, conv_id: str, gemini_conv_id: str = ""):
+    def __init__(self, conv_id: str, gemini_conv_id: str = "", account_id: str = ""):
         self.id = conv_id
+        # 续接上游会话的元数据：[cid, rid, rcid] 的 JSON 字符串（v1.6.45 起）。旧文件里可能是
+        # Python repr "['c_…', 'r_…']" 或纯 "c_…"，读取统一走 gemini_client.parse_conversation_metadata。
         self.gemini_conv_id = gemini_conv_id
+        # 服务这个会话的账号 id。会话 id 是账号私有的：续接必须钉回同一个账号，钉不住就改发完整历史。
+        # 旧文件没有这个字段 → ""（= 不知道是哪个账号，下一轮发完整历史、新开会话）。
+        self.account_id = account_id
         self.messages: list[dict] = []
         self.model: str = ""
         self.created_at: float = time.time()
@@ -56,6 +61,7 @@ class Conversation:
         return {
             "id": self.id,
             "gemini_conv_id": self.gemini_conv_id,
+            "account_id": self.account_id,
             "model": self.model,
             "messages": self.messages,
             "created_at": self.created_at,
@@ -64,7 +70,9 @@ class Conversation:
 
     @classmethod
     def from_dict(cls, data: dict):
-        conv = cls(data["id"], data.get("gemini_conv_id", ""))
+        account_id = data.get("account_id")
+        conv = cls(data["id"], data.get("gemini_conv_id", ""),
+                   account_id if isinstance(account_id, str) else "")
         conv.messages = data.get("messages", [])
         conv.model = data.get("model", "")
         conv.created_at = data.get("created_at", time.time())

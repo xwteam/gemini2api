@@ -75,6 +75,16 @@ def _is_empty_generation(result) -> bool:
     return not (isinstance(result, dict) and (result.get("thoughts") or "").strip())
 
 
+def _with_account_id(result, account: "Account"):
+    """生成结果（非流式结果 / 流式 final 事件）带上实际服务的账号 id。
+
+    多轮续接要把会话钉回这个账号（会话 id 是账号私有的）。拷一份再加，不改 client 给的原对象。
+    """
+    if isinstance(result, dict):
+        return {**result, "account_id": account.id}
+    return result
+
+
 def _error_summary(exc: Exception) -> str:
     """把异常压成「异常类型 + HTTP 状态码」的安全摘要，供 Account.last_error 存放。
 
@@ -882,6 +892,28 @@ class AccountPool:
                 out.append({"account_id": account.id, "error": str(e)})
         return out
 
+    def account_pinnable(self, account_id: str | None) -> bool:
+        """多轮续接用：这个账号此刻能不能被钉住（generate(..., account_id=) 会不会当场判它不可用）。
+
+        要求：账号存在、ACTIVE、会话健康、在本次请求的访问密钥绑定白名单里；池里还有别的账号
+        时还得有空槽位 —— 钉住 = 排除其它所有账号，满载的账号会被 acquire 当场判「不可用」
+        而不是排队（只有它一个账号时 acquire 照常排队，满载不算不可钉）。
+        只读快照、不占槽位：真正发请求时仍可能因竞态报 unavailable，调用方要有改发完整历史的兜底。
+        """
+        if not account_id:
+            return False
+        account = self._get_account(account_id)
+        if account is None or account.status != AccountStatus.ACTIVE:
+            return False
+        if account.client is None or not account.client.is_healthy:
+            return False
+        bound = current_bound_account_ids()
+        if bound is not None and account_id not in bound:
+            return False
+        if account.active_requests >= self._max_concurrent and len(self._accounts) > 1:
+            return False
+        return True
+
     def _get_account(self, account_id: str):
         for a in self._accounts:
             if a.id == account_id:
@@ -1021,7 +1053,7 @@ class AccountPool:
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
                 await self.release(account, success=True, empty=_is_empty_generation(result))
                 released = True
-                return result
+                return _with_account_id(result, account)
             except (asyncio.CancelledError, GeneratorExit):
                 # F6：客户端断连/取消不是账号失败，只归还槽位（否则点 3 次"停止"就能把
                 # 单账号池标成 EXPIRED）。必须放在 except Exception 之前显式处理。
@@ -1095,6 +1127,7 @@ class AccountPool:
                     elif evt_type == "thoughts" and (evt.get("text") or "").strip():
                         saw_thoughts = True
                     elif evt_type == "final":
+                        evt = _with_account_id(evt, account)
                         final_evt = evt
                     yield evt
                 live_metrics.record_request(model, (time.time() - t0) * 1000)
