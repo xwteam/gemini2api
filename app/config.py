@@ -28,12 +28,17 @@ MODEL_BREAKER_DEFAULTS = {
     "model_breaker_cooldown": 60.0,
     "model_breaker_max_cooldown": 300.0,
 }
+# 秒数类（WINDOW / COOLDOWN / MAX_COOLDOWN）的上限。超过一天的窗口 / 开放期没有意义（多半是把毫秒
+# 写成了秒）；更要紧的是荒唐但有限的值（1e12）原先照样过校验，熔断一打开，状态里 retry_at 的墙钟 +
+# timedelta 越界抛 OverflowError，/admin/status 与 /admin/accounts 整个开放期都 500（面板账号页打不开）。
+MODEL_BREAKER_MAX_SECONDS = 86400.0
 _TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
 
 
 def coerce_model_breaker_value(field: str, value):
-    """MODEL_BREAKER_* 的宽容解析 → (值, 是否合法)。解析失败或越界一律 (出厂值, False)。
+    """MODEL_BREAKER_* 的宽容解析 → (值, 是否合法)。解析失败或越界（≤0、阈值不是正整数、秒数超过
+    MODEL_BREAKER_MAX_SECONDS）一律 (出厂值, False)。
 
     启动时的校验器（会打 WARNING）和熔断器每次调用现读 settings（运行时覆盖 / 测试 monkeypatch
     塞进来的值不经过校验器）共用这一份口径：一个手写错的 .env 值绝不能让服务起不来，也不能让熔断器
@@ -61,6 +66,8 @@ def coerce_model_breaker_value(field: str, value):
         if not number.is_integer():
             return default, False
         return int(number), True
+    if number > MODEL_BREAKER_MAX_SECONDS:
+        return default, False
     return number, True
 
 
@@ -187,7 +194,7 @@ class Settings(BaseSettings):
     # 生成超时、一次进展都没有的流式超时）→ 打开 COOLDOWN 秒：开了兜底的 chat 请求直接走兜底；到期后
     # 放一个真实请求去试探谷歌，试探失败开放期翻倍（封顶 MAX_COOLDOWN），任何成功都关闭熔断。
     # 没开兜底的请求、其它协议一律照常调谷歌（它们的结果照样更新熔断状态）。进程重启后状态清空。
-    # 非法值（解析失败、≤0、阈值 <1）回退出厂值并 WARNING；MAX_COOLDOWN 至少等于 COOLDOWN。
+    # 非法值（解析失败、≤0、阈值 <1、秒数超过一天）回退出厂值并 WARNING；MAX_COOLDOWN 至少等于 COOLDOWN。
     model_breaker_enabled: bool = True
     model_breaker_threshold: int = 2
     model_breaker_window: float = 300.0

@@ -65,6 +65,22 @@ def test_both_admin_endpoints_carry_model_breakers(gem_client, monkeypatch, path
     assert flash["probe_in_flight"] is False
 
 
+@pytest.mark.parametrize("path", ["/admin/status", "/admin/accounts"])
+def test_absurd_cooldowns_cannot_take_the_status_endpoints_down(gem_client, monkeypatch, path):
+    """MODEL_BREAKER_COOLDOWN / MAX_COOLDOWN=1e12 过去照样被接受：熔断一打开，retry_at 的日期运算越界，
+    两个端点整个开放期都回 500（面板账号页打不开）。"""
+    from app.config import settings
+
+    monkeypatch.setattr(ap.account_pool, "_accounts", [])
+    monkeypatch.setattr(settings, "model_breaker_cooldown", 1e12)
+    monkeypatch.setattr(settings, "model_breaker_max_cooldown", 1e12)
+    _open_flash()
+    r = gem_client.get(path, headers=_AUTH)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["model_breakers"]["flash"]["state"] == "open"
+
+
 def test_model_breakers_is_empty_when_nothing_happened(gem_client, monkeypatch):
     monkeypatch.setattr(ap.account_pool, "_accounts", [])
     body = gem_client.get("/admin/status", headers=_AUTH).json()

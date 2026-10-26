@@ -498,6 +498,39 @@ def test_invalid_settings_fall_back_to_the_defaults(field, raw, expected, caplog
     assert any(field.upper() in r.getMessage() for r in caplog.records) is (not valid)
 
 
+@pytest.mark.parametrize("field,default", [
+    ("model_breaker_window", 300.0),
+    ("model_breaker_cooldown", 60.0),
+    ("model_breaker_max_cooldown", 300.0),
+])
+def test_absurdly_long_durations_fall_back_to_the_defaults(field, default, caplog):
+    """秒数没有上限时，一个荒唐但有限的值（1e12）照样过校验：熔断打开后 snapshot 算 retry_at（墙钟 +
+    timedelta）越界抛 OverflowError，/admin/status 与 /admin/accounts 整个开放期都 500。超过一天按越界
+    处理（回退出厂值并 WARNING）；一天以内照常接受。"""
+    from app.config import Settings
+
+    with caplog.at_level(logging.WARNING, logger="app.config"):
+        s = Settings(_env_file=None, **{field: "1e12"})
+    assert getattr(s, field) == default
+    assert any(field.upper() in r.getMessage() for r in caplog.records)
+    assert getattr(Settings(_env_file=None, **{field: "86400"}), field) == 86400.0
+
+
+def test_runtime_absurd_durations_cannot_break_the_snapshot(monkeypatch):
+    """运行时塞进来的值不经过启动校验器，熔断器现读 settings 时用同一份口径兜住（I.12）。"""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "model_breaker_cooldown", 1e12)
+    monkeypatch.setattr(settings, "model_breaker_max_cooldown", 1e12)
+    b = mb.ModelBreaker(clock=_Clock())
+    b.record_failure(FAM, started_at=1000.0, fingerprint="req-a", reason="x")
+    b.record_failure(FAM, started_at=1000.0, fingerprint="req-b", reason="x")
+    snap = b.snapshot()[FAM]
+    assert snap["state"] == "open"
+    assert snap["cooldown_seconds"] == 60
+    assert snap["retry_at"] is not None
+
+
 def test_max_cooldown_is_never_below_the_cooldown(caplog):
     from app.config import Settings
 
