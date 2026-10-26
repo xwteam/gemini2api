@@ -351,9 +351,11 @@ def test_unavailable_account_resends_the_full_history_and_updates_the_store(wire
     _chat(w, [U1, A1, U2])
 
     assert len(first.calls) == 1, "过期的账号不该再被打"
+    assert len(other.calls) == 1, f"预判接不上就直接发完整历史，不该先白打一轮: {other.calls}"
     call = other.calls[-1]
     assert call["prompt"] == FULL_HISTORY, "接不上就必须发完整历史，不能只发最后一句"
     assert call["conv"] == "", "新开会话不能带续接参数"
+    assert call["thinking"], "预判出接不上时是正常的新请求，思考档位不该被降成不思考"
     conv = _stored(w)
     assert conv.account_id == f"account-{1 - idx}"
     assert json.loads(conv.gemini_conv_id) == other.triple(1)
@@ -370,6 +372,7 @@ def test_account_excluded_by_the_access_key_whitelist_resends_the_full_history(w
     assert len(first.calls) == 1
     call = w.ups[1 - idx].calls[-1]
     assert (call["prompt"], call["conv"]) == (FULL_HISTORY, "")
+    assert call["thinking"], "思考档位不该被降成不思考"
     assert _stored(w).account_id == other_id
 
 
@@ -439,12 +442,18 @@ def test_old_repr_metadata_with_a_recorded_account_resumes(wired):
     assert w.ups[1].calls == []
 
 
-def test_old_file_without_an_account_resends_the_full_history_then_records_one(wired):
+def test_old_file_without_an_account_resends_the_full_history_then_records_one(wired, caplog):
+    import logging
+
     w = wired
     a = w.ups[0]
     _seed(w, f"['{a.triple(1)[0]}', '{a.triple(1)[1]}']", account_id="")
 
-    _chat(w, [U1, A1, U2])
+    with caplog.at_level(logging.INFO, logger="app.routers.openai"):
+        _chat(w, [U1, A1, U2])
+
+    assert any("no recorded account" in r.getMessage() for r in caplog.records), \
+        "日志要说清为什么没续接"
 
     calls = [c for u in w.ups for c in u.calls]
     assert [(c["prompt"], c["conv"]) for c in calls] == [(FULL_HISTORY, "")]
@@ -503,8 +512,10 @@ def test_real_stream_with_an_unavailable_account_resends_the_full_history(wired)
     _chat(w, [U1, A1, U2], stream=True)
 
     other = w.ups[1 - idx]
+    assert len(other.calls) == 1, other.calls
     call = other.calls[-1]
-    assert (call["prompt"], call["conv"]) == (FULL_HISTORY, "")
+    assert (call["prompt"], call["conv"], call["stream"]) == (FULL_HISTORY, "", True), \
+        "预判接不上时照样真流式发完整历史"
     assert _stored(w).account_id == f"account-{1 - idx}"
 
 
