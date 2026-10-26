@@ -199,14 +199,15 @@ curl http://localhost:5918/openai/v1/models \
 | `conversation_id` | string | 否 | 对话 ID，用于多轮续接（规则见下方「多轮续接」） |
 | `reasoning_effort` | string | 否 | 思考档位 `low` / `medium` / `high`（见 [🧠 模型与思考档位](#-模型与思考档位)）。不传 = 默认档（出厂 `low`），且不回传 `reasoning_content` |
 
-**多轮续接（`conversation_id`）**：同一个 `conversation_id` 的后续轮次接着上游 Gemini 的同一个会话往下聊，只发最新一条用户消息，并带上上一轮记下的续接元数据（`[cid, rid, rcid]`）。网页版的会话属于具体某个账号，所以后续轮次**钉在服务上一轮的那个账号上**。下面任一情况都**自动改发完整历史、新开一个会话**（成功后记下新会话与账号，下一轮照常续接），绝不只发最后一句而悄悄丢掉上下文：
+**多轮续接（`conversation_id`）**：同一个 `conversation_id` 的后续轮次接着上游 Gemini 的同一个会话往下聊，只发最新一条用户消息，并带上上一轮记下的续接元数据（`[cid, rid, rcid]`）。网页版的会话属于具体某个账号，所以后续轮次**钉在服务上一轮的那个账号上**。流式请求同样续接，但流式响应里不回传 `conversation_id`，要由客户端自己带上（非流式不带时服务端会生成一个，在响应的 `conversation_id` 字段里回给你）。下面任一情况都**自动改发完整历史、新开一个会话**（成功后记下新会话与账号，下一轮照常续接），绝不只发最后一句而悄悄丢掉上下文：
 
 - 那个账号不可用：已过期、被删除、不在本次访问密钥绑定的账号里，或（池里有多个账号时）正好满载；
 - 记下的续接元数据用不了（含升级前存下、没记账号的旧会话：第一轮发完整历史，之后恢复续接）；
 - 上一轮是第三方兜底回答的，或上游那一轮没给出续接点；
+- 新的一轮不只是一条用户消息：带着工具结果（`role: "tool"`，或用户消息里的 `tool_result` 块），或上一轮回答之后连着来了好几条消息；
 - 用的是 Gem 模型，且 Gem 绑定的账号与会话记录的账号不一致（以 Gem 为准）。
 
-谷歌那边会话真过期、续接请求失败时，仍会自动用完整历史重试一次（超时除外，见[超时](#超时)）。
+谷歌那边会话真过期、续接请求失败时，仍会自动用完整历史重试一次（超时除外，见[超时](#超时)）。钉住的账号到真正发请求时才不可用（比如刚好被抢满），同样改发完整历史，这一轮的思考档位保持不变。
 
 **多模态 content 格式**：
 
@@ -1672,11 +1673,12 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 
 疑似生图的请求与 `GENERATE_TIMEOUT_IMAGE`（默认 180 秒）**取大**。超时不再重试三遍——失败就是失败。
 
-超时回 **504**，错误类型 `timeout_error`，用各协议自己的错误体：OpenAI / Gemini 原生 / Responses 是 `{"error": {..., "type": "timeout_error"}}`，Anthropic 是 `{"type": "error", "error": {"type": "timeout_error", ...}}`（过去是纯文本的 `500 Internal Server Error`，SDK 解析不了、也不会按超时重试）。流式请求（含带工具的伪流式）已经回过 200，超时是协议内的错误事件：OpenAI 的 error 帧 `type` 为 `timeout_error`、`code` 为 `504`；Anthropic 的 `error` 事件与 Gemini 原生 NDJSON 的错误行 `type` 为 `timeout_error`；Responses 的 `response.failed` 里 `error.code` 为 `timeout_error`。
+超时回 **504**，错误类型 `timeout_error`，用各协议自己的错误体：OpenAI / Gemini 原生 / Responses 是 `{"error": {..., "type": "timeout_error"}}`，Anthropic 是 `{"type": "error", "error": {"type": "timeout_error", ...}}`（过去是纯文本的 `500 Internal Server Error`，SDK 解析不了、也不会按超时重试）。流式请求（含带工具的伪流式）已经回过 200，超时是协议内的错误事件：OpenAI 的 error 帧 `type` 为 `timeout_error`、`code` 为 `504`；Anthropic 的 `error` 事件与 Gemini 原生 NDJSON 的错误行 `type` 为 `timeout_error`；Responses 的 `response.failed` 里 `error.code` 为 `timeout_error`。生图接口 `/v1/images/generations` 同样回 504 + `timeout_error`；深度研究接口（`/gemini/v1beta/deepresearch`，以及 `/gemini/v1beta/deepresearch/interact` 的非流式请求）回 504，错误体是 `{"detail": "..."}`。
 
 - 开了 `FALLBACK_ENABLED` 时，`/v1/chat/completions` 在还没向客户端发出正文前会先尝试第三方兜底，兜到了就不报错；另外三个协议没有第三方兜底，直接回上面的错误。
 - 超时不会退回不思考重试，也不会用完整 prompt 重试：这一轮的预算已经花完，再试只会让客户端再等一整轮。
 - 超时是谷歌那边卡住、不是 cookie 失效：不计入账号的连续失败，不会因此把账号标成 `expired`（只记一次错误、短暂冷却）。
+- 建连阶段的超时（几秒就回来、没吃掉生成预算）照旧先在同一账号上重试几次；重试用完也按超时处理：回 504、不计入连续失败、不再退回不思考或用完整 prompt 重试。
 
 > [!IMPORTANT]
 > 非流式路径在生成返回之前**连接上是零字节输出**，所以这是**首字节**超时而不是空闲超时。

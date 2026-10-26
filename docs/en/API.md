@@ -166,14 +166,15 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 | `tool_choice` | string | No | `auto`, `required`, or function name |
 | `conversation_id` | string | No | Multi-turn continuation (rules in "Multi-turn continuation" below) |
 
-**Multi-turn continuation (`conversation_id`):** later turns with the same `conversation_id` continue the same upstream Gemini conversation: only the newest user message is sent, together with the continuation metadata recorded on the previous turn (`[cid, rid, rcid]`). A Gemini web conversation belongs to one account, so later turns are **pinned to the account that served the previous turn**. In any of the cases below the gateway **resends the full history as a new conversation** instead (and records the new conversation and account on success, so the next turn resumes normally) — it never sends just the last message and silently drops the context:
+**Multi-turn continuation (`conversation_id`):** later turns with the same `conversation_id` continue the same upstream Gemini conversation: only the newest user message is sent, together with the continuation metadata recorded on the previous turn (`[cid, rid, rcid]`). A Gemini web conversation belongs to one account, so later turns are **pinned to the account that served the previous turn**. Streaming requests continue too, but a streaming response does not carry a `conversation_id`, so the client has to send its own (a non-streaming request without one gets a server-generated id back in the response's `conversation_id` field). In any of the cases below the gateway **resends the full history as a new conversation** instead (and records the new conversation and account on success, so the next turn resumes normally) — it never sends just the last message and silently drops the context:
 
 - that account is unavailable: expired, removed, outside the access key's bound accounts, or (with more than one account in the pool) at capacity;
 - the recorded metadata is unusable (including conversations stored before the upgrade, which have no account recorded: their first turn resends the full history, then continuation resumes);
 - the previous turn was answered by the third-party fallback, or the upstream returned no continuation point for it;
+- the new turn is more than a single user message: it carries tool results (`role: "tool"`, or `tool_result` blocks in a user message), or several messages arrived after the previous answer;
 - a Gem model is used and the Gem's bound account differs from the conversation's account (the Gem wins).
 
-When Google has really expired the conversation and the continuation request fails, the gateway still retries once with the full history (except on timeouts, see [Timeouts](#timeouts)).
+When Google has really expired the conversation and the continuation request fails, the gateway still retries once with the full history (except on timeouts, see [Timeouts](#timeouts)). The same happens when the pinned account turns out to be unavailable only at send time (for example it has just filled up); the turn keeps its thinking level.
 
 **Multimodal Content Format:**
 
@@ -1620,11 +1621,12 @@ The generation timeout for non-streaming (`stream: false`) requests is **tiered 
 
 Requests that look like image generation take the **larger** of the tier above and `GENERATE_TIMEOUT_IMAGE` (default 180 s). A timeout is no longer retried three times — a failure is a failure.
 
-A timeout returns **504** with error type `timeout_error`, in each protocol's own error body: OpenAI / Gemini native / Responses use `{"error": {..., "type": "timeout_error"}}`, Anthropic uses `{"type": "error", "error": {"type": "timeout_error", ...}}` (it used to be a plain-text `500 Internal Server Error` that SDKs could not parse and would not retry as a timeout). Streaming requests (including the buffered tool-calling streams) have already answered 200, so the timeout arrives as an in-protocol error event: the OpenAI error frame has `type` `timeout_error` and `code` `504`; the Anthropic `error` event and the Gemini native NDJSON error line have `type` `timeout_error`; in Responses, `response.failed` carries `error.code` `timeout_error`.
+A timeout returns **504** with error type `timeout_error`, in each protocol's own error body: OpenAI / Gemini native / Responses use `{"error": {..., "type": "timeout_error"}}`, Anthropic uses `{"type": "error", "error": {"type": "timeout_error", ...}}` (it used to be a plain-text `500 Internal Server Error` that SDKs could not parse and would not retry as a timeout). Streaming requests (including the buffered tool-calling streams) have already answered 200, so the timeout arrives as an in-protocol error event: the OpenAI error frame has `type` `timeout_error` and `code` `504`; the Anthropic `error` event and the Gemini native NDJSON error line have `type` `timeout_error`; in Responses, `response.failed` carries `error.code` `timeout_error`. The image endpoint `/v1/images/generations` also returns 504 with `timeout_error`; the deep-research endpoints (`/gemini/v1beta/deepresearch`, and non-streaming requests to `/gemini/v1beta/deepresearch/interact`) return 504 with a `{"detail": "..."}` body.
 
 - With `FALLBACK_ENABLED` on, `/v1/chat/completions` tries the third-party fallback first, as long as no content has been sent to the client yet; the other three protocols have no third-party fallback and return the error above directly.
 - A timeout is not retried without thinking and not retried with the full prompt: the turn's budget is already spent, and a retry would only make the client wait another full round.
 - A timeout means Google stalled, not that the cookie died: it does not count toward the account's consecutive failures and never marks the account `expired` (it records one error and a short cooldown).
+- A connect-phase timeout (one that comes back within seconds, without using up the generation budget) is still retried a few times on the same account first; once those retries run out it is handled as a timeout too: 504, not counted as a consecutive failure, no retry without thinking or with the full prompt.
 
 > [!IMPORTANT]
 > On the non-streaming path the connection emits **zero bytes** until generation returns, so this is a **time-to-first-byte** timeout, not an idle timeout.
