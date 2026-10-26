@@ -87,7 +87,15 @@ def _generate_timeout(resolved_model: str, prompt: str, models: dict | None = No
     就是 True）—— 一个关键词猜测只被允许"加时"，绝不允许"减时"。
     """
     info = (models or GEMINI_MODELS).get(resolved_model)
-    family = str(info["family"]) if info else ""
+    return generate_timeout_for_family(str(info["family"]) if info else "", prompt)
+
+
+def generate_timeout_for_family(family: str, prompt: str) -> float:
+    """_generate_timeout 的按族版本（口径完全一样）。
+
+    路由手里只有模型族、没有某个账号解析出来的内部模型名：模型熔断的探测位兜底时限要用「这个请求
+    实际的预算」（含生图意图取大，规格 I.5），就从这里算。
+    """
     overrides = _parse_generate_timeouts(getattr(settings, "generate_timeouts", "") or "")
     value = overrides.get(family) or _GENERATE_TIMEOUT_BY_FAMILY.get(family)
     timeout = float(value or _GENERATE_TIMEOUT_DEFAULT)

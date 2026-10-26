@@ -21,9 +21,11 @@ from app.core.conversation_store import conversation_store
 from app.core.gemini_client import (GEMINI_MODELS, GENERATION_ERRORS, MODEL_ALIASES,
                                     PinnedAccountUnavailable, _resolve_model,
                                     classify_error, encode_conversation_metadata,
+                                    generate_timeout_for_family,
                                     generate_with_thinking_fallback, is_timeout_error,
                                     parse_conversation_metadata, parse_effort_request,
                                     resolve_thinking, should_retry_without_thinking)
+from app.core.model_breaker import family_label, model_breaker
 from app.core.thinking_stream import HiddenThoughts, drop_thought_events
 from app.core.stream import split_into_chunks, format_sse, iter_with_keepalive, SSE_KEEPALIVE_INTERVAL, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.openai import (
@@ -255,8 +257,17 @@ async def _adopt_regenerated_resume_point(conv, regenerated: dict, parsed) -> No
 
 
 async def _fallback_stream(conv, request, req: ChatRequest, messages_raw: list, exclude_model: str,
-                           completion_id: str, model_name: str) -> AsyncGenerator[str, None]:
-    """流式路径的兜底（_maybe_fallback_stream）；兜到了就清掉会话的续接点。"""
+                           completion_id: str, model_name: str,
+                           breaker: "_BreakerGate | None" = None) -> AsyncGenerator[str, None]:
+    """流式路径的兜底（_maybe_fallback_stream）；兜到了就清掉会话的续接点。
+
+    breaker：这个请求的熔断交互（见 _BreakerGate）。走到这里说明谷歌调用已经结束，先释放探测位
+    （规格 I.5）；绕开阶段已经遍历过一轮兜底且没答出来的，不再重复兜底（规格 I.10）。
+    """
+    if breaker is not None:
+        breaker.release_probe()
+        if breaker.fallback_spent:
+            return
     emitted = False
     async for chunk in _maybe_fallback_stream(request, req, messages_raw, exclude_model,
                                               completion_id, model_name):
@@ -264,6 +275,100 @@ async def _fallback_stream(conv, request, req: ChatRequest, messages_raw: list, 
         yield chunk
     if emitted:
         await _forget_resume_point(conv)
+
+
+class _BreakerGate:
+    """一个 /v1/chat/completions 请求与模型熔断器的交互（v1.6.46 规格 C.6，按 I.5 / I.8 / I.10）。
+
+    谷歌某个模型族整体故障时（第 0 节：flash 排队卡住 / 秒回失败套话），带第三方兜底的请求不该每次
+    先白等一个预算。只有这里有兜底可走，所以只有这个端点绕开谷歌；其它协议照常调谷歌、结果照样更新
+    熔断状态（记录点在账号池）。
+
+    - check()：有兜底可走（fallback_enabled() 且 get_fallback_entries 非空）时才问熔断器，族由「路由
+      传给池的同一个 model 参数」解析（池按它记账，两边的族键才对得上）。熔断打开 → True（这次先走
+      兜底）；half_open 时第一个请求拿到探测票据、照常去调谷歌（返回 False）。
+    - release_probe()：谷歌调用一结束、兜底开始之前就释放探测位（幂等；之后再 release 是空操作）。
+      兜底可能要很久（第三方 httpx 超时 300 秒），占着探测位期间别的请求只能绕开、没人能探测。
+    - fallback_spent：绕开阶段已经遍历过一轮兜底且没答出来 —— 照常调谷歌（不算探测，结果照常记录），
+      但谷歌失败 / 回空的分支不再重复兜底（同一批候选再试一遍，延迟和第三方费用都翻倍）。
+    - answered：绕开阶段的兜底答出来了（流式路径据此直接收尾）。
+    """
+
+    def __init__(self, request, model: str, prompt: str):
+        self.request = request
+        self.model = model
+        self.prompt = prompt
+        self.family: str | None = None
+        self.ticket = None
+        self.fallback_spent = False
+        self.answered = False
+
+    def check(self) -> bool:
+        if self.request is None or not fallback_enabled():
+            return False
+        state = getattr(getattr(self.request, "app", None), "state", None)
+        if state is None or not get_fallback_entries(state, exclude_model=self.model):
+            return False
+        self.family = gemini_client.family_of(self.model)
+        if not self.family:
+            return False
+        # 探测位的兜底时限 = 这个请求实际的预算（含生图意图取大）+ 排队等账号的上限 + 30 秒（规格 I.5）
+        probe_timeout = (generate_timeout_for_family(self.family, self.prompt)
+                         + float(getattr(settings, "acquire_timeout", 0) or 0) + 30.0)
+        self.ticket = model_breaker.should_bypass(self.family, probe_timeout=probe_timeout)
+        return self.ticket.bypass
+
+    def release_probe(self) -> None:
+        if self.ticket is not None:
+            model_breaker.release(self.ticket)
+            self.ticket = None
+
+    def log_answered(self) -> None:
+        # 兜底真正答出来之后才打（规格 I.10）；与 [fallback] 日志同风格
+        logger.info(f"[breaker] {family_label(self.family or self.model)} 谷歌侧故障中，本请求直接走兜底")
+
+
+async def _released_after(agen, breaker: "_BreakerGate"):
+    """流式响应体的外层：无论怎么结束（正常 / 报错 / 客户端断连），都在 finally 里释放探测位。"""
+    try:
+        async for chunk in agen:
+            yield chunk
+    finally:
+        breaker.release_probe()
+
+
+async def _bypass_fallback_stream(breaker: "_BreakerGate", conv, request, req: ChatRequest,
+                                  messages_raw: list, exclude_model: str, completion_id: str,
+                                  model_name: str) -> AsyncGenerator[str, None]:
+    """熔断打开时流式请求先走兜底（role 首帧已由调用方发出）。
+
+    兜底包成 task、放在 _sse_keepalive_during 下跑（规格 I.11）：_fallback_result 要等第三方返回完整的
+    非流式回答，期间一个字节都不发的话，这条路径在故障期间就成了「role 首帧之后一直静默」，容易被
+    反向代理的空闲读超时掐断。答出来了 → 转成 SSE 发出、作废会话续接点、breaker.answered = True；
+    没答出来 → breaker.fallback_spent = True，调用方照常调谷歌。
+    """
+    task = asyncio.create_task(_fallback_result(request, req, messages_raw, exclude_model))
+    try:
+        async for ping in _sse_keepalive_during(task):
+            yield ping
+    except BaseException:          # GeneratorExit / CancelledError on client disconnect
+        task.cancel()
+        if task.done() and not task.cancelled():
+            task.exception()
+        raise
+    try:
+        data = task.result()
+    except Exception as e:  # noqa: BLE001 — 兜底自己出错就当没答出来，照常调谷歌
+        logger.warning(f"[breaker] 绕开谷歌时兜底出错，改为照常调谷歌: {e}")
+        data = None
+    if data is None:
+        breaker.fallback_spent = True
+        return
+    breaker.answered = True
+    breaker.log_answered()
+    async for sse in _emit_openai_data_sse(data, completion_id, model_name):
+        yield sse
+    await _forget_resume_point(conv)
 
 
 def _thirdparty_ok(resp) -> bool:
@@ -436,7 +541,14 @@ async def chat_completions(req: ChatRequest, request: Request):
     gemini_conv_id, account_id = _resume_target(conv, gem_account_id, messages_raw)
 
     async def _fallback():
-        """第三方兜底；兜到了就清掉会话的续接点（见 _forget_resume_point）。"""
+        """第三方兜底；兜到了就清掉会话的续接点（见 _forget_resume_point）。
+
+        谷歌调用已经结束、兜底开始之前先释放探测位（规格 I.5）；绕开阶段已经遍历过一轮兜底且没答出来
+        的，谷歌失败 / 回空的分支不再重复兜底（规格 I.10）。
+        """
+        breaker.release_probe()
+        if breaker.fallback_spent:
+            return None
         fb = await _fallback_result(request, req, messages_raw, resolved_model)
         if fb is not None:
             await _forget_resume_point(conv)
@@ -488,12 +600,28 @@ async def chat_completions(req: ChatRequest, request: Request):
     extended_thinking = _plan.upstream
     show_thinking = _plan.show
 
+    # 模型熔断（规格 C.6）：族由这一轮最终要发给谷歌的模型解析（模型映射、Gem 的 base_model 之后）
+    breaker = _BreakerGate(request, resolved_model, prompt)
+
     if req.stream:
+        # 两条流式路径在各自的 SSE 生成器里判断（role 首帧之后、调谷歌之前，规格 I.8）
         return StreamingResponse(
-            _stream_response(prompt, resolved_model, has_tools, gemini_conv_id, conv, messages_raw, req.model, attachments, _image_base(request), request, req, gem_id, account_id, extended_thinking=extended_thinking, show_thinking=show_thinking, gem_account_id=gem_account_id),
+            _released_after(
+                _stream_response(prompt, resolved_model, has_tools, gemini_conv_id, conv, messages_raw, req.model, attachments, _image_base(request), request, req, gem_id, account_id, extended_thinking=extended_thinking, show_thinking=show_thinking, gem_account_id=gem_account_id, breaker=breaker),
+                breaker,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    if breaker.check():
+        # 这个族谷歌侧故障中、又有兜底可走：先走兜底，不再先白等一个预算
+        fb = await _fallback()
+        if fb is not None:
+            breaker.log_answered()
+            return JSONResponse(content=fb)
+        # 兜底没答出来：照常调谷歌（不算探测，结果照常记录），之后不再重复兜底
+        breaker.fallback_spent = True
 
     try:
         result = await gemini_client.generate(prompt, resolved_model, gemini_conv_id, attachments,
@@ -549,6 +677,9 @@ async def chat_completions(req: ChatRequest, request: Request):
                     content={"error": {"message": str(err), "type": err_type}},
                     headers=headers,
                 )
+    finally:
+        # 谷歌这一轮的调用（含退回不思考、完整历史重试）结束了：探测位必须在 finally 里释放（规格 C.3）
+        breaker.release_probe()
 
     # Gemini 返回空响应（无文本、无图）→ 第三方兜底（开关关闭/无候选时返回 None，零回归）
     if is_empty_result(result):
@@ -660,9 +791,9 @@ def _usage_and_record(model: str, prompt: str, text: str, result: dict | None = 
     )
 
 
-async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, display_model: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False, show_thinking: bool = False, gem_account_id=None) -> AsyncGenerator[str, None]:
+async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, display_model: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False, show_thinking: bool = False, gem_account_id=None, breaker: "_BreakerGate | None" = None) -> AsyncGenerator[str, None]:
     """account_id = 这一轮钉的账号（续接 = 会话的账号）；gem_account_id = 改发完整历史时还要钉的
-    账号（只有 Gem 绑定，没有就不钉）。"""
+    账号（只有 Gem 绑定，没有就不钉）。breaker = 这个请求的熔断交互（见 _BreakerGate；None = 不管熔断）。"""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     model_name = display_model or model
 
@@ -682,7 +813,7 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
         async for sse in _stream_response_buffered(
             prompt, model, has_tools, gemini_conv_id, conv, messages_raw,
             model_name, completion_id, attachments, base_url, request, req, gem_id, account_id,
-            extended_thinking=extended_thinking, gem_account_id=gem_account_id,
+            extended_thinking=extended_thinking, gem_account_id=gem_account_id, breaker=breaker,
         ):
             yield sse
         return
@@ -693,6 +824,14 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
         choices=[StreamChoice(delta=StreamDelta(role="assistant"))],
     )
     yield format_sse(first.model_dump())
+
+    # 模型熔断（规格 C.6 / I.8）：role 首帧之后、调谷歌之前判断；兜底答了就直接收尾
+    if breaker is not None and breaker.check():
+        async for sse in _bypass_fallback_stream(breaker, conv, request, req, messages_raw, model,
+                                                 completion_id, model_name):
+            yield sse
+        if breaker.answered:
+            return
 
     full_text = ""
     new_conv_id = ""
@@ -808,7 +947,8 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
                 # 尚未流出任何内容（只发过 role 首帧）→ 可安全改用第三方兜底（流式）
                 if not streamed_any:
                     emitted = False
-                    async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
+                    async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name,
+                                                        breaker=breaker):
                         emitted = True
                         yield chunk
                     if emitted:
@@ -827,7 +967,8 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
         else:
             if not streamed_any:
                 emitted = False
-                async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
+                async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name,
+                                                    breaker=breaker):
                     emitted = True
                     yield chunk
                 if emitted:
@@ -838,7 +979,8 @@ async def _stream_response(prompt: str, model: str, has_tools: bool, gemini_conv
     # Gemini 真流式整条为空（只发过 role 首帧，未流出任何内容）→ 第三方兜底
     if not streamed_any and not (full_text or "").strip() and not final_images:
         emitted = False
-        async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
+        async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name,
+                                            breaker=breaker):
             emitted = True
             yield chunk
         if emitted:
@@ -896,17 +1038,26 @@ def _err_chunk(exc: Exception) -> str:
     return format_sse(chunk) + "data: [DONE]\n\n"
 
 
-async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, model_name: str = "", completion_id: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False, gem_account_id=None) -> AsyncGenerator[str, None]:
+async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, gemini_conv_id: str = "", conv=None, messages_raw=None, model_name: str = "", completion_id: str = "", attachments=None, base_url: str = "", request=None, req=None, gem_id=None, account_id=None, extended_thinking=False, gem_account_id=None, breaker: "_BreakerGate | None" = None) -> AsyncGenerator[str, None]:
     """非流式收集 + 切片伪流式：用于有工具调用/附件、需要完整文本的场景。
 
     account_id = 这一轮钉的账号（续接 = 会话的账号）；gem_account_id = 改发完整历史时还要钉的
-    账号（只有 Gem 绑定，没有就不钉）。"""
+    账号（只有 Gem 绑定，没有就不钉）。breaker = 这个请求的熔断交互（见 _BreakerGate；None = 不管熔断）。"""
     # 立即发出首帧 SSE，避免生图/工具路径在 generate() 阻塞期间零字节导致前置代理超时。
     first = StreamChunk(
         id=completion_id, model=model_name,
         choices=[StreamChoice(delta=StreamDelta(role="assistant"))],
     )
     yield format_sse(first.model_dump())
+
+    # 模型熔断（规格 C.6 / I.8）：同样在这个生成器里、role 首帧之后判断。这里已经发过 role 首帧，
+    # 不能再回 JSON，所以用流式的兜底（_fallback() 只给非流式用）。
+    if breaker is not None and breaker.check():
+        async for sse in _bypass_fallback_stream(breaker, conv, request, req, messages_raw, model,
+                                                 completion_id, model_name):
+            yield sse
+        if breaker.answered:
+            return
 
     async def _run_generate():
         # 思考档位照样生效（这条路径从不回传 reasoning_content，思考只进内部记账）；
@@ -952,7 +1103,8 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
                 result = retry_task.result()
             except Exception as e2:
                 emitted = False
-                async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
+                async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name,
+                                                    breaker=breaker):
                     emitted = True
                     yield chunk
                 if emitted:
@@ -963,7 +1115,8 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
             prompt, gemini_conv_id, account_id = full_prompt, "", gem_account_id
         else:
             emitted = False
-            async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
+            async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name,
+                                                breaker=breaker):
                 emitted = True
                 yield chunk
             if emitted:
@@ -974,7 +1127,8 @@ async def _stream_response_buffered(prompt: str, model: str, has_tools: bool, ge
     # Gemini 返回空响应（无文本、无图）→ 第三方兜底（此前只发过 role 首帧 + keepalive，可安全改流）
     if is_empty_result(result):
         emitted = False
-        async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name):
+        async for chunk in _fallback_stream(conv, request, req, messages_raw, model, completion_id, model_name,
+                                            breaker=breaker):
             emitted = True
             yield chunk
         if emitted:
