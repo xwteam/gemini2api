@@ -4,6 +4,20 @@
 
 ---
 
+## [1.6.48] - 2026-10-26
+
+### Fixed
+
+- 🛠️ **`/v1/responses` 用第三方模型时，工具调用能跑通了**（Codex 等客户端）：
+  - **流式不再丢工具调用**：过去流式只转发上游的文字增量，第三方模型发起的工具调用被整个丢掉，客户端只看到一句「我来列一下文件」就结束了；Codex 恒用流式，工具循环根本跑不起来（10-26 中转站用 deepseek-v4-flash 复现）。现在按 index 累积上游的 `tool_calls` 增量，收尾发出完整的 `function_call` 输出项（`output_item.added` → `function_call_arguments.delta/done` → `output_item.done`），`response.completed` 里也带上；只有工具调用的回合不再塞一个空 message；
+  - **非流式文字和工具调用同时保留**（「我先看一下目录」+ 调用），过去有工具调用时文字被丢掉；上游没给调用 id 时补一个 `call_` id；
+  - **历史按 OpenAI 原生格式发给第三方**：`function_call` → `assistant.tool_calls`（连续调用、紧跟在 assistant 文字后的调用并进同一条消息），`function_call_output` → 带 `tool_call_id` 的 `tool` 消息（`output` 为内容块数组时取其中文字）。过去是「(called tool X with arguments …)」纯文本 + 不带 `tool_call_id` 的 tool 消息，严格校验的上游会 400；
+  - **只转发 `function` 类型的工具**：Codex 带的 `web_search` / `local_shell` / `custom` 等内置工具过去被转成空名字的函数，现在略过；没有可发的工具时不带 `tool_choice`。
+  - 上游的并行工具调用（有的上游全给 `index: 0`、或干脆不给 `index`）不再被并成一个；攒工具调用参数期间按保活间隔发心跳，长补丁不被中间代理当空闲掐断；
+  - `developer` 角色转成 `system`，assistant / system 的内容块数组拍成字符串（严格的 chat 上游不认）；
+  - Gemini 路径（拍成文本的工具历史）不变。
+- 🛠️ **Anthropic 类第三方上游的流式工具调用不再丢**：`tool_use` 块与 `input_json_delta` 过去没有转换，`/v1/chat/completions` 与 `/v1/responses` 走这类上游的流式工具调用都整个丢掉；现在转成 OpenAI 的 `tool_calls` 增量。
+
 ## [1.6.47] - 2026-10-26
 
 ### Fixed
