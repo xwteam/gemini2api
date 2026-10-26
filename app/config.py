@@ -112,6 +112,12 @@ class Settings(BaseSettings):
     # unknown 处理（映射成 429：给客户端明确的"稍后再试"，且不冷却/不换号，
     # 避免一个系统性的未知拒绝把整池账号拖进冷却）。抓到样本后往这里配即可生效。
     bard_error_codes: str = ""
+    # 谷歌用来代替回答的「失败套话」，用 | 分隔追加（内置的那句始终生效，空条目忽略）。
+    # 谷歌侧故障时 Gemini 会秒回 HTTP 200、正文恰好是一句
+    # "I seem to be encountering an error. Can I try something else for you?"（北京 2026-10-26
+    # 线上实测）。整段正文规范化后**恰好等于**其中一条才算失败（换号 / 兜底），包含、前缀都不算。
+    # 运维在别的语言 / 别的措辞上抓到样本时往这里加。见 gemini_client.is_generic_failure_reply。
+    gemini_failure_replies: str = ""
     # 非流式对话 POST 超时，按模型族分层（秒）。形如 "flash-lite=60,flash=120,pro=300"。
     # 留空=用代码里的默认分层（flash-lite 60 / flash 120 / pro 300 / argon 300）。
     # 旧配置里的 flash-thinking=... 已无对应模型族（该模型已下线为 gemini-flash 的别名），被忽略、无害。

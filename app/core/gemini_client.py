@@ -774,6 +774,106 @@ def _extract_bard_error(elem) -> "GeminiRejectionError | None":
     return None
 
 
+# ---------------------------------------------------------------------------
+# 谷歌的「失败套话」（v1.6.46 规格 A）
+# ---------------------------------------------------------------------------
+# 线上实测（中转站三账号，北京 2026-10-26 14:18～14:4x、16:43～17:2x，gemini-flash 谷歌侧故障）：
+# 除了「排队卡住」之外，另一种表现是 1.2 秒就回 HTTP 200，正文恰好是下面这一句。过去它被当成
+# 正常回答返回给客户端，还存进了会话记录。参考实现 refs/gemini-web-to-api
+# internal/modules/providers/gemini_music_test.go:93 也把这句列为「Gemini Web 报错」。
+# 运维在别的语言 / 别的措辞上抓到样本时用 GEMINI_FAILURE_REPLIES（| 分隔）追加，内置表始终生效。
+_BUILTIN_FAILURE_REPLIES = (
+    "I seem to be encountering an error. Can I try something else for you?",
+)
+_WHITESPACE_RE = re.compile(r"\s+")
+# build_prompt_from_messages 拍平历史时每一段的角色前缀（段与段之间用空行隔开）。回声保护要把
+# assistant 段剔掉，见 _non_assistant_prompt。
+_PROMPT_ROLE_RE = re.compile(r"(?:\A|\n\n)(System|Human|Assistant|Tool result): ")
+
+
+def _normalize_reply(text) -> str:
+    """去首尾空白、内部连续空白压成一个空格、casefold —— 判定与扣住共用这一个口径。"""
+    return _WHITESPACE_RE.sub(" ", str(text or "").strip()).casefold()
+
+
+def failure_reply_phrases() -> tuple[str, ...]:
+    """内置套话 + GEMINI_FAILURE_REPLIES 追加的，规范化后去重；空条目忽略。
+
+    每次现读 settings（运维改了配置 / 测试 monkeypatch 即时生效）。空条目必须丢掉：规范化后的
+    空串会让任何空回答都「恰好等于」它，也会让流式扣住永远扣着（空串是一切文本的前缀）。
+    """
+    raw = getattr(settings, "gemini_failure_replies", "") or ""
+    out: list[str] = []
+    for phrase in (*_BUILTIN_FAILURE_REPLIES, *str(raw).split("|")):
+        norm = _normalize_reply(phrase)
+        if norm and norm not in out:
+            out.append(norm)
+    return tuple(out)
+
+
+def _non_assistant_prompt(prompt: str) -> str:
+    """拍平的 prompt 去掉 assistant 段，只留 system / user / tool（规格 H.6）。
+
+    回声保护过去看的是整段 prompt，而拍平的历史里带着 assistant 轮次（prompt.py 的
+    "Assistant: {content}"）。故障期间漏过去的套话早已进了客户端自己保存的历史（第 0 节），
+    于是正好是这批对话永久失去识别，之后每一次漏过去的套话还会自我延续。
+    为什么按角色前缀剔、而不是把「最后一条用户消息」一路传下来：四个协议拍 prompt 都走
+    build_prompt_from_messages（段首是 "System: " / "Human: " / "Assistant: " / "Tool result: "，
+    段间空行），在这里剔一处就够了；往下传要改池与 client 两层的签名，所有测试替身跟着改，侵入大
+    得多。续接路径只发最新一条用户消息、没有角色前缀，原样全算用户内容，结论与完整历史一致。
+    已知的偏差只在一侧：用户正文里自己写了 "\\n\\nAssistant: <套话>" 时那一段也会被剔掉。
+    """
+    if "Assistant: " not in prompt:
+        return prompt
+    kept: list[str] = []
+    role = None              # 第一个角色前缀之前的内容（工具说明之类）照常算
+    pos = 0
+    for m in _PROMPT_ROLE_RE.finditer(prompt):
+        if role != "Assistant":
+            kept.append(prompt[pos:m.start()])
+        role = m.group(1)
+        pos = m.start()
+    if role != "Assistant":
+        kept.append(prompt[pos:])
+    return "".join(kept)
+
+
+def is_generic_failure_reply(text, images=None, prompt: str = "") -> bool:
+    """这一段正文是不是谷歌拿来代替回答的失败套话（非流式与流式共用的纯函数）。
+
+    - text 必须是**整段**正文（_restore_body / 占位串剥离之后的最终文本），规范化后**恰好等于**
+      某条套话才算：包含、前缀、相似都不算，正常回答里完全可能出现这句话的片段；
+    - 有生成图片时不判（图才是答案）；
+    - 回声保护：这一轮发给谷歌的 prompt（只看非 assistant 内容，见 _non_assistant_prompt）
+      规范化后本来就包含这句 → 用户让模型复述它，不判；
+    - 思考链不参与，调用方只传正文。
+    """
+    if images:
+        return False
+    norm = _normalize_reply(text)
+    if not norm or norm not in failure_reply_phrases():
+        return False
+    if norm in _normalize_reply(_non_assistant_prompt(prompt or "")):
+        return False
+    return True
+
+
+class GeminiFailureReply(HTTPStatusError):
+    """谷歌回了失败套话（HTTP 200，正文是一句固定的报错）而不是回答。
+
+    做成 HTTPStatusError(502) 的子类，既有机制一行不改就接得住：_is_retryable（5xx）→ 该账号软冷却
+    + 换下一个账号；全部失败 → 路由的思考路径照规则退回不思考一次、OpenAI chat 走第三方兜底、否则
+    classify_error → 502 api_error。不是空响应，也不是超时。
+    """
+
+    def __init__(self, reply: str):
+        self.reply = reply
+        super().__init__(
+            502,
+            f'Gemini replied with its generic failure message instead of an answer: "{reply}"',
+        )
+
+
 GEMINI_APP_URL = "https://gemini.google.com/app"
 GEMINI_HOME_URL = "https://gemini.google.com/?hl=en"
 GEMINI_APP_EN_URL = "https://gemini.google.com/app?hl=en"
@@ -2774,6 +2874,10 @@ class GeminiWebClient:
                     if status in (401, 403):
                         self._healthy = False
                     raise
+                if isinstance(e, GeminiFailureReply):
+                    # 失败套话不是网络抖动：同一个账号原样再发一次多半还是这句，只会让客户端多等
+                    # 一轮（第 0 节：故障期间三个账号都回它）。直接交给池换号（规格 H.7）。
+                    raise
                 # 5xx：同账号快速重试上限内短退避；超过则直接抛给 pool 做 failover
                 if attempt >= max_5xx:
                     raise
@@ -3097,6 +3201,12 @@ class GeminiWebClient:
             raise HTTPStatusError(resp.status_code, resp.text[:200])
 
         result = self._parse_output(resp.text)
+
+        # 谷歌的失败套话（规格 A.4）：解析完、下载图片之前就判 —— 非流式、buffered 带工具、深度研究、
+        # 生图都经这里，手里也正好有这一轮发出去的 prompt（回声保护要用）。抛出去就自然不会写进
+        # 会话记录、也不算空响应。
+        if is_generic_failure_reply(result.get("text"), result.get("images"), prompt):
+            raise GeminiFailureReply(str(result.get("text") or "").strip())
 
         # AI 生成图片：lh3 URL 客户端直接访问会 403，服务端带 cookie 代下载，
         # 同时存盘（供对话接口返回可渲染 URL）+ 转 base64（供 images/generations 接口）
