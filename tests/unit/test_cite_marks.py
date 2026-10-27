@@ -9,15 +9,19 @@ import pytest
 from app.core import gemini_client as gc
 
 
+def _final(raw: str, images=()) -> str:
+    """收尾口径（_finalize_stream / _parse_output）：还原正文 → 剥占位链接 → 剥引用标记。"""
+    return gc._strip_image_placeholders(gc._restore_body(raw, [], "")[0], list(images))
+
+
 @pytest.mark.parametrize("raw,clean", [
     ("红色[cite: 1]", "红色"),
     ("[cite_start]天空是蓝的[cite: 1, 2]。", "天空是蓝的。"),
     ("见第[cite: 3-5]页", "见第页"),
-    ("[cite:7]结尾", "结尾"),
-], ids=["tail", "start-and-multi", "range", "no-space"])
+], ids=["tail", "start-and-multi", "range"])
 def test_cite_marks_are_removed(raw, clean):
-    assert gc._clean_control_markers(raw)[0] == clean
-    assert gc._restore_body(raw, [], "")[0] == clean
+    assert _final(raw) == clean
+    assert gc._stable_placeholder_prefix(raw) == clean
 
 
 @pytest.mark.parametrize("raw", [
@@ -25,10 +29,24 @@ def test_cite_marks_are_removed(raw, clean):
     "参见 [cite: 附录 B]",
     "[citation needed]",
     "[cite]",
-], ids=["index", "non-numeric", "citation-needed", "bare-cite"])
+    "data[cite:5]",
+], ids=["index", "non-numeric", "citation-needed", "bare-cite", "code-without-space"])
 def test_lookalikes_are_left_alone(raw):
-    assert gc._clean_control_markers(raw)[0] == raw
+    assert _final(raw) == raw
     assert gc._stable_placeholder_prefix(raw) == raw
+
+
+def test_a_placeholder_right_before_a_cite_mark_does_not_swallow_the_text_after_it():
+    """先剥占位、再剥引用标记：反过来的话占位链接和后面的中文挨在一起，被占位正则的 \\w* 吞掉。"""
+    raw = "见下图 http://googleusercontent.com/image_retrieval/12[cite: 1]这是说明"
+    assert _final(raw, images=[{"x": 1}]) == "见下图 这是说明"
+    assert gc._stable_placeholder_prefix(raw) == "见下图 这是说明"
+
+
+def test_a_half_cite_before_a_held_code_marker_does_not_leak():
+    """扣住半截标记要看截断后的文本：被 code_event 扣住的尾巴里那个 [cite 不能漏出去。"""
+    safe = gc._stable_placeholder_prefix("答案[cite: 1?code_reference&code_event_index=")
+    assert "[" not in safe, safe
 
 
 def _stream(frames):
@@ -45,7 +63,7 @@ def test_stream_never_leaks_a_half_marker_and_ends_as_the_final_text():
     frames = ["红色", "红色[", "红色[ci", "红色[cite: ", "红色[cite: 1", "红色[cite: 1]", "红色[cite: 1]。好"]
     leaked = [gc._stable_placeholder_prefix(f) for f in frames]
     assert not any("[" in s for s in leaked), leaked
-    assert _stream(frames) == gc._restore_body(frames[-1], [], "")[0] == "红色。好"
+    assert _stream(frames) == _final(frames[-1]) == "红色。好"
 
 
 def test_stream_releases_a_bracket_that_turns_out_not_to_be_a_marker():

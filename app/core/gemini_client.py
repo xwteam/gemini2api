@@ -1412,9 +1412,10 @@ def _strip_image_placeholders(text: str, images: list) -> str:
     请求走 buffered 是会被 _parse_output 无条件剥掉的。
     """
     if _IMAGE_PLACEHOLDER_MARKER not in text:
-        return text
+        return _strip_cite_marks(text)
     had_placeholder = bool(_IMAGE_GEN_PLACEHOLDER_RE.search(text))
-    cleaned = _IMAGE_GEN_PLACEHOLDER_RE.sub("", text).strip()
+    # 引用标记在占位链接之后剥（见 _CITE_MARK_RE 的注释），且要在「剥空了就给提示」之前
+    cleaned = _strip_cite_marks(_IMAGE_GEN_PLACEHOLDER_RE.sub("", text)).strip()
     if had_placeholder and not cleaned and not images:
         return _IMAGE_RETRIEVAL_HINT
     return cleaned
@@ -1563,10 +1564,13 @@ def _render_canvas_chips(text: str, canvases: list) -> str:
 
 # 谷歌的引用标记：带附件 / 联网检索的回答里夹着 `[cite_start]`（引用段开头）和 `[cite: 1]`、
 # `[cite: 1, 2]`（引用来源编号），网页里渲染成引用小标，API 客户端拿到的就是一串噪音
-# （北京 2026-10-27 中转站实测：带图问颜色回「红色[cite: 1]」）。只认这两种精确形态，
-# `[cite: 见附录]` 之类的正文原样保留。
-_CITE_MARK_RE = re.compile(r"\[cite_start\]|\[cite:\s*\d+(?:\s*[,\-]\s*\d+)*\s*\]")
-_CITE_PARTIAL_RE = re.compile(r"\[cite:[\d,\-\s]*")
+# （北京 2026-10-27 中转站实测：带图问颜色回「红色[cite: 1]」）。只认这两种精确形态（冒号后
+# 要有空格），`[cite: 见附录]`、代码里的 `x[cite:5]` 原样保留。
+# 剥的时机：**在生图占位链接之后**（流式 _stable_placeholder_prefix 与收尾 _finalize_stream /
+# _parse_output 同序）。先剥引用标记会让占位链接和后面的中文挨在一起，被占位正则的 `\w*`
+# 一起吞掉。
+_CITE_MARK_RE = re.compile(r"\[cite_start\]|\[cite:\s+\d+(?:\s*[,\-]\s*\d+)*\s*\]")
+_CITE_PARTIAL_RE = re.compile(r"\[cite:(?:\s[\d,\-\s]*)?")
 
 
 def _strip_cite_marks(text: str) -> str:
@@ -1608,7 +1612,6 @@ def _clean_control_markers(text: str) -> tuple[str, str]:
         text = _CODE_EVENT_MARK_RE.sub("", text)
     if "card_content/" in text:
         text = _CARD_CONTENT_RE.sub("", text)
-    text = _strip_cite_marks(text)
     return text, "\n\n".join(thoughts)
 
 
@@ -1716,7 +1719,7 @@ def _stable_placeholder_prefix(text: str) -> str:
     #    （未闭合）—— 前一种会直接破坏 append-only 前缀关系。
     cut = min(cut, _hold_from_marker(cleaned, _CTRL_MARKERS))
     # 4) 只到了一半的引用标记：等它补全（被上面剥掉）或分叉
-    cut = min(cut, _cite_hold(cleaned))
+    cut = min(cut, _cite_hold(cleaned[:cut]))
     return cleaned[:cut]
 
 
@@ -3452,7 +3455,7 @@ class GeminiWebClient:
         if images:
             result_images = await self._build_image_entries(images, self._get_cookies())
             # 真的有图时，正文里的占位 URL 一定无意义（真图在 images 里）
-            text = _IMAGE_GEN_PLACEHOLDER_RE.sub("", text).strip()
+            text = _strip_cite_marks(_IMAGE_GEN_PLACEHOLDER_RE.sub("", text)).strip()
         else:
             # 没有真图也必须剥：图片检索（而非生成）的回答里只有占位死链，
             # 这正是 _parse_output 无条件做、而这里过去漏掉的那一半。
