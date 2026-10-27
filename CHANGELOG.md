@@ -4,6 +4,12 @@
 
 ---
 
+## [1.6.52] - 2026-10-27
+
+### Added
+
+- 🎚️ **模型名后缀选思考档位**：`gemini-pro@think=high` 这样写，只能填模型名、填不了推理参数的客户端也能选档（`none` / `low` / `medium` / `high`，别名同 `reasoning_effort`）。OpenAI chat、Responses、Anthropic 三个接口通用；后缀先剥掉（模型映射、白名单、响应里的模型名都用不带后缀的名字），档位优先于请求体里的思考参数。对标参考实现 gemini-web2api 的 `@think=N`，它的数字档（0 最深～4 最浅）与我们的三档对不上，不收。Gemini 原生接口的模型名在 URL 路径里，不支持后缀。
+
 ## [1.6.51] - 2026-10-27
 
 ### Fixed

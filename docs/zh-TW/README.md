@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-v1.6.51-success?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.6.52-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -62,6 +62,7 @@
 
 | 日期 | 更新內容 |
 |------|----------|
+| 2026-10-27 11:41:00 | v1.6.52 - 🎚️ **模型名後綴選思考檔位**：只能填模型名、填不了推理參數的客戶端，寫 gemini-pro@think=high 就能選檔（none / low / medium / high），OpenAI chat、Responses、Anthropic 三個介面通用，後綴優先於請求體裡的思考參數 |
 | 2026-10-27 11:17:00 | v1.6.51 - 🧹 **回答裡不再夾著引用標記**：帶附件或聯網檢索的回答裡，谷歌會插入 [cite_start]、[cite: 1] 這類引用標記（網頁裡顯示成引用小標），過去原樣傳給客戶端（實測帶圖問顏色回「红色[cite: 1]」）；現在串流、非串流都剝掉，串流還會扣住只到一半的標記，[cite: 附錄] 這類正文原樣保留 |
 | 2026-10-27 01:08:00 | v1.6.50 - 🧷 **對標補齊一批小加固**：混合帳號池裡請求落到沒有該模型（如 Argon）的帳號時，改為換號而不是直接報 400；附件上傳遇到網路錯誤或 5xx 自動重試一次，不再靜默丟附件；一次生成多張圖時並發下載；新增 GET /v1/models/{model}（OpenAI SDK 的 models.retrieve）；部署文件的多帳號說明改為 data/accounts.json |
 | 2026-10-26 23:36:00 | v1.6.49 - 🧩 **客戶端相容性一起補齊**：Codex / OpenAI 新版 SDK 發的 developer 訊息（權限、沙箱說明就在裡面）過去在 Gemini 路徑被整段丟掉，現在按 system 拼進提示詞；top_p、stop、response_format、seed 等參數過去被直接丟棄，現在轉給第三方模型和兜底；面板裡加的帳號、面板的兜底開關都存進掛載卷 data/，升級重建容器不再丟；拒答套話再收一句「身为一个语言模型，我没办法提供这方面的帮助。」 |
@@ -71,7 +72,6 @@
 | 2026-10-26 16:41:00 | v1.6.45 - ⏱️ **生成逾時不再回純文字 500**：谷歌卡住、超過生成預算時，用戶端過去拿到純文字 500（SDK 解析不了，也不轉兜底）；現在各協定統一回 504 + `timeout_error`，`/v1/chat/completions` 開了兜底會先轉第三方兜底，逾時不再重試、也不會把帳號標成過期。💬 **多輪對話真正續上同一個會話**：帶 `conversation_id` 的對話過去每一輪其實都新開了會話、只發最後一句，長對話會悄悄遺失上下文；現在按 `[cid, rid, rcid]` 續接並釘回同一個帳號，串流也續接，接不上就自動改發完整歷史 |
 | 2026-10-26 14:01:00 | v1.6.44 - 🔄 **瀏覽器保活擴充功能重新生效**：會話被谷歌打回登入頁的帳號過去仍報 active（只把 is_healthy 設為 false），擴充功能只認 expired、一直不救，線上兩個帳號因此掉線約 37 小時；現在如實報 expired，換 cookie 成功後當場恢復。🔁 **不再和瀏覽器互相頂掉會話**：擴充功能推送 cookie 的帳號自動改為「瀏覽器保活」，伺服器不再輪換它（此前兩邊各自換 PSIDTS，後換的一方被踢下線，保活越來越短）；面板手動更新的帳號仍由伺服器輪換。配套擴充功能 v1.3.0：瀏覽器 cookie 一變就主動推送 |
 | 2026-10-21 15:29:00 | v1.6.43 - 🧠 **思考改為低 / 中 / 高三檔，對齊網頁**：四個協定都能選同樣的三檔，**預設 `low`**（面板「設定 → 思考」儲存即時生效；實測平均每個請求多約 5 秒，最看重速度就設成「關閉」）；客戶端沒提思考時依預設檔開啟的思考只用於生成、絕不回傳。⚡ **Claude Code 不再每個請求都跑最深的一檔**（它每次都送 `adaptive` + `effort: high`，上一版寫死成 high），現在跟隨預設檔，`/effort low|medium|xhigh|max` 也生效了；`reasoning_effort: none` = 不思考。🤖 **對外模型收斂為四個**：`gemini-pro` / `gemini-flash` / `gemini-flash-lite` / `gemini-argon` 自動映射網頁的 3.1 Pro / 3.8 Flash / 3.5 Flash-Lite / 4 Argon，`gemini-flash-thinking` 下線（舊名仍可呼叫）。🔌 修好「API 管理」第三方轉發（書生端硯的 deepseek / glm / kimi 等此前全部 400，被誤報成額度不足）。🧪 模型測試頁改為檔位選擇 |
-| 2026-10-21 04:30:00 | v1.6.42 - 🤖 **接上 4 Argon 並讓模型探索改由帳號驅動**：帳號心跳本來就回傳真實可用的模型清單，此前只認寫死的表、認不出的連日誌都不打就丟掉（這正是 Argon 用不了的原因），現在能自動採納、Google 換代不必再等改程式；穩定公開名契約不變，自動採納帶驗證、不合格條目仍丟棄但留日誌。💵 每把**存取金鑰的 token 用量與美元估算**（只統計不限額，介面已標註「估算」：本服務走網頁版本身不花錢，且 token 是按字元估的）。📄 **Canvas 正文不再整段遺失**（此前只留一條打不開的佔位連結）。🧼 清理 `<ctrl94>thought` 思考外洩等控制標記。🧠 **Anthropic 協定補上思考鏈**（此前 Claude Code 送的 thinking 參數被靜默丟棄、那邊使用者永遠「不思考」） |
 
 ---
 
