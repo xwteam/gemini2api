@@ -1561,6 +1561,29 @@ def _render_canvas_chips(text: str, canvases: list) -> str:
     return _CANVAS_CHIP_RE.sub(_one, text)
 
 
+# 谷歌的引用标记：带附件 / 联网检索的回答里夹着 `[cite_start]`（引用段开头）和 `[cite: 1]`、
+# `[cite: 1, 2]`（引用来源编号），网页里渲染成引用小标，API 客户端拿到的就是一串噪音
+# （北京 2026-10-27 中转站实测：带图问颜色回「红色[cite: 1]」）。只认这两种精确形态，
+# `[cite: 见附录]` 之类的正文原样保留。
+_CITE_MARK_RE = re.compile(r"\[cite_start\]|\[cite:\s*\d+(?:\s*[,\-]\s*\d+)*\s*\]")
+_CITE_PARTIAL_RE = re.compile(r"\[cite:[\d,\-\s]*")
+
+
+def _strip_cite_marks(text: str) -> str:
+    return _CITE_MARK_RE.sub("", text) if "[cite" in text else text
+
+
+def _cite_hold(cleaned: str) -> int:
+    """流式：最后一个 `[` 起的尾巴还可能长成引用标记（`[c`、`[cite_sta`、`[cite: 1, `…）就从那里扣住。"""
+    i = cleaned.rfind("[")
+    if i == -1:
+        return len(cleaned)
+    tail = cleaned[i:]
+    if "[cite_start]".startswith(tail) or "[cite:".startswith(tail) or _CITE_PARTIAL_RE.fullmatch(tail):
+        return i
+    return len(cleaned)
+
+
 def _clean_control_markers(text: str) -> tuple[str, str]:
     """清掉正文里的控制标记，返回 (清理后的正文, 抽出来的思考文本)。
 
@@ -1585,6 +1608,7 @@ def _clean_control_markers(text: str) -> tuple[str, str]:
         text = _CODE_EVENT_MARK_RE.sub("", text)
     if "card_content/" in text:
         text = _CARD_CONTENT_RE.sub("", text)
+    text = _strip_cite_marks(text)
     return text, "\n\n".join(thoughts)
 
 
@@ -1679,6 +1703,8 @@ def _stable_placeholder_prefix(text: str) -> str:
     # 否则它后面的正文会被下面的 host 前缀 hold 白白压到 final 才发。
     if "card_content/" in cleaned:
         cleaned = _CARD_CONTENT_RE.sub("", cleaned)
+    # 引用标记（与 _clean_control_markers 同口径，同样排在最后）
+    cleaned = _strip_cite_marks(cleaned)
     # 1) 占位 URL：尾部刚到一半的（含只到 `h`/`ht`/`htt` 的协议头）与已完整但数字还没
     #    到的，都从起点 hold 住。
     cut = _hold_from_marker(cleaned, (_IMAGE_GEN_PLACEHOLDER_PREFIX,
@@ -1689,6 +1715,8 @@ def _stable_placeholder_prefix(text: str) -> str:
     #    `<ctrl94>` 会被原样流给客户端，而 final 里它要么被清掉（成对）、要么留着
     #    （未闭合）—— 前一种会直接破坏 append-only 前缀关系。
     cut = min(cut, _hold_from_marker(cleaned, _CTRL_MARKERS))
+    # 4) 只到了一半的引用标记：等它补全（被上面剥掉）或分叉
+    cut = min(cut, _cite_hold(cleaned))
     return cleaned[:cut]
 
 
