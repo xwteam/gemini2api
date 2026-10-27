@@ -72,6 +72,7 @@ curl -H "x-api-key: sk-your-api-key" http://localhost:5918/...
 |------|------|------|
 | OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`；`minimal` → low，`xhigh` → high；`none` → 不思考；認不出的值 → 跟隨預設檔（不報錯） |
 | OpenAI `/v1/responses` | `reasoning.effort`（或頂層 `reasoning_effort`） | 同上 |
+| 模型名後綴（v1.6.52 起，OpenAI chat / Responses / Anthropic 通用） | `gemini-pro@think=high` | `@think=` 後接 `none` / `low` / `medium` / `high`（同上別名）；後綴**優先於**請求體裡的思考參數，給只能填模型名的客戶端用 |
 | Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low，`2048–4095` → medium，`≥4096` → high；`{"type":"adaptive"}` 或 budget 無效 → 看 `output_config.effort`：`low` / `medium` 照檔，`xhigh` / `max` → high，`high`（Claude Code 出廠值，視同沒專門選檔）或沒給 → 跟隨預設檔；`{"type":"disabled"}` → 不思考；認不出的 `type` 視同沒傳 |
 | Gemini 原生 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low，未指定 → 跟隨預設檔）；`thinkingBudget`：`0` → 不思考，`-1`（自動）→ 跟隨預設檔，`>0` 按 2048 / 4096 切點分檔；兩者都給時以 `thinkingLevel` 為準；只給 `includeThoughts: true` → 跟隨預設檔；`includeThoughts: true` 才在回應裡回傳思考（`"thought": true` 的 part） |
 

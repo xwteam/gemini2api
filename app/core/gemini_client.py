@@ -376,6 +376,23 @@ def parse_effort_request(effort) -> int | bool | ThinkingRequest | None:
     return _THINKING_LEVELS.get(raw, THINKING_FOLLOW_DEFAULT)
 
 
+# 模型名后缀选思考档位（v1.6.52，对标参考实现 gemini-web2api 的 `@think=N`）：只能填模型名、
+# 填不了推理参数的客户端写 `gemini-pro@think=high` 即可。档位取值同 reasoning_effort
+# （none / low / medium / high，minimal → low、xhigh → high）；参考实现的数字档（0 最深～4 最浅）
+# 和我们的三档对不上，不收。后缀优先于请求体里的思考参数（它是用户为这个模型名专门选的）。
+THINK_SUFFIX = "@think="
+
+
+def split_think_suffix(model):
+    """'gemini-pro@think=high' → ('gemini-pro', requested)；没有后缀 → (model, None)。
+
+    requested 与 parse_effort_request 同口径（None = 没指定）。"""
+    if not isinstance(model, str) or THINK_SUFFIX not in model:
+        return model, None
+    base, level = model.rsplit(THINK_SUFFIX, 1)
+    return base, parse_effort_request(level)
+
+
 # Anthropic 的 thinking 入参形态（官方现行规范）：
 #   {"type":"enabled","budget_tokens":N}   旧式。N 最小 1024、且必须小于 max_tokens。
 #                                          我方 api_forwarder 出站用的也正是这个形态。

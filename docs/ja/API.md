@@ -82,6 +82,7 @@ v1.6.4 以降、各 API は 2 種類のパスに対応しています。
 |------|------|------|
 | OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`。`minimal` → low、`xhigh` → high。`none` → 思考なし。認識できない値 → 既定レベルに従う（エラーにしません） |
 | OpenAI `/v1/responses` | `reasoning.effort`（またはトップレベルの `reasoning_effort`） | 同上 |
+| モデル名サフィックス（v1.6.52 以降、OpenAI chat / Responses / Anthropic 共通） | `gemini-pro@think=high` | `@think=` の後に `none` / `low` / `medium` / `high`（上と同じ別名）。サフィックスはリクエスト本文の思考パラメータより**優先**。モデル名しか指定できないクライアント向け |
 | Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low、`2048–4095` → medium、`≥4096` → high。`{"type":"adaptive"}` または無効な budget → `output_config.effort` を見る：`low` / `medium` はそのレベル、`xhigh` / `max` → high、`high`（Claude Code の出荷時設定で、明示的な選択なしとみなす）または未指定 → 既定レベルに従う。`{"type":"disabled"}` → 思考なし。認識できない `type` は未指定と同じ扱い |
 | Gemini ネイティブ `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low、未指定 → 既定レベルに従う）。`thinkingBudget`：`0` → 思考なし、`-1`（自動）→ 既定レベルに従う、`>0` は 2048 / 4096 を境に段階分け。両方指定した場合は `thinkingLevel` を優先。`includeThoughts: true` だけを指定した場合 → 既定レベルに従う。`includeThoughts: true` のときだけ思考をレスポンスで返します（`"thought": true` の part） |
 

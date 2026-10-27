@@ -127,6 +127,7 @@ cat .env | grep API_KEY
 |------|------|------|
 | OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`；`minimal` → low，`xhigh` → high；`none` → 不思考；认不出的值 → 跟随默认档（不报错） |
 | OpenAI `/v1/responses` | `reasoning.effort`（或顶层 `reasoning_effort`） | 同上 |
+| 模型名后缀（v1.6.52 起，OpenAI chat / Responses / Anthropic 通用） | `gemini-pro@think=high` | `@think=` 后跟 `none` / `low` / `medium` / `high`（同上别名）；后缀**优先于**请求体里的思考参数，给只能填模型名的客户端用 |
 | Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`：`N<2048` → low，`2048–4095` → medium，`≥4096` → high；`{"type":"adaptive"}` 或 budget 无效 → 看 `output_config.effort`：`low` / `medium` 照档，`xhigh` / `max` → high，`high`（Claude Code 出厂值，视同没专门选档）或没给 → 跟随默认档；`{"type":"disabled"}` → 不思考；认不出的 `type` 按没传处理 |
 | Gemini 原生 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`：`LOW` / `MEDIUM` / `HIGH`（`MINIMAL` → low，未指定 → 跟随默认档）；`thinkingBudget`：`0` → 不思考，`-1`（自动）→ 跟随默认档，`>0` 按 2048 / 4096 切点分档；两者都给时以 `thinkingLevel` 为准；只给 `includeThoughts: true` → 跟随默认档；`includeThoughts: true` 才在响应里回传思考（`"thought": true` 的 part） |
 

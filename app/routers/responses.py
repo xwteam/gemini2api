@@ -12,7 +12,8 @@ from app.config import settings
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import ensure_model_allowed, record_token_usage
 from app.core.gemini_client import (GEMINI_MODELS, _resolve_model, classify_error,
-                                    is_timeout_error, parse_effort_request, resolve_thinking)
+                                    is_timeout_error, parse_effort_request, resolve_thinking,
+                                    split_think_suffix)
 from app.core.responses_protocol import (
     parse_responses_input, build_responses_object, new_response_id, ResponsesStreamEncoder,
 )
@@ -99,7 +100,8 @@ async def _build_output_items(text: str, has_tools: bool, regenerate=None) -> tu
 @router.post("/responses")
 async def create_response(request: Request):
     body = await request.json()
-    model = body.get("model", "")
+    # 模型名后缀 @think=档位（见 gemini_client.split_think_suffix），档位优先于 reasoning.effort
+    model, think_from_suffix = split_think_suffix(body.get("model", ""))
     input_data = body.get("input")
     instructions = body.get("instructions")
     stream = bool(body.get("stream", False))
@@ -116,7 +118,8 @@ async def create_response(request: Request):
     # 与 /v1/chat/completions 同一套决策（见 gemini_client.resolve_thinking）：
     # low/medium/high 各走各的档，minimal 夹到 low、xhigh 夹到 high，none = 不思考；
     # **不传 → "默认思考档位"设置**（出厂 low），但思考只给上游用、不出 reasoning 输出项。
-    _plan = resolve_thinking(parse_effort_request(_eff))
+    _plan = resolve_thinking(think_from_suffix if think_from_suffix is not None
+                             else parse_effort_request(_eff))
     extended_thinking = _plan.upstream
     show_thinking = _plan.show
 

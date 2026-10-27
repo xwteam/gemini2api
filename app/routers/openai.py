@@ -26,7 +26,7 @@ from app.core.gemini_client import (GEMINI_MODELS, GENERATION_ERRORS, MODEL_ALIA
                                     classify_error, encode_conversation_metadata,
                                     generate_timeout_for_family,
                                     generate_with_thinking_fallback, is_timeout_error,
-                                    parse_conversation_metadata, parse_effort_request,
+                                    parse_conversation_metadata, parse_effort_request, split_think_suffix,
                                     resolve_thinking, should_retry_without_thinking)
 from app.core.model_breaker import family_label, model_breaker, same_request_as
 from app.core.thinking_stream import HiddenThoughts, drop_thought_events
@@ -527,6 +527,8 @@ async def retrieve_model(model_id: str, request: Request):
 @router.post("/chat/completions")
 @limiter.limit(dynamic_rate_limit, exempt_when=rate_limit_exempt)
 async def chat_completions(req: ChatRequest, request: Request):
+    # 模型名后缀 @think=档位：先剥掉（之后的映射、白名单、回显都用不带后缀的名字），档位优先于请求体
+    req.model, think_from_suffix = split_think_suffix(req.model)
     model_mapping = request.app.state.model_mapping
     resolved_model = model_mapping.resolve(req.model)
 
@@ -618,7 +620,8 @@ async def chat_completions(req: ChatRequest, request: Request):
     #   extended_thinking —— 发给上游的档位（False = 不思考旧路径；1/2/4 = 档位）
     #   show_thinking     —— 回不回传 reasoning_content。只有客户端明确传了才回传：
     #                        按默认档替它开的思考只用于上游生成，响应结构与不思考时一致。
-    _plan = resolve_thinking(parse_effort_request(req.reasoning_effort))
+    _plan = resolve_thinking(think_from_suffix if think_from_suffix is not None
+                             else parse_effort_request(req.reasoning_effort))
     extended_thinking = _plan.upstream
     show_thinking = _plan.show
 

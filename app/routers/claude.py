@@ -16,7 +16,8 @@ from app.core.access_context import (
 )
 from app.core.gemini_client import (GENERATION_ERRORS, classify_error,
                                     generate_with_thinking_fallback, parse_anthropic_thinking,
-                                    resolve_thinking, should_retry_without_thinking)
+                                    resolve_thinking, should_retry_without_thinking,
+                                    split_think_suffix)
 from app.core.thinking_stream import HiddenThoughts, drop_thought_events
 from app.core.stream import split_into_chunks, iter_with_keepalive, SSE_KEEPALIVE_FRAME, sse_keepalive_during
 from app.models.claude import (
@@ -154,6 +155,8 @@ async def get_model(model_id: str):
 @router.post("/messages")
 @limiter.limit(dynamic_rate_limit, exempt_when=rate_limit_exempt)
 async def create_message(req: ClaudeRequest, request: Request):
+    # 模型名后缀 @think=档位（见 gemini_client.split_think_suffix），档位优先于 thinking / output_config
+    req.model, think_from_suffix = split_think_suffix(req.model)
     messages_raw = [m.model_dump() for m in req.messages]
     prompt = build_prompt_from_messages(messages_raw, system=req.system)
     attachments = extract_attachments(messages_raw)
@@ -181,7 +184,8 @@ async def create_message(req: ClaudeRequest, request: Request):
     # thinking.display 刻意不看：Claude Code 不论设置如何都发 "omitted"（2.1.296 抓包，
     # 打开 showThinkingSummaries 也一样），照官方语义压掉思考文本的话 Claude Code 用户就
     # 永远看不到思考。客户端要了思考，多给思考文本不违反协议。
-    _plan = resolve_thinking(parse_anthropic_thinking(req.thinking, req.output_config))
+    _plan = resolve_thinking(think_from_suffix if think_from_suffix is not None
+                             else parse_anthropic_thinking(req.thinking, req.output_config))
     extended_thinking = _plan.upstream
     show_thinking = _plan.show
 
@@ -311,6 +315,7 @@ async def create_message(req: ClaudeRequest, request: Request):
 
 @router.post("/messages/count_tokens")
 async def count_tokens(req: ClaudeRequest):
+    req.model, _ = split_think_suffix(req.model)
     ensure_model_allowed(req.model)
     messages_raw = [m.model_dump() for m in req.messages]
     prompt = build_prompt_from_messages(messages_raw, system=req.system)

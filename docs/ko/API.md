@@ -90,6 +90,7 @@ v1.6.4부터 각 API는 두 가지 경로 형식을 지원합니다:
 |------|------|------|
 | OpenAI `/v1/chat/completions` | `reasoning_effort` | `low` / `medium` / `high`. `minimal` → low, `xhigh` → high. `none` → 사고 안 함. 인식할 수 없는 값 → 기본 수준을 따름(오류 없음) |
 | OpenAI `/v1/responses` | `reasoning.effort`(또는 최상위 `reasoning_effort`) | 위와 같음 |
+| 모델명 접미사(v1.6.52부터, OpenAI chat / Responses / Anthropic 공통) | `gemini-pro@think=high` | `@think=` 뒤에 `none` / `low` / `medium` / `high`(위와 같은 별칭). 접미사가 요청 본문의 사고 파라미터보다 **우선**하며, 모델명만 지정할 수 있는 클라이언트용 |
 | Anthropic `/v1/messages` | `thinking` | `{"type":"enabled","budget_tokens":N}`: `N<2048` → low, `2048–4095` → medium, `≥4096` → high. `{"type":"adaptive"}` 또는 잘못된 budget → `output_config.effort`를 봄: `low` / `medium`은 해당 수준, `xhigh` / `max` → high, `high`(Claude Code의 출고 설정, 명시적 선택이 없는 것으로 간주) 또는 없음 → 기본 수준을 따름. `{"type":"disabled"}` → 사고 안 함. 인식할 수 없는 `type`은 보내지 않은 것으로 처리 |
 | Gemini 네이티브 `generateContent` / `streamGenerateContent` | `generationConfig.thinkingConfig` | `thinkingLevel`: `LOW` / `MEDIUM` / `HIGH`(`MINIMAL` → low, 미지정 → 기본 수준을 따름). `thinkingBudget`: `0` → 사고 안 함, `-1`(자동) → 기본 수준을 따름, `>0`은 2048 / 4096 기준으로 구분. 둘 다 주면 `thinkingLevel` 우선. `includeThoughts: true`만 주면 → 기본 수준을 따름. `includeThoughts: true`일 때만 응답에서 사고를 반환(`"thought": true` part) |
 
