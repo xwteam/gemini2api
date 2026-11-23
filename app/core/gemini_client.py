@@ -2251,7 +2251,8 @@ class GeminiWebClient:
                 }
             else:
                 body = resp.text
-                token_match = re.search(r'"SNlM0e":"([^"]+)"', body)
+                landed_on_login = self._is_login_landing(str(getattr(resp, "url", "") or ""), body)
+                token_match = None if landed_on_login else re.search(r'"SNlM0e":"([^"]+)"', body)
 
                 if token_match:
                     self._adopt_session_token(token_match.group(1), body)
@@ -2259,7 +2260,7 @@ class GeminiWebClient:
                     await self._send_heartbeat()  # 拉取账号真实可用模型
                 else:
                     # 与 _obtain_session_token 同一判定：健康检查循环、/check 看到登录页也要记下来
-                    self._detect_login_redirect(body)
+                    self._detect_login_redirect(body, str(getattr(resp, "url", "") or ""))
 
                 # models_count 只认 RPC 的结果：之前还会拿 HTML 正则抓一遍模型名兜底，
                 # 而那条正则要求"数字.数字"（gemini-\d+\.\d+...），匹配不到 gemini-3-pro
@@ -2347,12 +2348,19 @@ class GeminiWebClient:
         except Exception:
             return False
 
-    def _detect_login_redirect(self, body: str) -> bool:
+    @staticmethod
+    def _is_login_landing(url: str, body: str) -> bool:
+        """最终落点是谷歌登录页。登录页自带一个 SNlM0e，不能当成 Gemini 会话的 token。"""
+        if re.match(r"https?://accounts\.google\.com/", url or ""):
+            return True
+        return "boq_identityfrontendauthui" in body
+
+    def _detect_login_redirect(self, body: str, url: str = "") -> bool:
         """/app 页面被谷歌打回了登录页 → 置 auth_expired 并返回 True。
 
         这是 auth_expired 唯一的置位点（_obtain_session_token 与 check_account 都经过这里）。
         """
-        if "accounts.google.com" in body or "ServiceLogin" in body:
+        if self._is_login_landing(url, body) or "accounts.google.com" in body or "ServiceLogin" in body:
             self._auth_expired = True
             return True
         return False
@@ -2388,13 +2396,14 @@ class GeminiWebClient:
                 return
 
             body = resp.text
-            token_match = re.search(r'"SNlM0e":"([^"]+)"', body)
+            landed_on_login = self._is_login_landing(str(getattr(resp, "url", "") or ""), body)
+            token_match = None if landed_on_login else re.search(r'"SNlM0e":"([^"]+)"', body)
             if token_match:
                 self._adopt_session_token(token_match.group(1), body)
                 logger.info("Session token acquired")
             else:
                 self._session_token = ""
-                if self._detect_login_redirect(body):
+                if self._detect_login_redirect(body, str(getattr(resp, "url", "") or "")):
                     msg = "Cookie expired - redirected to Google login page"
                 elif len(body) < 1000:
                     msg = f"Invalid response (body too short: {len(body)} bytes)"
