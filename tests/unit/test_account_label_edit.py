@@ -36,6 +36,9 @@ def two_accounts(monkeypatch, tmp_path):
     return path
 
 
+NO_BODY = object()
+
+
 def _patch(gem_client, account_id, body):
     return gem_client.patch(f"/admin/accounts/{account_id}", json=body, headers=AUTH)
 
@@ -107,11 +110,20 @@ def test_boundary_lengths_are_accepted(gem_client, two_accounts, label):
     {"label": "a\u0085b"},
     {"label": None},
     {},
-], ids=["empty", "blank", "65-ascii", "65-cjk", "nul", "newline", "esc", "del", "c1-nel", "null", "missing"])
+    {"label": 5},
+    {"label": True},
+    {"label": ["x"]},
+    {"label": {"x": 1}},
+    NO_BODY,
+], ids=["empty", "blank", "65-ascii", "65-cjk", "nul", "newline", "esc", "del", "c1-nel", "null", "missing",
+        "number", "bool", "list", "object", "no-body"])
 def test_invalid_labels_are_400_and_change_nothing(gem_client, two_accounts, body):
     before = two_accounts.read_bytes()
 
-    r = _patch(gem_client, "account-1", body)
+    if body is NO_BODY:
+        r = gem_client.patch("/admin/accounts/account-1", headers=AUTH)
+    else:
+        r = _patch(gem_client, "account-1", body)
 
     assert r.status_code == 400, r.text
     assert r.json()["error"]["type"] == "invalid_request_error"
@@ -150,3 +162,76 @@ def test_a_failed_write_keeps_the_old_label(gem_client, two_accounts, monkeypatc
     assert r.status_code == 500
     assert ap.account_pool.accounts[0].label == "old one"
     assert _saved(two_accounts)[0]["label"] == "old one"
+
+
+def test_a_write_that_cannot_encode_is_a_500_not_a_bad_label(gem_client, two_accounts):
+    """写盘时的 UnicodeEncodeError 也是 ValueError：别把它当成「标签不合法」回 400。
+    （v1.6.55 之前的 accounts.json 里、或别的路径塞进来的标签可能写不进 UTF-8。）"""
+    ap.account_pool.accounts[1].label = "bad\ud800"
+    before = two_accounts.read_bytes()
+
+    r = _patch(gem_client, "account-1", {"label": "fine"})
+
+    assert r.status_code == 500, r.text
+    assert r.json()["error"]["type"] == "persist_error"
+    assert ap.account_pool.accounts[0].label == "old one"
+    assert two_accounts.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/accounts 的 label 与 PATCH 同一套规则（空 = 用账号 ID）
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def empty_pool(monkeypatch, tmp_path):
+    path = tmp_path / "accounts.json"
+    monkeypatch.setattr(ap.settings, "accounts_file", str(path))
+    monkeypatch.setattr(ap.account_pool, "_accounts", [])
+    monkeypatch.setattr(ap.account_pool, "_next_id_seq", 0)
+    inits = []
+
+    async def _init(self, account, **kw):
+        inits.append(account.id)
+        account.client = _Client()
+        account.status = AccountStatus.ACTIVE
+
+    monkeypatch.setattr(AccountPool, "_init_account_client", _init)
+    return inits
+
+
+def _post_raw(gem_client, content):
+    return gem_client.post("/admin/accounts", content=content,
+                           headers={**AUTH, "Content-Type": "application/json"})
+
+
+@pytest.mark.parametrize("label_json", [
+    '"a\\u0000b"', '"a\\nb"', '"' + "x" * 65 + '"', '"bad\\ud800"',
+], ids=["nul", "newline", "65-ascii", "lone-surrogate"])
+def test_post_rejects_a_label_the_edit_dialog_would_refuse(gem_client, empty_pool, label_json):
+    r = _post_raw(gem_client, '{"psid": "PSID-NEW", "psidts": "t", "label": ' + label_json + '}')
+
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["type"] == "invalid_request_error"
+    assert ap.account_pool.accounts == [] and empty_pool == [], "不合法的标签不能进池、也不该联网初始化"
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("", "account-0"), ("   ", "account-0"), ("  work  ", "work"),
+], ids=["empty", "blank", "trimmed"])
+def test_post_label_is_trimmed_and_an_empty_one_falls_back_to_the_id(gem_client, empty_pool, label, expected):
+    r = gem_client.post("/admin/accounts", json={"psid": "PSID-NEW", "psidts": "t", "label": label}, headers=AUTH)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["account"]["label"] == expected
+    assert ap.account_pool.accounts[0].label == expected
+
+
+def test_after_a_rejected_post_label_patch_still_saves(gem_client, empty_pool):
+    """v1.6.55 首版：POST 收下了孤立代理码位的标签 → 账号进池却写不进文件，之后改任何账号的标签都失败。"""
+    assert _post_raw(gem_client, '{"psid": "PSID-BAD", "label": "bad\\ud800"}').status_code == 400
+    assert gem_client.post("/admin/accounts", json={"psid": "PSID-OK"}, headers=AUTH).status_code == 200
+
+    r = _patch(gem_client, "account-0", {"label": "fine"})
+
+    assert r.status_code == 200, r.text
+    assert ap.account_pool.accounts[0].label == "fine"

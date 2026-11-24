@@ -97,13 +97,19 @@ def _clean_cookie(value) -> str:
 LABEL_MAX_LEN = 64
 
 
+class InvalidLabelError(ValueError):
+    """标签不合法（见 clean_label）。单独一个类：路由只把它当 400，写盘时的 UnicodeEncodeError
+    之类同样是 ValueError，却是 500，不能混在一起。"""
+
+
 def clean_label(raw) -> str:
     """面板在线改的标签：去首尾空白后 1～LABEL_MAX_LEN 个字符、不含控制字符（Unicode Cc：C0、DEL、C1）。
-    孤立的代理码位（Cs，JSON 里的 "\\ud800"）写不进 UTF-8 的 accounts.json，一并拒绝。
-    返回去掉首尾空白的标签；不合法抛 ValueError（消息照抄给面板看，中英双语）。"""
+    孤立的代理码位（Cs，JSON 里的 "\\ud800"）写不进 UTF-8 的 accounts.json，一并拒绝。不是字符串（数字、
+    列表、null、缺字段）同样不合法。
+    返回去掉首尾空白的标签；不合法抛 InvalidLabelError（消息照抄给面板看，中英双语）。"""
     label = raw.strip() if isinstance(raw, str) else ""
     if not 1 <= len(label) <= LABEL_MAX_LEN or any(unicodedata.category(ch) in ("Cc", "Cs") for ch in label):
-        raise ValueError(
+        raise InvalidLabelError(
             f"label must be 1-{LABEL_MAX_LEN} characters after trimming, without control characters"
             f" / 标签去掉首尾空白后须为 1～{LABEL_MAX_LEN} 个字符，且不能含控制字符"
         )
@@ -113,14 +119,22 @@ def clean_label(raw) -> str:
 class DuplicateAccountError(ValueError):
     """要添加的谷歌登录（__Secure-1PSID）池里已经有了（v1.6.55 规格 C1：409，不新建）。
 
-    消息里只有已有账号的 ID，绝不带 Cookie 值。"""
+    消息里只有已有账号的 ID，绝不带 Cookie 值。adding=True：同一个 PSID 的另一次添加还在初始化，
+    account_id 是它占下的 ID（初始化失败的话这个 ID 不会出现在池里）。"""
 
-    def __init__(self, account_id: str):
+    def __init__(self, account_id: str, adding: bool = False):
         self.account_id = account_id
-        super().__init__(
-            f"An account with this __Secure-1PSID already exists ({account_id})"
-            f" / 池里已有用这个 __Secure-1PSID 的账号（{account_id}）"
-        )
+        if adding:
+            message = (
+                f"An account with this __Secure-1PSID is being added right now ({account_id})"
+                f" / 这个 __Secure-1PSID 正在添加中（{account_id}），稍后刷新账号列表看看"
+            )
+        else:
+            message = (
+                f"An account with this __Secure-1PSID already exists ({account_id})"
+                f" / 池里已有用这个 __Secure-1PSID 的账号（{account_id}）"
+            )
+        super().__init__(message)
 
 
 def client_says(client, method: str, *args) -> bool:
@@ -344,6 +358,8 @@ class AccountPool:
         self._acquire_timeout = settings.acquire_timeout
         # 持有后台 fire-and-forget task 的强引用，防止被 GC 中途回收
         self._bg_tasks: set = set()
+        # 正在添加（初始化联网中）的 PSID → 占下的账号 ID（见 add_account）
+        self._adding: dict[str, str] = {}
 
     @property
     def accounts(self) -> list[Account]:
@@ -981,12 +997,19 @@ class AccountPool:
         """cookies：整套 Cookie（v1.6.55 规格 C1，已由 admin 接口校验、且其中 .google.com 的
         __Secure-1PSID/1PSIDTS 与 psid/psidts 一致），第一次初始化之前装进新账号的罐；不给 = 与 v1.6.54 一致。
 
-        池里已有这个 PSID 抛 DuplicateAccountError：两个账号共用一个罐文件（按 PSID 的哈希命名）会互相覆盖。
+        池里已有这个 PSID、或同一个 PSID 的另一次添加还在初始化，都抛 DuplicateAccountError：罐文件按 PSID 的
+        哈希命名，两个 client 会写同一个 data/cookies/<hash>.json，互相覆盖。
         """
         psid = _clean_cookie(psid)
         dup = self._account_using(psid)
         if dup is not None:
             raise DuplicateAccountError(dup.id)
+        # 并发添加同一个 PSID（面板和插件同时加、双击）：先到的在第一次 await 之前占位，后到的当场 409，
+        # 根本不建 client。落选者若也建 client，它的初始化会再 GET /app 一次，并把自己的整套、配置快照、
+        # 响应里捕获的 Cookie 写进胜出账号的罐 —— 下次启动配置快照对不上，整罐被清空（OSID / SID 全丢）。
+        pending = self._adding.get(psid)
+        if pending is not None:
+            raise DuplicateAccountError(pending, adding=True)
         # 用单调计数器生成 id，删除中间账号后也绝不撞号（不再用易撞号的 len()）。
         self._sync_id_seq()
         account_id = f"account-{self._next_id_seq}"
@@ -997,8 +1020,13 @@ class AccountPool:
             psidts=_clean_cookie(psidts),
             label=label or account_id,
         )
-        await self._init_account_client(account, **({"cookies": cookies} if cookies is not None else {}))
-        # 初始化要联网：期间同一个 PSID 的另一次添加可能已经进池。查完到 append 之间没有 await，不会再被插队
+        self._adding[psid] = account_id
+        try:
+            await self._init_account_client(account, **({"cookies": cookies} if cookies is not None else {}))
+        finally:
+            self._adding.pop(psid, None)
+        # 兜底：初始化联网期间，池里别的账号可能经 PUT /admin/accounts/{id}/cookies 或 reload-cookies 换成了
+        # 这个 PSID。查完到 append 之间没有 await，不会再被插队
         dup = self._account_using(psid)
         if dup is not None:
             if account.client:
@@ -1013,7 +1041,7 @@ class AccountPool:
 
     def set_label(self, account_id: str, label) -> Account | None:
         """面板在线改标签（v1.6.55 规格 C2）：只改 label 并原子写回 accounts.json，凭据、状态、保活方式
-        一概不碰。label 不合法抛 ValueError（见 clean_label）；账号不存在返回 None。写盘失败时内存里的
+        一概不碰。label 不合法抛 InvalidLabelError（见 clean_label）；账号不存在返回 None。写盘失败时内存里的
         标签退回原值再抛出，不留「面板上改了、重启又回去」的半截状态。"""
         label = clean_label(label)
         for account in self._accounts:

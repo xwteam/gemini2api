@@ -4,7 +4,7 @@ import platform
 import sys
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -12,7 +12,13 @@ from pydantic import BaseModel
 
 from app.config import APP_VERSION, mask_secret
 from app.core import keepalive_modes
-from app.core.account_pool import DuplicateAccountError, account_pool, client_says
+from app.core.account_pool import (
+    DuplicateAccountError,
+    InvalidLabelError,
+    account_pool,
+    clean_label,
+    client_says,
+)
 from app.core.fingerprint.cookie_jar import (
     GOOGLE_DOMAIN,
     CookieImportError,
@@ -380,11 +386,20 @@ async def add_account(req: AddAccountRequest, request: Request):
         return _invalid_cookies(e)
     if not psid:
         return _invalid_request(MISSING_PSID)
+    # 标签与 PATCH 同一套规则（clean_label）：控制字符、孤立代理码位、超长一律 400。孤立代理码位写不进
+    # UTF-8 的 accounts.json，放进池里之后每次写盘（改任何账号的标签、换 Cookie）都会失败。
+    # 空或全是空白照旧用账号 ID（与 v1.6.54 一致）。
+    label = ""
+    if req.label.strip():
+        try:
+            label = clean_label(req.label)
+        except InvalidLabelError as e:
+            return _invalid_request(str(e))
     # 整套 Cookie 由 add_account 交给新账号的第一次初始化，在第一次 GET /app 之前装罐（见
     # GeminiWebClient.initialize）；装罐用的是与 reload_cookies 同一个 replace_cookies。
     extra = {"cookies": full} if full is not None else {}
     try:
-        account = await account_pool.add_account(psid=psid, psidts=psidts, label=req.label, **extra)
+        account = await account_pool.add_account(psid=psid, psidts=psidts, label=label, **extra)
     except DuplicateAccountError as e:
         return JSONResponse(
             status_code=409,
@@ -417,22 +432,27 @@ async def add_account(req: AddAccountRequest, request: Request):
 
 
 class UpdateLabelRequest(BaseModel):
-    # 缺字段 / null 一律按不合法处理（400，见 clean_label），不走 FastAPI 的 422
-    label: Optional[str] = None
+    # 缺字段 / null / 不是字符串（数字、列表……）一律按不合法处理（400，见 clean_label），不走 FastAPI 的 422
+    label: Any = None
 
 
 @router.patch("/accounts/{account_id}")
-async def update_account_label(account_id: str, req: UpdateLabelRequest):
-    """在线改账号标签（v1.6.55 规格 C2）：只改标签，凭据、状态、保活方式一概不碰。"""
+async def update_account_label(account_id: str, req: Optional[UpdateLabelRequest] = None):
+    """在线改账号标签（v1.6.55 规格 C2）：只改标签，凭据、状态、保活方式一概不碰。没有请求体同样是 400。"""
     try:
-        account = account_pool.set_label(account_id, req.label)
-    except ValueError as e:
+        account = account_pool.set_label(account_id, req.label if req is not None else None)
+    except InvalidLabelError as e:
         return _invalid_request(str(e))
-    except OSError as e:
-        logger.error(f"Account {account_id}: could not save the new label: {e}")
+    except Exception as e:
+        # 写盘失败（OSError；池里别的账号的标签写不进 UTF-8 时的 UnicodeEncodeError 也是 ValueError，
+        # 不能当成「标签不合法」）。set_label 已把内存里的标签退回原值。accounts.json 里存着 PSID，
+        # 消息回给面板、写日志之前先抹掉池里的凭据值
+        values = [v for a in account_pool.accounts for v in (a.psid, a.psidts)]
+        detail = _without_cookie_values(str(e), values)
+        logger.error(f"Account {account_id}: could not save the new label: {detail}")
         return JSONResponse(
             status_code=500,
-            content={"error": {"message": f"Could not save accounts file: {e}", "type": "persist_error"}},
+            content={"error": {"message": f"Could not save accounts file: {detail}", "type": "persist_error"}},
         )
     if account is None:
         return JSONResponse(

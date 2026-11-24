@@ -283,8 +283,64 @@ def test_a_psid_the_account_switched_to_counts_as_taken(gem_client, pool):
     assert len(ap.account_pool.accounts) == 1
 
 
-def test_concurrent_adds_of_the_same_psid_keep_one(monkeypatch, tmp_path):
-    """两个同 PSID 的添加并发：初始化（联网）期间对方还没进池，进池前要再查一次。"""
+ONE = {"__Secure-1PSIDTS": "add-psidts-ONE-SECRET-1212", "OSID": "add-osid-ONE-SECRET-3434"}
+TWO = {"__Secure-1PSIDTS": "add-psidts-TWO-SECRET-5656", "OSID": "add-osid-TWO-SECRET-7878"}
+
+
+@pytest.mark.parametrize("first,second", [(ONE, TWO), (ONE, ONE)], ids=["different-sets", "double-click"])
+def test_concurrent_adds_of_the_same_psid_build_only_one_client(app_main, gem_client, pool, monkeypatch,
+                                                                first, second):
+    """同一个 PSID 并发添加两次（面板和插件同时加、或双击）：罐文件按 PSID 的哈希命名，两个 client 会写
+    同一个 data/cookies/<hash>.json。落选的那个不能先建 client 再被 409 —— 它的初始化会联网（多一次 GET /app），
+    还会把自己的整套、配置快照、响应里捕获的 Cookie 写进胜出账号的罐，下次启动就对不上、整罐被清空。
+
+    用真的 GeminiWebClient.initialize：第一次 GET /app 要等一会儿（联网），慢的那次后写盘。"""
+    import httpx
+
+    delays = {ONE["__Secure-1PSIDTS"]: 0.01, TWO["__Secure-1PSIDTS"]: 0.05}
+
+    async def _slow_first_app(self):
+        await asyncio.sleep(delays[self._psidts])
+        pool.sent_on_first_app.append(self._cookie_jar.cookies_for_url(gc.GEMINI_APP_URL))
+        # /app 响应里捕获的 Cookie 照样落盘（update_from_response）
+        self._cookie_jar.set("NID", "nid-" + self._psidts)
+        self._session_token = "TOKEN"
+
+    monkeypatch.setattr(gc.GeminiWebClient, "_obtain_session_token", _slow_first_app)
+
+    async def _both():
+        transport = httpx.ASGITransport(app=app_main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            return await asyncio.gather(*(
+                c.post("/admin/accounts", json={"cookie_header": _header(**body)},
+                       headers={**AUTH, **PANEL_ORIGIN})
+                for body in (first, second)))
+
+    responses = asyncio.run(_both())
+
+    assert sorted(r.status_code for r in responses) == [200, 409], [r.text for r in responses]
+    (ok,) = [r for r in responses if r.status_code == 200]
+    (dup,) = [r for r in responses if r.status_code == 409]
+    winner_id = ok.json()["account"]["id"]
+    assert dup.json()["error"]["type"] == "duplicate_account"
+    assert winner_id in dup.json()["error"]["message"]
+    _assert_no_secret(dup.text + ok.text, [*ONE.values(), *TWO.values()])
+    assert [a.id for a in ap.account_pool.accounts] == [winner_id]
+    assert len(pool.sent_on_first_app) == 1, "落选的那次不能再建 client、再 GET /app 一次"
+    assert ap.account_pool._adding == {}, "占位用完要释放"
+
+    # 模拟重启：accounts.json 里的 psidts 与罐里的整套要对得上，胜出那份的 OSID / SID 都还在
+    (saved,) = pool.saved()
+    won = first if saved["psidts"] == first["__Secure-1PSIDTS"] else second
+    again = pool.restart(saved["psid"], saved["psidts"])
+    sent = again._cookie_jar.cookies_for_url(gc.GEMINI_APP_URL)
+    assert sent.get("OSID") == won["OSID"], "胜出账号的整套被落选的那次覆盖或清空了"
+    assert sent.get("SID") == SECRETS["SID"]
+
+
+def test_a_psid_switched_in_while_initializing_still_keeps_one(monkeypatch, tmp_path):
+    """兜底：初始化（联网）期间，池里别的账号经 PUT / reload-cookies 换成了同一个 PSID —— 进池前再查一次，
+    新建的 client 关掉、409，占位照样释放。"""
     monkeypatch.setattr(ap.settings, "accounts_file", str(tmp_path / "accounts.json"))
     pool = AccountPool()
     shut = []
@@ -292,30 +348,60 @@ def test_concurrent_adds_of_the_same_psid_keep_one(monkeypatch, tmp_path):
     class _Client:
         is_healthy = True
 
+        def __init__(self, psid):
+            self._psid = psid
+
+        def owns_cookie_set(self, psid):
+            return psid == self._psid
+
         async def shutdown(self):
             shut.append(self)
 
+    other = Account(id="account-7", psid="PSID-OTHER", psidts="t", label="other")
+    other.client = _Client("PSID-OTHER")
+    pool._accounts = [other]
+
     async def _init(self, account):
-        await asyncio.sleep(0.01)
+        other.client._psid = "PSID-SAME"   # 换 Cookie 恰好发生在这次初始化联网期间
+        account.client = _Client(account.psid)
+        account.status = AccountStatus.ACTIVE
+
+    monkeypatch.setattr(AccountPool, "_init_account_client", _init)
+
+    with pytest.raises(DuplicateAccountError) as e:
+        asyncio.run(pool.add_account("PSID-SAME", "t1", "a"))
+
+    assert e.value.account_id == "account-7"
+    assert [a.id for a in pool.accounts] == ["account-7"]
+    assert len(shut) == 1, "落选的那个 client 要关掉"
+    assert pool._adding == {}
+
+
+def test_a_failed_initialization_releases_the_psid(monkeypatch, tmp_path):
+    """初始化抛错（网络断了之类）：占位要释放，同一个 PSID 再加一次不能被当成「正在添加」挡掉。"""
+    monkeypatch.setattr(ap.settings, "accounts_file", str(tmp_path / "accounts.json"))
+    pool = AccountPool()
+    calls = []
+
+    class _Client:
+        is_healthy = True
+
+    async def _init(self, account):
+        calls.append(account.id)
+        if len(calls) == 1:
+            raise RuntimeError("network down")
         account.client = _Client()
         account.status = AccountStatus.ACTIVE
 
     monkeypatch.setattr(AccountPool, "_init_account_client", _init)
 
-    async def _both():
-        return await asyncio.gather(
-            pool.add_account("PSID-SAME", "t1", "a"),
-            pool.add_account("PSID-SAME", "t2", "b"),
-            return_exceptions=True,
-        )
+    with pytest.raises(RuntimeError):
+        asyncio.run(pool.add_account("PSID-SAME", "t1", "a"))
+    assert pool._adding == {}
 
-    results = asyncio.run(_both())
+    added = asyncio.run(pool.add_account("PSID-SAME", "t1", "a"))
 
-    assert len(pool.accounts) == 1
-    assert sum(isinstance(r, Account) for r in results) == 1
-    (err,) = [r for r in results if not isinstance(r, Account)]
-    assert isinstance(err, DuplicateAccountError) and err.account_id == pool.accounts[0].id
-    assert len(shut) == 1, "落选的那个 client 要关掉"
+    assert [a.id for a in pool.accounts] == [added.id]
 
 
 # ---------------------------------------------------------------------------
