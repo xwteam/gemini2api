@@ -1005,6 +1005,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 
 同样接受整套 Cookie：`cookies` / `cookie_header`（二选一，见下面 `PUT /admin/accounts/{id}/cookies`）。这时 `psid` / `psidts` 可以不填，取整套里 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS`；填了就必须一致，否则 400。
 
+带整套 Cookie 时只换给这套 Cookie 所属的账号：当前用的就是这个 `__Secure-1PSID` 的账号（失败也不再试别的账号）。找不到时，单账号的池照旧换给那唯一的账号；多账号的池只试还没有自己整套 Cookie 的账号，都有的话返回 409（`type: no_matching_account`），请在插件里填账号 ID，改走 `PUT /admin/accounts/{id}/cookies`。不带整套 Cookie 时照旧逐个账号试。
+
 成功后同样按请求来源记录 `keepalive_mode`，该账号立即恢复为 `active`（规则同 `PUT /admin/accounts/{id}/cookies`）。
 
 ### PUT /admin/accounts/{id}/cookies
@@ -1031,7 +1033,7 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 
 - 带了就把该账号的谷歌 Cookie **整套换上**（之前从响应里捕获的也一并换掉）。`psid` / `psidts` 仍然必填，且必须与整套里 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS` 一致；不一致、两个字段同时给、或整套里没有 `__Secure-1PSID` 时返回 400（`"type": "invalid_cookies"`）。
 - 完整 Cookie 只存在该账号的 `data/cookies/<hash>.json`；`accounts.json` 照旧只回写 `psid` / `psidts`。之后每个请求按 Cookie 的真实域名发送：`OSID` 只发给 gemini.google.com，不会发到 accounts.google.com 或生成图下载用的 lh3.google.com。
-- 不带这两个字段 = 旧版插件 / 旧脚本，行为与之前一致（但只有这两个值的账号会被判为认证失败，见上）。
+- 不带这两个字段 = 旧版插件 / 旧脚本，行为与之前一致（但只有这两个值的账号会被判为认证失败，见上）。PSID 没变时，之前换上的整套 Cookie 保留，重启后也还在。
 - 响应、错误信息和日志里都不会出现 Cookie 值；`/admin/*` 的 422 请求体校验错误也不回显请求体。
 
 ```bash

@@ -955,7 +955,7 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 
 - 이 필드가 있으면 계정의 Google 쿠키를 **통째로 교체**합니다(이전 응답에서 캡처한 쿠키도 함께 교체). `psid` / `psidts`는 여전히 필수이며, 세트 안의 `.google.com` `__Secure-1PSID` / `__Secure-1PSIDTS`와 같아야 합니다. 일치하지 않거나, 두 필드를 함께 보내거나, 세트에 `__Secure-1PSID`가 없으면 400(`"type": "invalid_cookies"`).
 - 전체 쿠키는 해당 계정의 `data/cookies/<hash>.json`에만 저장되고, `accounts.json`에는 예전처럼 `psid` / `psidts`만 기록합니다. 이후 각 요청은 쿠키의 실제 도메인에 맞춰 보냅니다: `OSID`는 gemini.google.com에만 보내고, accounts.google.com이나 생성 이미지 다운로드용 lh3.google.com에는 보내지 않습니다.
-- 두 필드가 모두 없으면 = 구버전 확장 프로그램 / 스크립트로, 동작은 예전과 같습니다(단, 이 두 값만 있는 계정은 위와 같이 인증 실패로 처리됨).
+- 두 필드가 모두 없으면 = 구버전 확장 프로그램 / 스크립트로, 동작은 예전과 같습니다(단, 이 두 값만 있는 계정은 위와 같이 인증 실패로 처리됨). PSID가 바뀌지 않았다면 이전에 적용한 전체 쿠키는 그대로 유지되며, 재시작 후에도 남아 있습니다.
 - 응답, 오류 메시지, 로그에는 쿠키 값이 나오지 않으며, `/admin/*`의 422(요청 본문 검증 오류)도 요청 본문을 되돌려 주지 않습니다.
 
 ```bash
@@ -997,6 +997,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 ```
 
 여기서도 전체 쿠키를 받습니다: `cookies` / `cookie_header`(둘 중 하나, 위의 `PUT /admin/accounts/{id}/cookies` 참고). 이때 `psid` / `psidts`는 생략할 수 있으며 세트 안의 `.google.com` `__Secure-1PSID` / `__Secure-1PSIDTS`를 사용합니다. 지정하면 일치해야 하며, 다르면 400.
+
+전체 쿠키는 그 쿠키가 속한 계정에만 적용합니다: 현재 그 `__Secure-1PSID`를 쓰는 계정(실패해도 다른 계정은 시도하지 않음). 해당 계정이 없으면, 계정이 하나뿐인 풀은 그 계정에 그대로 적용하고, 여러 계정의 풀은 아직 자기 전체 쿠키가 없는 계정만 시도합니다. 모든 계정이 이미 가지고 있으면 409(`type: no_matching_account`)를 반환하니, 플러그인에 계정 ID를 넣어 `PUT /admin/accounts/{id}/cookies`를 쓰게 하세요. 전체 쿠키가 없는 요청은 예전처럼 계정을 차례로 시도합니다.
 
 성공하면 요청 출처에 따라 유지 방식을 기록하고 계정은 즉시 `active`로 돌아갑니다(규칙은 `PUT /admin/accounts/{id}/cookies`와 같음).
 

@@ -818,6 +818,8 @@ curl http://localhost:5918/admin/accounts/account-0/check \
 
 同樣接受整套 Cookie：`cookies` / `cookie_header`（二選一，見下面 `PUT /admin/accounts/{id}/cookies`）。這時 `psid` / `psidts` 可以不填，取整套裡 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS`；填了就必須一致，否則 400。
 
+帶整套 Cookie 時只換給這套 Cookie 所屬的帳號：目前用的就是這個 `__Secure-1PSID` 的帳號（失敗也不再試別的帳號）。找不到時，單帳號的池照舊換給那唯一的帳號；多帳號的池只試還沒有自己整套 Cookie 的帳號，都有的話回傳 409（`type: no_matching_account`），請在外掛裡填帳號 ID，改走 `PUT /admin/accounts/{id}/cookies`。不帶整套 Cookie 時照舊逐個帳號試。
+
 成功後同樣依請求來源記錄 `keepalive_mode`，該帳號立即恢復為 `active`（規則同 `PUT /admin/accounts/{id}/cookies`）。
 
 ### PUT /admin/accounts/{id}/cookies
@@ -849,7 +851,7 @@ curl http://localhost:5918/admin/accounts/account-0/check \
 
 - 帶了就把該帳號的 Google Cookie **整套換上**（之前從回應裡擷取的也一併換掉）。`psid` / `psidts` 仍然必填，且必須與整套裡 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS` 一致；不一致、兩個欄位同時給、或整套裡沒有 `__Secure-1PSID` 時回傳 400（`"type": "invalid_cookies"`）。
 - 完整 Cookie 只存在該帳號的 `data/cookies/<hash>.json`；`accounts.json` 照舊只回寫 `psid` / `psidts`。之後每個請求依 Cookie 的真實網域發送：`OSID` 只發給 gemini.google.com，不會發到 accounts.google.com 或生成圖下載用的 lh3.google.com。
-- 不帶這兩個欄位 = 舊版擴充功能 / 舊腳本，行為與之前一致（但只有這兩個值的帳號會被判為驗證失敗，見上）。
+- 不帶這兩個欄位 = 舊版擴充功能 / 舊腳本，行為與之前一致（但只有這兩個值的帳號會被判為驗證失敗，見上）。PSID 沒變時，之前換上的整套 Cookie 保留，重啟後也還在。
 - 回應、錯誤訊息和日誌裡都不會出現 Cookie 值；`/admin/*` 的 422 請求體驗證錯誤也不回顯請求體。
 
 ```bash

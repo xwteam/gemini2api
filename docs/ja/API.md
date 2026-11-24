@@ -932,6 +932,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 
 ここでも Cookie 一式を受け付けます：`cookies` / `cookie_header`（どちらか一方。下の `PUT /admin/accounts/{id}/cookies` を参照）。この場合 `psid` / `psidts` は省略でき、一式の中の `.google.com` の `__Secure-1PSID` / `__Secure-1PSIDTS` を使います。指定した場合は一致が必要で、不一致なら 400。
 
+Cookie 一式は、それが属するアカウントにだけ適用します：現在その `__Secure-1PSID` を使っているアカウント（失敗しても他のアカウントは試しません）。該当がない場合、アカウントが 1 つだけのプールではそのアカウントに適用し、複数アカウントのプールでは自分の Cookie 一式をまだ持っていないアカウントだけを試します。全員が持っている場合は 409（`type: no_matching_account`）を返すので、プラグインにアカウント ID を設定して `PUT /admin/accounts/{id}/cookies` を使ってください。Cookie 一式を含まない場合は従来どおり各アカウントを順に試します。
+
 成功時は送信元から保持方式を記録し、アカウントはただちに `active` に戻ります（ルールは `PUT /admin/accounts/{id}/cookies` と同じ）。
 
 ### PUT /admin/accounts/{id}/cookies
@@ -968,7 +970,7 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 
 - 指定するとアカウントの Google Cookie を**一式まとめて差し替え**ます（以前のレスポンスから取り込んだものも含む）。`psid` / `psidts` は引き続き必須で、一式の中の `.google.com` の `__Secure-1PSID` / `__Secure-1PSIDTS` と一致する必要があります。不一致、2 つのフィールドを両方指定、一式に `__Secure-1PSID` がない場合は 400（`"type": "invalid_cookies"`）。
 - Cookie 一式はそのアカウントの `data/cookies/<hash>.json` にのみ保存され、`accounts.json` には従来どおり `psid` / `psidts` だけを書き戻します。以後の各リクエストは Cookie の実際のドメインに従って送信します：`OSID` は gemini.google.com にだけ送り、accounts.google.com や生成画像ダウンロード用の lh3.google.com には送りません。
-- どちらのフィールドもない = 旧版の拡張機能 / スクリプト。動作は従来どおりです（ただしこの 2 つの値しかないアカウントは上記のとおり認証失敗になります）。
+- どちらのフィールドもない = 旧版の拡張機能 / スクリプト。動作は従来どおりです（ただしこの 2 つの値しかないアカウントは上記のとおり認証失敗になります）。PSID が変わらなければ、以前に適用した Cookie 一式はそのまま残り、再起動後も保持されます。
 - レスポンス、エラーメッセージ、ログに Cookie の値は出ません。`/admin/*` の 422（リクエストボディの検証エラー）もリクエストボディを返しません。
 
 ```bash

@@ -904,7 +904,7 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 
 - When present, the account's Google cookies are **replaced as a whole** (cookies captured from earlier responses go too). `psid` / `psidts` stay required and must equal the `.google.com` `__Secure-1PSID` / `__Secure-1PSIDTS` in the set; a mismatch, sending both fields, or a set without `__Secure-1PSID` returns 400 (`"type": "invalid_cookies"`).
 - The full set is stored only in the account's `data/cookies/<hash>.json`; `accounts.json` still gets only `psid` / `psidts`. Every request then sends cookies by their real domain: `OSID` goes to gemini.google.com only, never to accounts.google.com or lh3.google.com (generated-image downloads).
-- Without either field = older extensions / scripts, same behavior as before (but an account with only these two values is reported as an authentication failure, see above).
+- Without either field = older extensions / scripts, same behavior as before (but an account with only these two values is reported as an authentication failure, see above). If the PSID is unchanged, a full set applied earlier is kept, across restarts too.
 - Cookie values never appear in responses, error messages or logs; 422 body-validation errors on `/admin/*` do not echo the request body either.
 
 ```bash
@@ -948,6 +948,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 ```
 
 The full cookie set is accepted here too: `cookies` / `cookie_header` (one of them; see `PUT /admin/accounts/{id}/cookies`). `psid` / `psidts` may then be omitted and are taken from the set's `.google.com` `__Secure-1PSID` / `__Secure-1PSIDTS`; when given they must match, otherwise 400.
+
+A full cookie set only goes to the account it belongs to: the account whose current `__Secure-1PSID` is the set's (if that reload fails, no other account is tried). When no account matches, a single-account pool still applies it to that one account; a multi-account pool only tries accounts that do not hold their own full cookie set yet, and answers 409 (`type: no_matching_account`) when every account does. In that case set the account ID in the plugin so it uses `PUT /admin/accounts/{id}/cookies`. Without a full set every account is tried in turn, as before.
 
 On success the keep-alive mode is recorded from the request source and the account is back to `active` right away, with the same rules as `PUT /admin/accounts/{id}/cookies`.
 
