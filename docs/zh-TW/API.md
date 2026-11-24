@@ -764,7 +764,7 @@ curl http://localhost:5918/admin/accounts \
 |------|------|------|------|
 | `psid` | string | 條件必填 | `__Secure-1PSID`；未帶 `cookies` / `cookie_header` 時必填（缺失回傳 400 `"type": "invalid_request_error"`）；帶了整套 Cookie 時可省略，也可同時傳入做一致性校驗 |
 | `psidts` | string | ❌ | `__Secure-1PSIDTS`；帶了整套 Cookie 時可省略或傳入校驗 |
-| `label` | string | ❌ | 帳號標籤（預設為空） |
+| `label` | string | ❌ | 帳號標籤；不填時用帳號 id，填了須為 1～64 個字元、不含控制字元（否則 400 `invalid_request_error`） |
 | `cookies` | array | ❌ | 整套 Cookie（`BrowserCookie` 陣列，格式同 `PUT /admin/accounts/{id}/cookies`） |
 | `cookie_header` | string | ❌ | 瀏覽器發給 `gemini.google.com` 的整段 `Cookie:` 請求標頭（面板「新增帳號」貼上的就是它） |
 

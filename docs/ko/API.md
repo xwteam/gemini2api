@@ -904,7 +904,7 @@ curl http://localhost:5918/admin/accounts \
 |------|------|------|------|
 | `psid` | string | 조건부 필수 | `__Secure-1PSID`. `cookies` / `cookie_header`가 없을 때 필수(누락 시 400 `"type": "invalid_request_error"`). 전체 쿠키를 함께 보내면 생략 가능하며, 교차 검증을 위해 함께 전달할 수도 있음 |
 | `psidts` | string | ❌ | `__Secure-1PSIDTS`. 전체 쿠키를 보낼 때 생략하거나 검증용으로 전달 가능 |
-| `label` | string | ❌ | 계정 라벨(기본값 빈 문자열) |
+| `label` | string | ❌ | 계정 라벨. 비우면 계정 id를 사용하며, 지정할 경우 1~64자이고 제어 문자를 포함하지 않아야 함(위반 시 400 `invalid_request_error`) |
 | `cookies` | array | ❌ | 전체 쿠키(`BrowserCookie` 배열, 형식은 `PUT /admin/accounts/{id}/cookies`와 동일) |
 | `cookie_header` | string | ❌ | 브라우저가 `gemini.google.com`으로 보내는 `Cookie:` 요청 헤더 전체(패널의 "계정 추가"에서 붙여넣는 값) |
 

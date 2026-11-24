@@ -867,7 +867,7 @@ curl http://localhost:5918/admin/accounts \
 |-----------|-----|------|------|
 | `psid` | string | 条件付き必須 | `__Secure-1PSID`。`cookies` / `cookie_header` がない場合は必須（欠落時は 400 `"type": "invalid_request_error"`）。Cookie 一式を指定する場合は省略可能、または整合性検証のために併記可 |
 | `psidts` | string | ❌ | `__Secure-1PSIDTS`。Cookie 一式を指定する場合は省略可能または検証用に併記可 |
-| `label` | string | ❌ | アカウントのラベル（デフォルトは空） |
+| `label` | string | ❌ | アカウントのラベル。空ならアカウント id を使用。指定する場合は 1～64 文字で制御文字を含まないこと（違反時は 400 `invalid_request_error`） |
 | `cookies` | array | ❌ | Cookie 一式（`BrowserCookie` 配列。形式は `PUT /admin/accounts/{id}/cookies` と同じ） |
 | `cookie_header` | string | ❌ | ブラウザが `gemini.google.com` に送る `Cookie:` リクエストヘッダー全体（パネルの「アカウント追加」で貼り付けるもの） |
 

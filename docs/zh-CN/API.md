@@ -936,7 +936,7 @@ curl http://localhost:5918/admin/accounts \
 |------|------|------|------|
 | `psid` | string | 条件必填 | `__Secure-1PSID`；未带 `cookies` / `cookie_header` 时必填（缺失返回 400 `"type": "invalid_request_error"`）；带了整套 Cookie 时可省略，也可以同时传入做一致性校验 |
 | `psidts` | string | ❌ | `__Secure-1PSIDTS`；带了整套 Cookie 时可省略或传入校验 |
-| `label` | string | ❌ | 账号标签（默认为空） |
+| `label` | string | ❌ | 账号标签；不填时用账号 id，填了须为 1～64 个字符、不含控制字符（否则 400 `invalid_request_error`） |
 | `cookies` | array | ❌ | 整套 Cookie（`BrowserCookie` 数组，格式同 `PUT /admin/accounts/{id}/cookies`） |
 | `cookie_header` | string | ❌ | 浏览器发往 `gemini.google.com` 的整段 `Cookie:` 请求头（面板「添加账号」粘贴的就是它） |
 

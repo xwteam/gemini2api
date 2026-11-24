@@ -850,7 +850,7 @@ Add a new account.
 |-------|------|----------|-------------|
 | `psid` | string | Conditional | `__Secure-1PSID`; required when neither `cookies` nor `cookie_header` is given (missing returns 400 `"type": "invalid_request_error"`); optional when a full cookie set is sent (or may be given to cross-check) |
 | `psidts` | string | ❌ | `__Secure-1PSIDTS`; optional when a full cookie set is sent (or may be given to cross-check) |
-| `label` | string | ❌ | Account label (empty by default) |
+| `label` | string | ❌ | Account label; defaults to the account id when empty. If given, it must be 1–64 characters with no control characters (otherwise 400 `invalid_request_error`) |
 | `cookies` | array | ❌ | Full cookie set (`BrowserCookie` array, same format as `PUT /admin/accounts/{id}/cookies`) |
 | `cookie_header` | string | ❌ | Whole `Cookie:` request header sent to `gemini.google.com` (what the panel's "Add Account" pastes) |
 
