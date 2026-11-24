@@ -349,3 +349,20 @@ def test_session_expired_account_reads_consistently(tmp_path):
     assert "accounts.healthMismatch" not in out["list"]
     assert "text-danger" not in out["healthRow"][0]
     assert "Google session expired (login redirect)" in out["list"]
+
+
+@_needs_node
+def test_accounts_page_lists_each_accounts_own_model_names(tmp_path):
+    """v1.6.54 R7：账号页每个账号显示它自己心跳报的模型（真实名字），一眼看出哪个号是 pro。
+    名字来自谷歌的心跳，照样转义。"""
+    out = _render([
+        _acc(id="pro", models=["gemini-auto", "gemini-4-neon", "gemini-4-carbon"], models_count=3),
+        _acc(id="free", models=["gemini-auto", "gemini-<b>x"], models_count=2),
+        _acc(id="old-backend", models_count=4),
+    ], tmp_path)
+
+    assert "gemini-auto, gemini-4-neon, gemini-4-carbon" in out["list"]
+    assert "gemini-auto, gemini-&lt;b&gt;x" in out["list"]
+    assert "gemini-<b>x" not in out["list"], "模型名没走 escapeHtml"
+    # 旧后端不给列表时照旧显示个数
+    assert '<span class="value">4</span>' in out["list"]

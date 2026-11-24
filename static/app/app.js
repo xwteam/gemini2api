@@ -113,11 +113,12 @@ async function loadDashboard() {
 
         const activeCount = accounts.filter(a => a.status === 'active').length;
         const totalRequests = accounts.reduce((sum, a) => sum + (a.request_count || 0), 0);
+        // 池级列表（与 /v1/models 同口径：ACTIVE 账号各自心跳报的网页真实名字的并集，按心跳顺序）。
+        // 旧后端没有这个字段时退回各账号列表的并集。
         const modelsSet = new Set();
-        accounts.forEach(a => {
-            if (a.models && Array.isArray(a.models)) {
-                a.models.forEach(m => modelsSet.add(m));
-            }
+        const modelLists = Array.isArray(data.models) ? [data.models] : accounts.map(a => a.models);
+        modelLists.forEach(list => {
+            if (Array.isArray(list)) list.forEach(m => modelsSet.add(m));
         });
 
         setText('stat-total', formatNumber(accounts.length));
@@ -356,7 +357,8 @@ function renderModelsList(modelsSet) {
     const container = document.getElementById('modelsList');
     if (!container) return;
 
-    const models = Array.from(modelsSet).sort();
+    // 不排序：按心跳顺序（与网页上的模型菜单一致）
+    const models = Array.from(modelsSet);
     if (models.length === 0) {
         container.innerHTML = `<span class="text-muted">${t('accounts.noModels')}</span>`;
         return;
@@ -378,7 +380,7 @@ function updatePlaygroundModels(modelsSet) {
     const select = document.getElementById('pg-model');
     if (!select) return;
 
-    const models = Array.from(modelsSet).sort();
+    const models = Array.from(modelsSet);
     if (models.length === 0) {
         select.innerHTML = `<option value="">${t('accounts.noModels')}</option>`;
         return;
@@ -477,7 +479,9 @@ async function loadAccounts() {
                 </div>
                 <div class="account-detail">
                     <span class="label">${t('accounts.models')}</span>
-                    <span class="value">${(account.models || []).length || account.models_count || 0}</span>
+                    <span class="value">${Array.isArray(account.models) && account.models.length
+                        ? escapeHtml(account.models.join(', '))
+                        : (account.models_count || 0)}</span>
                 </div>
                 <div class="account-detail">
                     <span class="label">${t('accounts.lastSuccess')}</span>
