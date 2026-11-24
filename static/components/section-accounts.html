@@ -57,13 +57,20 @@
             </button>
         </div>
         <div class="modal-body">
+            <!-- 谷歌 11-20 改版：只有 PSID / PSIDTS 只能以访客身份打开 Gemini，要整段 Cookie（含 OSID） -->
             <div class="form-group">
-                <label for="update-psid">__Secure-1PSID <span class="required">*</span></label>
-                <input type="text" id="update-psid" class="form-control" data-i18n-placeholder="accounts.newPsidPlaceholder" placeholder="输入新的 __Secure-1PSID" required>
+                <label for="update-cookie-header" data-i18n="accounts.fullCookieLabel">整段 Cookie（推荐）</label>
+                <textarea id="update-cookie-header" class="form-control" rows="4" spellcheck="false" autocomplete="off" data-i18n-placeholder="accounts.fullCookiePlaceholder" placeholder="SID=…; HSID=…; OSID=…; __Secure-1PSID=…; __Secure-1PSIDTS=…"></textarea>
+                <span class="form-hint" data-i18n="accounts.fullCookieHint">谷歌现在需要整段 Cookie（含 gemini.google.com 的 OSID），只填下面两项会被当成未登录访客。在浏览器打开 gemini.google.com → 开发者工具 → 网络 → 任选一个发往 gemini.google.com 的请求，把请求头里整段 Cookie 复制到这里；或用浏览器插件 1.4.0 及以上自动同步。</span>
             </div>
             <div class="form-group">
-                <label for="update-psidts">__Secure-1PSIDTS <span class="required">*</span></label>
-                <input type="text" id="update-psidts" class="form-control" data-i18n-placeholder="accounts.newPsidtsPlaceholder" placeholder="输入新的 __Secure-1PSIDTS" required>
+                <label for="update-psid">__Secure-1PSID</label>
+                <input type="text" id="update-psid" class="form-control" data-i18n-placeholder="accounts.newPsidPlaceholder" placeholder="输入新的 __Secure-1PSID">
+            </div>
+            <div class="form-group">
+                <label for="update-psidts">__Secure-1PSIDTS</label>
+                <input type="text" id="update-psidts" class="form-control" data-i18n-placeholder="accounts.newPsidtsPlaceholder" placeholder="输入新的 __Secure-1PSIDTS">
+                <span class="form-hint" data-i18n="accounts.singleValueHint">粘贴了整段 Cookie 时这两项留空即可（从整段里读取）；只填这两项是旧用法。</span>
             </div>
         </div>
         <div class="modal-footer">

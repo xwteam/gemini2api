@@ -607,18 +607,43 @@ function closeUpdateCookieModal() {
     const modal = document.getElementById('updateCookieModal');
     if (modal) {
         modal.classList.remove('active');
-        const inputs = modal.querySelectorAll('input');
+        const inputs = modal.querySelectorAll('input, textarea');
         inputs.forEach(input => { input.value = ''; });
     }
     updateCookieAccountId = null;
 }
 
+// 从粘贴的整段 Cookie 请求头里取某个名字的值（同名取第一个）。服务端会按同一口径再解析一遍整段、
+// 并核对 psid / psidts 与其中的 __Secure-1PSID / __Secure-1PSIDTS 一致。
+function _cookieFromHeader(header, name) {
+    const text = header.replace(/^\s*cookie:\s*/i, '');
+    for (const part of text.split(/[;\r\n]+/)) {
+        const idx = part.indexOf('=');
+        if (idx <= 0) continue;
+        if (part.slice(0, idx).trim() === name) return part.slice(idx + 1).trim();
+    }
+    return '';
+}
+
 async function submitUpdateCookie() {
-    const psid = document.getElementById('update-psid')?.value.trim();
-    const psidts = document.getElementById('update-psidts')?.value.trim() || '';
+    const header = document.getElementById('update-cookie-header')?.value.trim() || '';
+    let psid = document.getElementById('update-psid')?.value.trim() || '';
+    let psidts = document.getElementById('update-psidts')?.value.trim() || '';
+    const extra = {};
+
+    if (header) {
+        // 谷歌 11-20 改版后要整段 Cookie（含 OSID）：psid / psidts 一律以整段里的为准
+        psid = _cookieFromHeader(header, '__Secure-1PSID');
+        psidts = _cookieFromHeader(header, '__Secure-1PSIDTS');
+        if (!psid) {
+            showToast(t('accounts.fullCookieNoPsid'), 'warning');
+            return;
+        }
+        extra.cookie_header = header;
+    }
 
     if (!psid) {
-        showToast('请填写 __Secure-1PSID', 'warning');
+        showToast(t('accounts.needPsid'), 'warning');
         return;
     }
 
@@ -629,7 +654,7 @@ async function submitUpdateCookie() {
 
     try {
         showToast('正在更新 Cookie...', 'info');
-        await apiCall('PUT', `/admin/accounts/${updateCookieAccountId}/cookies`, { psid, psidts });
+        await apiCall('PUT', `/admin/accounts/${updateCookieAccountId}/cookies`, { psid, psidts, ...extra });
         showToast('Cookie 更新成功', 'success');
         closeUpdateCookieModal();
         await loadAccounts();
