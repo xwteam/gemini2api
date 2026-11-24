@@ -90,15 +90,18 @@
 
 ### 🧠 模型與思考檔位
 
-| 對外模型名 | 自動對應到網頁上的模型（目前實測） | 說明 |
-|------|------|------|
-| `gemini-pro` | 3.1 Pro | 品質最高、較慢 |
-| `gemini-flash` | 3.8 Flash | 快，建議作為預設 |
-| `gemini-flash-lite` | 3.5 Flash-Lite | 最輕最快，Pro/Flash 被限額時的備援 |
-| `gemini-argon` | 4 Argon | 面向複雜任務；**帳號真的有 Argon 時才會列出** |
+| 列出的真實名字 | 網頁名字 | 定位 | 可用的舊名／別名 |
+|------|------|------|------|
+| `gemini-auto` | Auto | 自動選擇 | `gemini-flash-lite` |
+| `gemini-4-hydrogen` | 4 Hydrogen | 日常 | `gemini-flash`、`gemini-hydrogen` |
+| `gemini-4-neon` | 4 Neon | 深度分析 | `gemini-pro`、`gemini-neon` |
+| `gemini-4-carbon` | 4 Carbon（11-24 前叫 `4 Argon`） | 程式碼與複雜任務；**帳號心跳有該模型時才列出** | `gemini-argon`、`gemini-4-argon`、`gemini-carbon` |
 
-- **對應是自動的**：每個帳號的心跳會回報它目前真實可用的網頁模型，對外名字固定不變、內部自動對上網頁目前的那一代（Google 換代時不用改客戶端）。
-- **`gemini-flash-thinking` 已下線**：它只是「flash + 思考模式」的假模型，思考現在是每個模型都有的檔位（見下）。為相容舊客戶端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及內部名 `gemini-3-flash-thinking*` **仍然可以呼叫**（隱藏別名，等同 `gemini-flash`），只是不再出現在任何模型清單裡；想要思考內容請改傳檔位參數。 例外：存取金鑰的「允許模型」裡勾過 `gemini-flash-thinking` 的，這把金鑰取得的模型清單裡仍會列出它（免得只勾了它的舊金鑰拿到空清單），新簽發的金鑰請改勾 `gemini-flash`。⚠️ 行為變化：舊客戶端不傳檔位呼叫 `gemini-flash-thinking` 時，v1.6.42 會回傳思考內容，現在不再回傳（未請求的思考一律不回傳）。
+- **隨帳號心跳動態列出網頁真實名字**：每個帳號的心跳會直接取回網頁上的真實模型名（`gemini-` + slug），跨帳號取聯集並保留心跳返回順序；`gemini-4-carbon` 等非基礎模型只在至少一個帳號心跳確實回報時才列出。Google 改名或上新模型後會自動跟著變，不用升級服務。
+  - **舊名與改名歷史繼續可用（隱藏別名，不再列出）**：`gemini-pro` / `gemini-flash` / `gemini-flash-lite` / `gemini-argon` / `gemini-4-argon` 以及不帶版本號的類別名（`gemini-neon` / `gemini-hydrogen` / `gemini-carbon`，Auto 本身無版本號）皆可照常呼叫（回應裡的 `model` 欄位維持回顯請求傳入的名字）。心跳給過的舊真實名字也會持久化保存在 `data/` 中（如 `data/model-names.json`），重啟不丟，將來 Google 再改名時舊真實名字仍可繼續呼叫。
+  - **冷啟動兜底**：服務剛啟動、還沒有任何帳號心跳成功時，模型列表暫時顯示 `gemini-pro` / `gemini-flash` / `gemini-flash-lite`（不會空列表），拿到心跳後切換為網頁真實名字。
+- **依帳號即時、各算各的**：每個帳號只用自己心跳回報的模型（非 Pro 帳號的模型和名字可能不同）。清單是目前可用帳號的聯集（存取金鑰綁定了帳號時只算綁定的帳號，過期 / 停用的帳號不算）；請求只會送給自己清單裡有這個模型的帳號，絕不會悄悄換成別的帳號上的另一個模型——都沒有回 400，有這個模型的帳號只是忙滿回 529。面板帳號頁能看到每個帳號自己的模型。改名歷史存在 `data/model-names.json`。
+- **`gemini-flash-thinking` 已下線**：它只是「flash + 思考模式」的假模型，思考現在是每個模型都有的檔位（見下）。為相容舊客戶端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及內部名 `gemini-3-flash-thinking*` **仍然可以呼叫**（隱藏別名，等同 `gemini-4-hydrogen` / `gemini-flash`），只是不再出現在任何模型清單裡；想要思考內容請改傳檔位參數。 例外：存取金鑰的「允許模型」裡勾過 `gemini-flash-thinking` 的，這把金鑰取得的模型清單裡仍會列出它（免得只勾了它的舊金鑰拿到空清單），新簽發的金鑰請改選 `gemini-4-hydrogen`（寫舊名 `gemini-flash` 也完全互通）。⚠️ 行為變化：舊客戶端不傳檔位呼叫 `gemini-flash-thinking` 時，v1.6.42 會回傳思考內容，現在不再回傳（未請求的思考一律不回傳）。
 - **思考三檔**：`low` / `medium` / `high`，對應網頁上的低 / 中 / 高三檔（實測 `high` 想得最深、也最慢；`low` 與 `medium` 的差別在實測裡分不太開）。
 - **預設檔 `low`**：客戶端**沒指定檔位**時（沒傳思考參數的，和要了思考但沒說幾檔的），使用「預設思考檔位」（環境變數 `DEFAULT_THINKING_LEVEL`，或面板「設定 → 思考」，儲存即時生效、無需重啟），出廠 `low`。
   - ⚠️ **速度代價**：實測預設 `low` 比不思考**平均每個請求多約 5 秒**（flash 簡單題 6.5 / 8.8 秒 → 8.6 / 16.6 秒）。最重視速度就把預設檔設成 **`off`**（不思考、最快，與舊版不傳參數時送往上游的請求完全一樣）。前置代理有首位元組逾時的（如 EdgeOne 免費版 15 秒）尤其要留意非流式請求。串流請求也有代價：沒提思考的請求，依預設檔位開啟的思考不回傳，**正文要等思考完成才開始輸出**（期間只有保活幀，連線不會被代理切斷），pro 遇到需要推理的題目 `low` 檔實測總耗時 36～47 秒 —— 對首字延遲敏感就用 `off`。⚠️ `off`（以及預設檔本身）管的是**沒指定檔位**的請求：沒傳思考參數的，和要了思考但沒說幾檔的（Claude Code 出廠請求就是這種，所以 Claude Code 預設也跟隨預設檔）。客戶端**明確指定了檔位**的（Codex / Cursor 選了 low/medium/high、Anthropic 給了 `budget_tokens`、Claude Code `/effort max` 等）預設檔管不到；要所有請求都不思考（真正最快），請關閉下方的總開關 `EXTENDED_THINKING_ENABLED=false`。
@@ -537,7 +540,7 @@ response = client.chat.completions.create(
 | `duration_days` | 有效天數，**惰性啟動**：發出去不計時，持有人第一次用它發請求才開始算 N 天 |
 | `request_limit` | 請求數上限，累計達到即失效（可用「重設用量」清零後繼續用） |
 | `bound_account_ids` | 綁定帳號，只允許用指定的 Gemini 帳號（留空 = 不限制） |
-| `allowed_models` | 允許模型，只允許呼叫指定的模型名（留空 = 不限制） |
+| `allowed_models` | 允許模型，只允許呼叫指定的模型名（留空 = 不限制；寫舊名或新真實名字完全互通，按同一個模型／模型族比對） |
 
 `expires_at` 與 `duration_days` 二選一，兩者都留空則永不到期。
 
@@ -650,7 +653,7 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `USAGE_STATS_ENABLED` | ❌ | `true` | 啟用用量統計（時序快照 + 持久化） |
 | `USAGE_STATS_INTERVAL` | ❌ | `300` | 快照採集間隔（秒） |
 | `USAGE_STATS_RETENTION_DAYS` | ❌ | `30` | 歷史數據保留天數 |
-| `MODEL_WHITELIST` | ❌ | — | 模型白名單（逗號分隔，為空則不過濾；非空時過濾各 `/models` 列表） |
+| `MODEL_WHITELIST` | ❌ | — | 模型白名單（逗號分隔，為空則不過濾；非空時過濾各 `/models` 列表；寫舊名或新真實名字完全互通，按同一個模型／模型族比對） |
 | `CHAT_CLEANUP_ENABLED` | ❌ | `true` | 啟用 Gemini 網頁端會話自動清理 |
 | `CHAT_CLEANUP_KEEP_HOURS` | ❌ | `24.0` | 網頁會話保留時長（小時），超過則清理 |
 | `CHAT_CLEANUP_INTERVAL_HOURS` | ❌ | `6.0` | 自動清理任務運行間隔（小時） |
@@ -667,14 +670,14 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 | `THIRDPARTY_FAILOVER_COOLDOWN` | ❌ | `180` | 第三方「同名多家」故障切換的壞家冷卻秒數（0 關閉） |
 | `BARD_ERROR_CODES` | ❌ | — | Gemini 在 **HTTP 200** 內文裡回傳的拒絕區塊的 code→語意對照表，形如 `1152=rate_limit,404=session_expired`，分類可取 `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**留空時所有拒絕區塊按未知處理（冷卻該帳號 + 換帳號重試），這是刻意的安全兜底**；設定之後各類才有專門處理（工作階段過期觸發 Cookie 自癒、上下文超長直接回 400 不重試、人機驗證讓出該帳號） |
 | `GEMINI_FAILURE_REPLIES` | ❌ | — | 追加谷歌的「失敗套話」（以 `\|` 分隔；內建的 `I seem to be encountering an error. Can I try something else for you?` 始終生效）。整段回答恰好是其中一句時按上游失敗處理（換帳號 / 兜底 / 502），不會當成正常回答回傳，見注意事項 8 |
-| `GENERATE_TIMEOUTS` | ❌ | — | 生成超時按模型族覆寫，形如 `pro=300,flash=120`；留空用內建分層（flash-lite 60 / flash 120 / pro 300 / argon 300，認不出的族回落 60）。非流式依它掐斷整個請求；流式依它約束「第一次有新內容」與「相鄰兩次有新內容」的間隔（谷歌的心跳幀不算） |
+| `GENERATE_TIMEOUTS` | ❌ | — | 生成超時按模型族覆寫，形如 `pro=300,flash=120`；留空用內建分層（flash-lite 60 / flash 120 / pro 300 / carbon 300，認不出的族回落 60；舊配置寫 `argon=` 仍接受並等同 `carbon`）。非流式依它掐斷整個請求；流式依它約束「第一次有新內容」與「相鄰兩次有新內容」的間隔（谷歌的心跳幀不算） |
 | `GENERATE_TIMEOUT_IMAGE` | ❌ | `180` | 疑似生圖請求的生成超時（秒）。與模型族檔位**取大**，流式與非流式同口徑 |
 | `MODEL_BREAKER_ENABLED` | ❌ | `true` | 模型故障熔斷總開關（見注意事項 7）。`false` 時照常記錄狀態，但絕不繞開谷歌 |
 | `MODEL_BREAKER_THRESHOLD` | ❌ | `2` | 視窗內有這麼多個**不同請求**在同一模型族上疑似故障地失敗就熔斷（同一請求換帳號、重試、用戶端重送只算一個） |
 | `MODEL_BREAKER_WINDOW` | ❌ | `300` | 計數視窗（秒）：這次失敗的嘗試開始時距上一次計入的失敗超過它，計數從 1 重新開始 |
 | `MODEL_BREAKER_COOLDOWN` | ❌ | `60` | 熔斷打開後的開放期（秒），期間開了兜底的 `/v1/chat/completions` 請求直接走兜底 |
 | `MODEL_BREAKER_MAX_COOLDOWN` | ❌ | `300` | 試探谷歌又失敗時開放期翻倍的上限（秒），至少等於 `MODEL_BREAKER_COOLDOWN` |
-| `TOKEN_PRICES` | ❌ | — | 存取金鑰用量的**美元估算**價格表，形如 `gemini-pro=2.0/12.0,gemini-flash=0.75/3.75`（公開模型名=輸入價/輸出價，單位 USD／百萬 token）。留空用內建預設值；寫錯的條目靜默忽略，配不到價格的模型面板顯示 `—`。**只統計、不參與任何限額判定**，且不是帳單（本服務走網頁版、本身不花錢） |
+| `TOKEN_PRICES` | ❌ | — | 存取金鑰用量的**美元估算**價格表，形如 `gemini-4-neon=2.0/12.0,gemini-4-hydrogen=0.75/3.75`（模型名=輸入價/輸出價，單位 USD／百萬 token；寫新真實名字或 `gemini-pro` 等舊名皆可，按同一個模型族計價）。留空用內建預設值；寫錯的條目靜默忽略，配不到價格的模型面板顯示 `—`。**只統計、不參與任何限額判定**，且不是帳單（本服務走網頁版、本身不花錢） |
 
 ---
 
@@ -684,13 +687,13 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 
 2. **流式輸出**：所有 API 端點預設流式傳回。設定 `stream: false` 時，服務內部仍以流式方式接收資料，收集完畢後一次性傳回完整 JSON。
 
-3. **模型可用性**：可用模型列表取決於你的 Google 帳號權限。免費帳號和 Gemini Advanced 帳號看到的模型不同，服務啟動時會自動檢測。
+3. **模型可用性**：可用模型列表依各帳號心跳回報的網頁真實名字動態產生（跨帳號取聯集、保留心跳順序），取決於你的 Google 帳號權限；免費帳號和 Gemini Advanced 帳號看到的模型不同，`gemini-4-carbon` 等非基礎模型只在至少一個帳號心跳確實回報時才會列出。服務剛啟動、還沒有任何帳號心跳成功時，列表會暫時顯示 `gemini-pro` / `gemini-flash` / `gemini-flash-lite`（不會回傳空列表），取得心跳後即切換為網頁真實名字；舊名與歷史真實名字也會持久化保存在 `data/` 中並保持可呼叫。
 
 4. **請求頻率**：即使關閉了內置限流（`RATE_LIMIT_ENABLED=false`），Google 側仍有頻率限制。高頻請求可能觸發驗證碼或臨時封禁，建議合理控制呼叫頻率。
 
 5. **網路環境**：部署服務器需能直接存取 `gemini.google.com`，部分地區可能需要設定代理。
 
-6. **非流式超時與前置代理**：非流式（`stream: false`）請求的超時按模型族分層——flash-lite 60 秒、flash 120 秒、pro 與 argon 300 秒（可用 `GENERATE_TIMEOUTS` 覆寫；疑似生圖取 `GENERATE_TIMEOUT_IMAGE`，預設 180 秒），超時也不再重試三遍。到點後本服務回 **504**（錯誤類型 `timeout_error`，用各協議自己的 JSON 錯誤內文；流式請求是協議內的錯誤事件），不再是純文字的 500；開了 `FALLBACK_ENABLED` 時 `/v1/chat/completions` 會先嘗試第三方兜底。超時是谷歌那邊卡住，不計入帳號的連續失敗、不會把帳號標成 `expired`（建立連線階段的超時照舊先重試幾次，重試用完同樣按超時處理）。注意這整段時間裡連線上是**零位元組輸出**，所以它是**首位元組**超時而不是閒置超時：**pro 非流式最長要乾等 300 秒，會超過常見前置代理的首位元組上限**（EdgeOne 免費版 15 秒，不少反向代理預設 60 秒），用戶端拿到的將是代理的 504 而不是本服務的錯誤內文。這類場景建議直接用流式請求。 開了思考的請求還要再多幾秒（預設 `low` 實測平均每請求多約 5 秒）。 flash-lite 的 60 秒是依「不思考、幾秒就回」訂的，預設檔位開啟思考後在長 prompt / 難題上可能偏緊，可用 `GENERATE_TIMEOUTS=flash-lite=120` 調大（生成期逾時不會退回不思考重試，會直接回報逾時）。 **流式請求同樣受這套族預算約束**：第一次有新內容（內文 / 思考 / 生成圖片 / Canvas）必須在預算內到達（等回應標頭的時間也算在內），之後相鄰兩次有新內容的間隔也不能超過預算；谷歌排隊時每 60 秒送一個不含任何內容的心跳幀，它**不算進展**。到點同樣回協議內的 `timeout_error` 錯誤事件（還沒流出內文時 `/v1/chat/completions` 先試第三方兜底）。過去流式只看「兩次收到位元組之間」的 120 秒，被谷歌的心跳一次次重置，實測用戶端乾等了約 240 秒。
+6. **非流式超時與前置代理**：非流式（`stream: false`）請求的超時按模型族分層——flash-lite 60 秒、flash 120 秒、pro 與 carbon 300 秒（可用 `GENERATE_TIMEOUTS` 覆寫，舊配置寫 `argon=` 仍接受並等同 `carbon`；疑似生圖取 `GENERATE_TIMEOUT_IMAGE`，預設 180 秒），超時也不再重試三遍。到點後本服務回 **504**（錯誤類型 `timeout_error`，用各協議自己的 JSON 錯誤內文；流式請求是協議內的錯誤事件），不再是純文字的 500；開了 `FALLBACK_ENABLED` 時 `/v1/chat/completions` 會先嘗試第三方兜底。超時是谷歌那邊卡住，不計入帳號的連續失敗、不會把帳號標成 `expired`（建立連線階段的超時照舊先重試幾次，重試用完同樣按超時處理）。注意這整段時間裡連線上是**零位元組輸出**，所以它是**首位元組**超時而不是閒置超時：**pro 非流式最長要乾等 300 秒，會超過常見前置代理的首位元組上限**（EdgeOne 免費版 15 秒，不少反向代理預設 60 秒），用戶端拿到的將是代理的 504 而不是本服務的錯誤內文。這類場景建議直接用流式請求。 開了思考的請求還要再多幾秒（預設 `low` 實測平均每請求多約 5 秒）。 flash-lite 的 60 秒是依「不思考、幾秒就回」訂的，預設檔位開啟思考後在長 prompt / 難題上可能偏緊，可用 `GENERATE_TIMEOUTS=flash-lite=120` 調大（生成期逾時不會退回不思考重試，會直接回報逾時）。 **流式請求同樣受這套族預算約束**：第一次有新內容（內文 / 思考 / 生成圖片 / Canvas）必須在預算內到達（等回應標頭的時間也算在內），之後相鄰兩次有新內容的間隔也不能超過預算；谷歌排隊時每 60 秒送一個不含任何內容的心跳幀，它**不算進展**。到點同樣回協議內的 `timeout_error` 錯誤事件（還沒流出內文時 `/v1/chat/completions` 先試第三方兜底）。過去流式只看「兩次收到位元組之間」的 120 秒，被谷歌的心跳一次次重置，實測用戶端乾等了約 240 秒。
 
 7. **模型故障熔斷**：谷歌某個模型族整體故障時（例如 gemini-flash 所有帳號都在排隊卡住或秒回失敗套話），視窗內有 `MODEL_BREAKER_THRESHOLD`（預設 2）個不同請求在這個族上疑似故障地失敗（失敗套話、幾乎沒收到資料的生成超時、一次進展都沒有的流式超時），熔斷就打開 `MODEL_BREAKER_COOLDOWN`（預設 60）秒：這期間**開了 `FALLBACK_ENABLED` 且有兜底候選**的 `/v1/chat/completions` 請求直接走第三方兜底，不再先白等一個預算；到期後放一個真實請求去試探谷歌，試探失敗開放期翻倍（封頂 `MODEL_BREAKER_MAX_COOLDOWN`），任何成功都立即恢復。沒開兜底的請求和 Claude / Gemini 原生 / Responses 一律照常呼叫谷歌（它們的結果照樣更新熔斷狀態）；只影響故障的那個族，同帳號的其他族照常。狀態見面板帳號頁頂部的提示和 `/admin/status` 的 `model_breakers`；行程重啟後清空。
 

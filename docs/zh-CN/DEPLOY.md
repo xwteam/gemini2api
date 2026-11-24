@@ -140,7 +140,7 @@ USAGE_STATS_ENABLED=true
 USAGE_STATS_INTERVAL=300
 USAGE_STATS_RETENTION_DAYS=30
 
-# 可选：模型白名单（逗号分隔，留空则不过滤；非空时过滤各 /models 列表）
+# 可选：模型白名单（逗号分隔，留空则不过滤；非空时过滤各 /models 列表；写旧名或新真实名均可，按同模型/同族互通）
 MODEL_WHITELIST=
 
 # 可选：Gemini 网页端会话自动清理
@@ -172,15 +172,15 @@ BARD_ERROR_CODES=
 # 可选：客户端没指定档位时的默认档位 off / low / medium / high（出厂 low）。
 # low 实测每请求平均多约 5 秒；最看重速度就设 off。面板「设置 → 思考」可即时切换
 DEFAULT_THINKING_LEVEL=low
-# 可选：非流式生成超时按模型族覆盖（秒），形如 pro=300,flash=120
-# 留空 = 用内置分层：flash-lite 60 / flash 120 / pro 300 / argon 300（认不出的族回落 60）
+# 可选：非流式生成超时按模型族覆盖（秒），形如 pro=300,flash=120（旧配置写 argon= 仍按 carbon 生效）
+# 留空 = 用内置分层：flash-lite 60 / flash 120 / pro 300 / carbon 300（认不出的族回落 60）
 # ⚠️ 这整段时间里连接上是零字节输出，所以它是「首字节」超时而不是空闲超时，
 #    必须小于前置代理/CDN 的首字节上限（EdgeOne 免费版 15s、不少反代默认 60s），否则
 #    客户端拿到的是代理的 504 而不是本服务的错误体
 GENERATE_TIMEOUTS=
 # 可选：疑似生图请求的非流式超时（秒）。与上面的模型族档位取大，只作用于非流式路径
 GENERATE_TIMEOUT_IMAGE=180.0
-# 可选：访问密钥用量的美元估算价格表（公开模型名=输入价/输出价，单位 USD / 百万 token）
+# 可选：访问密钥用量的美元估算价格表（模型名=输入价/输出价，单位 USD / 百万 token；写新真实名或旧名均可，按同模型/同族互通）
 # 留空 = 用内置默认值。只统计不限额，且不是账单（本服务走网页版、本身不花钱）
 TOKEN_PRICES=
 ```

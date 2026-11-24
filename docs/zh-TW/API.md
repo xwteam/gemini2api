@@ -49,15 +49,17 @@ curl -H "x-api-key: sk-your-api-key" http://localhost:5918/...
 
 ## 🧠 模型與思考檔位
 
-| 對外模型名 | 自動對應到網頁上的模型（目前實測） | 說明 |
-|------|------|------|
-| `gemini-pro` | 3.1 Pro | 品質最高、較慢 |
-| `gemini-flash` | 3.8 Flash | 快，建議作為預設 |
-| `gemini-flash-lite` | 3.5 Flash-Lite | 最輕最快，Pro/Flash 被限額時的備援 |
-| `gemini-argon` | 4 Argon | 面向複雜任務；**帳號真的有 Argon 時才會列出** |
+| 列出的真實名字 | 網頁名字 | 定位 | 可用的舊名／別名 |
+|------|------|------|------|
+| `gemini-auto` | Auto | 自動選擇 | `gemini-flash-lite` |
+| `gemini-4-hydrogen` | 4 Hydrogen | 日常 | `gemini-flash`、`gemini-hydrogen` |
+| `gemini-4-neon` | 4 Neon | 深度分析 | `gemini-pro`、`gemini-neon` |
+| `gemini-4-carbon` | 4 Carbon（11-24 前叫 `4 Argon`） | 程式碼與複雜任務；**帳號心跳有該模型時才列出** | `gemini-argon`、`gemini-4-argon`、`gemini-carbon` |
 
-- **對應是自動的**：每個帳號的心跳會回報它目前真實可用的網頁模型，對外名字固定不變、內部自動對上網頁目前的那一代（Google 換代時不用改客戶端）。
-- **`gemini-flash-thinking` 已下線**：它只是「flash + 思考模式」的假模型，思考現在是每個模型都有的檔位（見下）。為相容舊客戶端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及內部名 `gemini-3-flash-thinking*` **仍然可以呼叫**（隱藏別名，等同 `gemini-flash`），只是不再出現在任何模型清單裡；想要思考內容請改傳檔位參數。 例外：存取金鑰的「允許模型」裡勾過 `gemini-flash-thinking` 的，這把金鑰取得的模型清單裡仍會列出它（免得只勾了它的舊金鑰拿到空清單），新簽發的金鑰請改勾 `gemini-flash`。⚠️ 行為變化：舊客戶端不傳檔位呼叫 `gemini-flash-thinking` 時，v1.6.42 會回傳思考內容，現在不再回傳（未請求的思考一律不回傳）。
+- **隨帳號心跳動態列出網頁真實名字**：每個帳號的心跳會直接取回網頁上的真實模型名（`gemini-` + slug），跨帳號取聯集並保留心跳返回順序；`gemini-4-carbon` 等非基礎模型只在至少一個帳號心跳確實回報時才列出。Google 改名或上新模型後會自動跟著變，不用升級服務。
+  - **舊名與改名歷史繼續可用（隱藏別名，不再列出）**：`gemini-pro` / `gemini-flash` / `gemini-flash-lite` / `gemini-argon` / `gemini-4-argon` 以及不帶版本號的類別名（`gemini-neon` / `gemini-hydrogen` / `gemini-carbon`，Auto 本身無版本號）皆可照常呼叫（回應裡的 `model` 欄位維持回顯請求傳入的名字）。心跳給過的舊真實名字也會持久化保存在 `data/` 中（如 `data/model-names.json`），重啟不丟，將來 Google 再改名時舊真實名字仍可繼續呼叫。
+  - **冷啟動兜底**：服務剛啟動、還沒有任何帳號心跳成功時，模型列表暫時顯示 `gemini-pro` / `gemini-flash` / `gemini-flash-lite`（不會空列表），拿到心跳後切換為網頁真實名字。
+- **`gemini-flash-thinking` 已下線**：它只是「flash + 思考模式」的假模型，思考現在是每個模型都有的檔位（見下）。為相容舊客戶端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及內部名 `gemini-3-flash-thinking*` **仍然可以呼叫**（隱藏別名，等同 `gemini-4-hydrogen` / `gemini-flash`），只是不再出現在任何模型清單裡；想要思考內容請改傳檔位參數。 例外：存取金鑰的「允許模型」裡勾過 `gemini-flash-thinking` 的，這把金鑰取得的模型清單裡仍會列出它（免得只勾了它的舊金鑰拿到空清單），新簽發的金鑰請改選 `gemini-4-hydrogen`（寫舊名 `gemini-flash` 也完全互通）。⚠️ 行為變化：舊客戶端不傳檔位呼叫 `gemini-flash-thinking` 時，v1.6.42 會回傳思考內容，現在不再回傳（未請求的思考一律不回傳）。
 - **思考三檔**：`low` / `medium` / `high`，對應網頁上的低 / 中 / 高三檔（實測 `high` 想得最深、也最慢；`low` 與 `medium` 的差別在實測裡分不太開）。
 - **預設檔 `low`**：客戶端**沒指定檔位**時（沒傳思考參數的，和要了思考但沒說幾檔的），使用「預設思考檔位」（環境變數 `DEFAULT_THINKING_LEVEL`，或面板「設定 → 思考」，儲存即時生效、無需重啟），出廠 `low`。
   - ⚠️ **速度代價**：實測預設 `low` 比不思考**平均每個請求多約 5 秒**（flash 簡單題 6.5 / 8.8 秒 → 8.6 / 16.6 秒）。最重視速度就把預設檔設成 **`off`**（不思考、最快，與舊版不傳參數時送往上游的請求完全一樣）。前置代理有首位元組逾時的（如 EdgeOne 免費版 15 秒）尤其要留意非流式請求。串流請求也有代價：沒提思考的請求，依預設檔位開啟的思考不回傳，**正文要等思考完成才開始輸出**（期間只有保活幀，連線不會被代理切斷），pro 遇到需要推理的題目 `low` 檔實測總耗時 36～47 秒 —— 對首字延遲敏感就用 `off`。⚠️ `off`（以及預設檔本身）管的是**沒指定檔位**的請求：沒傳思考參數的，和要了思考但沒說幾檔的（Claude Code 出廠請求就是這種，所以 Claude Code 預設也跟隨預設檔）。客戶端**明確指定了檔位**的（Codex / Cursor 選了 low/medium/high、Anthropic 給了 `budget_tokens`、Claude Code `/effort max` 等）預設檔管不到；要所有請求都不思考（真正最快），請關閉下方的總開關 `EXTENDED_THINKING_ENABLED=false`。
@@ -94,25 +96,25 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-pro",
+      "id": "gemini-auto",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash",
+      "id": "gemini-4-hydrogen",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash-lite",
+      "id": "gemini-4-neon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-argon",
+      "id": "gemini-4-carbon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
@@ -121,13 +123,13 @@ curl http://localhost:5918/openai/v1/models \
 }
 ```
 
-> 💡 **模型選擇建議**：四個模型對應不同的速度/品質權衡。
-> - `gemini-flash`：最快(回應約 4-5 秒),適合 **agent / 高頻 / 高並發**場景,推薦作為預設選擇。
-> - `gemini-argon`：4 Argon，面向複雜任務；只有帳號真的有 Argon 時才會出現在清單裡。
-> - `gemini-flash-lite`：最輕量最快的檔位（3.5 Flash-Lite），Pro/Flash 被限額時可作為可用兜底。
-> - `gemini-pro`：品質最高但較慢(回應約 9-17 秒,長上下文更慢),適合對品質要求高、不在意延遲的場景。
+> 💡 **模型選擇建議**：四個模型對應不同的速度／品質權衡（清單隨帳號心跳顯示網頁真實名字；舊名 `gemini-flash`、`gemini-pro`、`gemini-flash-lite`、`gemini-argon` 仍可作為隱藏別名繼續呼叫）：
+> - `gemini-4-hydrogen`（對應網頁 4 Hydrogen，舊名 `gemini-flash`）：日常主力，速度快（回應約 4-5 秒），適合 **agent / 高頻 / 高並發**場景，建議作為預設選擇。
+> - `gemini-4-carbon`（對應網頁 4 Carbon，11-24 前叫 4 Argon，舊名 `gemini-argon`）：面向程式碼與複雜任務；只有帳號心跳確實回報該模型時才會出現在清單裡。
+> - `gemini-auto`（對應網頁 Auto，舊名 `gemini-flash-lite`）：自動選擇、最輕量最快的檔位，Pro/Flash 被限額時可作為可用兜底。
+> - `gemini-4-neon`（對應網頁 4 Neon，舊名 `gemini-pro`）：深度分析、品質最高但較慢（回應約 9-17 秒，長上下文更慢），適合對品質要求高、不在意延遲的場景。
 >
-> agent 類客戶端(會並發發起大量請求)建議優先用 `gemini-flash`。本服務的串流介面為真正的增量串流,首字一生成即開始推送。
+> agent 類客戶端（會並發發起大量請求）建議優先用 `gemini-4-hydrogen`（或舊名 `gemini-flash`）。本服務的串流介面為真正的增量串流，首字一生成即開始推送。
 
 ### POST /chat/completions
 
@@ -421,9 +423,24 @@ curl http://localhost:5918/claude/v1/models \
 {
   "data": [
     {
-      "id": "gemini-2.5-pro",
+      "id": "gemini-auto",
       "type": "model",
-      "display_name": "Gemini 2.5 Pro"
+      "display_name": "gemini-auto"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "type": "model",
+      "display_name": "gemini-4-hydrogen"
+    },
+    {
+      "id": "gemini-4-neon",
+      "type": "model",
+      "display_name": "gemini-4-neon"
+    },
+    {
+      "id": "gemini-4-carbon",
+      "type": "model",
+      "display_name": "gemini-4-carbon"
     }
   ]
 }
@@ -435,7 +452,7 @@ curl http://localhost:5918/claude/v1/models \
 
 **請求：**
 ```bash
-curl http://localhost:5918/claude/v1/models/gemini-2.5-pro \
+curl http://localhost:5918/claude/v1/models/gemini-4-neon \
   -H "Authorization: Bearer sk-your-api-key"
 ```
 
@@ -626,7 +643,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-26T03:58:12.104233+00:00",
       "last_error": "",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "browser"
     },
@@ -647,7 +664,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-24T14:40:05.901123+00:00",
       "last_error": "Google session expired (login redirect)",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "server"
     }
@@ -1230,6 +1247,14 @@ curl http://localhost:5918/admin/access-keys/options \
   -H "Authorization: Bearer sk-your-api-key"
 ```
 
+**回應：**
+```json
+{
+  "accounts": [{"id": "account-0", "label": "主帳號", "status": "active"}],
+  "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"]
+}
+```
+
 ### POST /admin/access-keys
 
 簽發存取金鑰。
@@ -1244,7 +1269,7 @@ curl http://localhost:5918/admin/access-keys/options \
 | `duration_days` | number | ❌ | 有效天數，**惰性啟動**：持有人首次使用才開始計時（上限 36500） |
 | `request_limit` | integer | ❌ | 請求數上限，留空＝不限 |
 | `bound_account_ids` | string[] | ❌ | 綁定帳號，留空＝不限制 |
-| `allowed_models` | string[] | ❌ | 允許模型，留空＝不限制 |
+| `allowed_models` | string[] | ❌ | 允許模型，留空＝不限制（寫舊名或新真實名字完全互通，按同一個模型／模型族比對） |
 | `enabled` | boolean | ❌ | 是否立即可用，預設 `true` |
 
 **請求：**
@@ -1361,14 +1386,14 @@ curl http://localhost:5918/health
 
 ## 超時
 
-生成超時**按模型族分層**（非流式與流式同一個預算），可用 `GENERATE_TIMEOUTS` 覆寫：
+生成超時**按模型族分層**（非流式與流式同一個預算），可用 `GENERATE_TIMEOUTS` 覆寫（舊配置寫 `argon=` 仍接受並等同 `carbon`）：
 
 | 模型族 | 預設超時 |
 |------|------|
 | flash-lite | 60 秒 |
 | flash | 120 秒 |
 | pro | 300 秒 |
-| argon | 300 秒 |
+| carbon | 300 秒 |
 | 認不出的族 | 60 秒 |
 
 疑似生圖的請求與 `GENERATE_TIMEOUT_IMAGE`（預設 180 秒）**取大**。超時不再重試三遍 —— 失敗就是失敗。

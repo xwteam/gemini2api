@@ -53,15 +53,17 @@ As of v1.6.4, each API supports two sets of paths:
 
 ## 🧠 Models & Thinking Levels
 
-| Public model name | Maps automatically to the web model (as currently measured) | Notes |
-|------|------|------|
-| `gemini-pro` | 3.1 Pro | Highest quality, slower |
-| `gemini-flash` | 3.8 Flash | Fast; recommended default |
-| `gemini-flash-lite` | 3.5 Flash-Lite | Lightest and fastest; fallback when Pro/Flash are rate-limited |
-| `gemini-argon` | 4 Argon | For complex tasks; **listed only when an account actually has Argon** |
+| Listed Real Name | Web Name | Role | Supported Old Names / Aliases |
+|------|------|------|------|
+| `gemini-auto` | Auto | Automatic selection / adapts to your needs | `gemini-flash-lite` |
+| `gemini-4-hydrogen` | 4 Hydrogen | Everyday help (fast; recommended default) | `gemini-flash`, `gemini-hydrogen` |
+| `gemini-4-neon` | 4 Neon | Deeper analysis (higher quality, slower) | `gemini-pro`, `gemini-neon` |
+| `gemini-4-carbon` | 4 Carbon | Code & complex work; **listed only when reported by an account's heartbeat** (called `4 Argon` before 2026-11-24) | `gemini-argon`, `gemini-4-argon`, `gemini-carbon` |
 
-- **The mapping is automatic**: each account's heartbeat reports the web models it can really use right now. The public names never change; internally they follow whatever generation the web client currently serves (no client change needed when Google ships a new one).
-- **`gemini-flash-thinking` is retired**: it was only a fake "flash + thinking mode" model, and thinking is now a level every model has (see below). For backward compatibility `gemini-flash-thinking`, `gemini-2.5-flash-thinking`, `gemini-2.0-flash-thinking` and the internal names `gemini-3-flash-thinking*` **still work** (hidden aliases of `gemini-flash`); they just no longer appear in any model list. To get thinking content back, pass a level parameter instead. Exception: an access key whose allowed models include `gemini-flash-thinking` still sees it in its model lists (so an old key restricted to it does not get an empty list); tick `gemini-flash` for new keys. ⚠️ Behaviour change: an old client calling `gemini-flash-thinking` without a level got the thinking content back in v1.6.42; it no longer does (unrequested thinking is never returned).
+- **Dynamic real-name listing**: each account's heartbeat reads the current Gemini web model names (`gemini-` + slug of web name), and `/models` returns their union across accounts in heartbeat order. When Google renames or adds models on the web, the listed names follow automatically on the next heartbeat with no service upgrade needed. Non-base models such as `gemini-4-carbon` are listed only when at least one account's heartbeat actually reports them.
+  - **Old names & rename history keep working**: all legacy names (`gemini-pro`, `gemini-flash`, `gemini-flash-lite`, `gemini-argon`, `gemini-4-argon`, `gemini-carbon`) and versionless category names (`gemini-neon`, `gemini-hydrogen`, `gemini-carbon`) continue to work as hidden aliases (no longer listed). Previously seen real names from heartbeats are persisted in `data/` (e.g. `data/model-names.json`) across restarts, so older real names keep working if Google renames a model later.
+  - **Cold-start fallback**: right after startup before any account completes a successful heartbeat, model listings temporarily fall back to `gemini-pro` / `gemini-flash` / `gemini-flash-lite`, then switch to the real web names once heartbeats arrive.
+- **`gemini-flash-thinking` is retired**: it was only a fake "flash + thinking mode" model, and thinking is now a level every model has (see below). For backward compatibility `gemini-flash-thinking`, `gemini-2.5-flash-thinking`, `gemini-2.0-flash-thinking` and the internal names `gemini-3-flash-thinking*` **still work** (hidden aliases equivalent to `gemini-4-hydrogen` / `gemini-flash`); they just no longer appear in any model list. To get thinking content back, pass a level parameter instead. Exception: an access key whose allowed models include `gemini-flash-thinking` still sees it in its model lists (so an old key restricted to it does not get an empty list); for newly issued keys, select `gemini-4-hydrogen` or specify `gemini-flash` (both work interchangeably). ⚠️ Behaviour change: an old client calling `gemini-flash-thinking` without a level got the thinking content back in v1.6.42; it no longer does (unrequested thinking is never returned).
 - **Three thinking levels**: `low` / `medium` / `high`, matching the web client's low / medium / high (measured: `high` thinks deepest and longest; `low` and `medium` could not be told apart in our samples).
 - **Default level `low`**: when the client **does not specify a level** (it passed no thinking parameter at all, or asked for thinking without saying how much), the "default thinking level" applies (env var `DEFAULT_THINKING_LEVEL`, or the panel's Settings → Thinking, effective on save without a restart). Factory default `low`.
   - ⚠️ **Speed cost**: measured, the default `low` adds **about 5 s per request on average** compared with no thinking (simple flash prompts: 6.5 / 8.8 s → 8.6 / 16.6 s). If speed matters most, set the default to **`off`** (no thinking, fastest; the upstream request is identical to what older versions sent without the parameter). Watch non-streaming requests behind a proxy with a first-byte timeout (e.g. EdgeOne free tier, 15 s).Streaming pays too: for a request that does not mention thinking, the thinking turned on by the default is not returned, so **the answer only starts once thinking is done** (keep-alive frames are sent meanwhile, so proxies do not drop the connection); on a reasoning-heavy prompt, `gemini-pro` at `low` measured 36–47 s in total. If time-to-first-token matters, use `off`. ⚠️ `off` (and the default level itself) covers requests that **do not specify a level**: those that send no thinking parameter, and those that ask for thinking without saying how much (Claude Code's default requests are of this kind, so Claude Code follows the default level too). When the client **explicitly specifies a level** (Codex / Cursor picking low/medium/high, Anthropic sending `budget_tokens`, Claude Code's `/effort max`, and so on), the default level does not apply; to stop all thinking (truly fastest), turn off the master switch below (`EXTENDED_THINKING_ENABLED=false`).
@@ -100,25 +102,25 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-pro",
+      "id": "gemini-auto",
       "object": "model",
       "created": 1715970000,
       "owned_by": "google"
     },
     {
-      "id": "gemini-flash",
+      "id": "gemini-4-hydrogen",
       "object": "model",
       "created": 1715970000,
       "owned_by": "google"
     },
     {
-      "id": "gemini-flash-lite",
+      "id": "gemini-4-neon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "google"
     },
     {
-      "id": "gemini-argon",
+      "id": "gemini-4-carbon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "google"
@@ -127,13 +129,13 @@ curl http://localhost:5918/openai/v1/models \
 }
 ```
 
-> 💡 **Model Selection Guide**: The four models offer different speed/quality tradeoffs.
-> - `gemini-flash`: Fastest (response ~4-5 seconds), ideal for **agent / high-frequency / high-concurrency** scenarios, recommended as default.
-> - `gemini-argon`: 4 Argon, for complex tasks; listed only when an account actually has Argon.
-> - `gemini-flash-lite`: Lightest & fastest tier (3.5 Flash-Lite), a usable fallback when Pro/Flash hit rate limits.
-> - `gemini-pro`: Highest quality but slower (response ~9-17 seconds, longer with extended context), suitable for quality-critical scenarios where latency is not a concern.
+> 💡 **Model Selection Guide**: The four models offer different speed/quality tradeoffs (listed names follow Gemini Web dynamically; old names like `gemini-flash` / `gemini-pro` / `gemini-flash-lite` / `gemini-argon` also continue to work).
+> - `gemini-4-hydrogen` (`4 Hydrogen`, everyday help; old name `gemini-flash`): Fastest (response ~4-5 seconds), ideal for **agent / high-frequency / high-concurrency** scenarios, recommended as default.
+> - `gemini-4-carbon` (`4 Carbon`, code & complex work; old names `gemini-argon` / `gemini-4-argon` / `gemini-carbon`): For complex tasks; listed only when at least one account's heartbeat reports it (called `4 Argon` before 2026-11-24).
+> - `gemini-auto` (`Auto`, automatic selection / adapts to your needs; old name `gemini-flash-lite`): Lightest & fastest tier, a usable fallback when other tiers hit rate limits.
+> - `gemini-4-neon` (`4 Neon`, deeper analysis; old name `gemini-pro`): Highest quality but slower (response ~9-17 seconds, longer with extended context), suitable for quality-critical scenarios where latency is not a concern.
 >
-> Agent clients (which issue many concurrent requests) should prioritize `gemini-flash`. This service's streaming interface is true incremental streaming, pushing tokens as soon as the first character is generated.
+> Agent clients (which issue many concurrent requests) should prioritize `gemini-4-hydrogen` (or `gemini-flash`). This service's streaming interface is true incremental streaming, pushing tokens as soon as the first character is generated.
 
 ### POST /openai/v1/chat/completions
 
@@ -457,9 +459,24 @@ curl http://localhost:5918/claude/v1/models \
 {
   "data": [
     {
-      "id": "gemini-2.5-pro",
+      "id": "gemini-auto",
       "type": "model",
-      "display_name": "Gemini 2.5 Pro"
+      "display_name": "gemini-auto"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "type": "model",
+      "display_name": "gemini-4-hydrogen"
+    },
+    {
+      "id": "gemini-4-neon",
+      "type": "model",
+      "display_name": "gemini-4-neon"
+    },
+    {
+      "id": "gemini-4-carbon",
+      "type": "model",
+      "display_name": "gemini-4-carbon"
     }
   ]
 }
@@ -581,11 +598,28 @@ curl http://localhost:5918/gemini/v1beta/models \
 {
   "models": [
     {
-      "name": "models/gemini-2.5-pro",
-      "displayName": "Gemini 2.5 Pro",
-      "description": "Latest Gemini model",
-      "inputTokenLimit": 1000000,
-      "outputTokenLimit": 4096
+      "name": "models/gemini-auto",
+      "display_name": "gemini-auto",
+      "description": "Gemini Auto (Adapts to your needs)",
+      "supported_generation_methods": ["generateContent", "streamGenerateContent"]
+    },
+    {
+      "name": "models/gemini-4-hydrogen",
+      "display_name": "gemini-4-hydrogen",
+      "description": "Gemini 4 Hydrogen (Everyday help)",
+      "supported_generation_methods": ["generateContent", "streamGenerateContent"]
+    },
+    {
+      "name": "models/gemini-4-neon",
+      "display_name": "gemini-4-neon",
+      "description": "Gemini 4 Neon (Deeper analysis)",
+      "supported_generation_methods": ["generateContent", "streamGenerateContent"]
+    },
+    {
+      "name": "models/gemini-4-carbon",
+      "display_name": "gemini-4-carbon",
+      "description": "Gemini 4 Carbon (Code & complex work; listed only when reported by an account's heartbeat)",
+      "supported_generation_methods": ["generateContent", "streamGenerateContent"]
     }
   ]
 }
@@ -693,7 +727,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-26T03:58:12.104233+00:00",
       "last_error": "",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "browser"
     },
@@ -714,7 +748,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-24T14:40:05.901123+00:00",
       "last_error": "Google session expired (login redirect)",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "server"
     }
@@ -796,9 +830,11 @@ curl http://localhost:5918/admin/accounts \
     {
       "id": "account-0",
       "label": "Primary Account",
-      "status": "healthy",
-      "last_checked": "2025-05-17T10:30:00Z",
-      "active_requests": 2
+      "status": "active",
+      "is_healthy": true,
+      "active_requests": 2,
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
+      "models_count": 4
     }
   ]
 }
@@ -1501,6 +1537,16 @@ curl http://localhost:5918/admin/access-keys/options \
   -H "Authorization: Bearer sk-your-api-key"
 ```
 
+**Response:**
+```json
+{
+  "accounts": [
+    {"id": "account-0", "label": "Primary", "status": "active"}
+  ],
+  "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"]
+}
+```
+
 ### POST /admin/access-keys
 
 Issue access keys.
@@ -1515,7 +1561,7 @@ Issue access keys.
 | `duration_days` | number | ❌ | Valid days with **lazy activation**: the clock starts on the holder's first use (max 36500) |
 | `request_limit` | integer | ❌ | Request cap; empty = unlimited |
 | `bound_account_ids` | string[] | ❌ | Bound accounts; empty = unrestricted |
-| `allowed_models` | string[] | ❌ | Allowed models; empty = unrestricted |
+| `allowed_models` | string[] | ❌ | Allowed models; empty = unrestricted. Writing either old names or new real names works interchangeably as the same model/family |
 | `enabled` | boolean | ❌ | Usable immediately, default `true` |
 
 **Request:**
@@ -1666,14 +1712,14 @@ Set `stream: true` in request body to enable streaming.
 
 ## Timeouts
 
-The generation timeout is **tiered per model family** (the same budget for non-streaming and streaming requests) and can be overridden with `GENERATE_TIMEOUTS`:
+The generation timeout is **tiered per model family** (the same budget for non-streaming and streaming requests) and can be overridden with `GENERATE_TIMEOUTS` (old `argon=` overrides are still accepted as equivalent to `carbon`):
 
 | Model family | Default timeout |
 |------|------|
 | flash-lite | 60 s |
 | flash | 120 s |
 | pro | 300 s |
-| argon | 300 s |
+| carbon | 300 s |
 | Unrecognized family | 60 s |
 
 Requests that look like image generation take the **larger** of the tier above and `GENERATE_TIMEOUT_IMAGE` (default 180 s). A timeout is no longer retried three times — a failure is a failure.

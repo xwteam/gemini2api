@@ -104,15 +104,15 @@ cat .env | grep API_KEY
 
 ## 🧠 模型与思考档位
 
-| 对外模型名 | 自动映射到网页上的模型（当前实测） | 说明 |
-|------|------|------|
-| `gemini-pro` | 3.1 Pro | 质量最高、较慢 |
-| `gemini-flash` | 3.8 Flash | 快，推荐作为默认 |
-| `gemini-flash-lite` | 3.5 Flash-Lite | 最轻最快，Pro/Flash 被限额时的兜底 |
-| `gemini-argon` | 4 Argon | 面向复杂任务；**账号真的有 Argon 时才会列出** |
+| 列出的真实名字 | 网页名字 | 定位 | 可用的旧名/别名 |
+|------|------|------|------|
+| `gemini-auto` | Auto | 自动选择 | `gemini-flash-lite` |
+| `gemini-4-hydrogen` | 4 Hydrogen | 日常 | `gemini-flash`、`gemini-hydrogen` |
+| `gemini-4-neon` | 4 Neon | 深度分析 | `gemini-pro`、`gemini-neon` |
+| `gemini-4-carbon` | 4 Carbon（11-24 前叫 `4 Argon`） | 代码和复杂任务；**账号心跳有该模型时才列出** | `gemini-argon`、`gemini-4-argon`、`gemini-carbon` |
 
-- **映射是自动的**：每个账号的心跳会报出它当前真实可用的网页模型，对外名字固定不变、内部自动对上网页当前的那一代（Google 换代时不用改客户端）。
-- **`gemini-flash-thinking` 已下线**：它只是"flash + 思考模式"的假模型，思考现在是每个模型都有的档位（见下）。为兼容老客户端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及内部名 `gemini-3-flash-thinking*` **仍然可以调**（隐藏别名，等同 `gemini-flash`），只是不再出现在任何模型列表里；想要思考内容请改传档位参数。 例外：访问密钥的「允许模型」里勾过 `gemini-flash-thinking` 的，这把密钥拉到的模型列表里仍会列出它（免得只勾了它的旧密钥拉到空列表），新签发的密钥请改勾 `gemini-flash`。⚠️ 行为变化：老客户端不传档位调用 `gemini-flash-thinking` 时，v1.6.42 会回传思考内容，现在不再回传（没请求的思考一律不回传）。
+- **模型名随网页动态更新**：模型列表直接展示账号心跳报出的网页真实名字（`gemini-` + 网页名 slug，多账号取并集并按心跳顺序排列）；谷歌改名或上新模型后自动跟着变，无需升级服务。`gemini-4-carbon` 等非基础模型仍只在至少一个账号心跳确实报出时才列出。旧名（`gemini-pro` / `gemini-flash` / `gemini-flash-lite` / `gemini-argon` / `gemini-4-argon`）以及不带版本号的类别名（`gemini-neon` / `gemini-hydrogen` / `gemini-carbon`，Auto 本身无版本号）作为隐藏别名继续可调（不再列出）；心跳给过的旧真实名字会持久化保存在 `data/` 中（如 `data/model-names.json`），重启不丢，谷歌以后改名时旧真实名字仍可继续调用。服务刚启动、还没有任何账号心跳成功时，模型列表暂时显示 `gemini-pro` / `gemini-flash` / `gemini-flash-lite`（不会空列表），拿到心跳后切换为网页真实名字。
+- **`gemini-flash-thinking` 已下线**：它只是"flash + 思考模式"的假模型，思考现在是每个模型都有的档位（见下）。为兼容老客户端，`gemini-flash-thinking`、`gemini-2.5-flash-thinking`、`gemini-2.0-flash-thinking` 以及内部名 `gemini-3-flash-thinking*` **仍然可以调**（隐藏别名，等同 `gemini-4-hydrogen` / `gemini-flash`），只是不再出现在任何模型列表里；想要思考内容请改传档位参数。 例外：访问密钥的「允许模型」里勾过 `gemini-flash-thinking` 的，这把密钥拉到的模型列表里仍会列出它（免得只勾了它的旧密钥拉到空列表），新签发的密钥请改选 `gemini-4-hydrogen` 或填写 `gemini-flash`（两者互通）。⚠️ 行为变化：老客户端不传档位调用 `gemini-flash-thinking` 时，v1.6.42 会回传思考内容，现在不再回传（没请求的思考一律不回传）。
 - **思考三档**：`low` / `medium` / `high`，对应网页上的低 / 中 / 高三档（实测 `high` 想得最深、也最慢；`low` 与 `medium` 的差别在实测里分不太开）。
 - **默认档 `low`**：客户端**没指定档位**时（没传思考参数的，和要了思考但没说几档的），用「默认思考档位」（环境变量 `DEFAULT_THINKING_LEVEL`，或面板「设置 → 思考」，保存即时生效、无需重启），出厂 `low`。
   - ⚠️ **速度代价**：实测默认 `low` 比不思考**平均每个请求多约 5 秒**（flash 简单题 6.5 / 8.8 秒 → 8.6 / 16.6 秒）。最看重速度就把默认档设成 **`off`**（不思考、最快，与旧版不传参数时发给上游的请求完全一样）。前置代理有首字节超时的（如 EdgeOne 免费版 15 秒）尤其要留意非流式请求。流式请求也有代价：没提思考的请求按默认档开的思考不回传，**正文要等思考做完才开始出**（期间只有保活帧，连接不会被代理掐断），pro 遇到需要推理的题 `low` 档实测总耗时 36～47 秒 —— 对首字延迟敏感就用 `off`。⚠️ `off`（以及默认档本身）管的是**没指定档位**的请求：没传思考参数的，和要了思考但没说几档的（Claude Code 出厂请求就是这种，所以 Claude Code 默认也跟随默认档）。客户端**明确指定了档位**的（Codex / Cursor 选了 low/medium/high、Anthropic 给了 `budget_tokens`、Claude Code `/effort max` 等）默认档管不到；要所有请求都不思考（真正最快），关掉下面的总闸 `EXTENDED_THINKING_ENABLED=false`。
@@ -149,25 +149,25 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-pro",
+      "id": "gemini-auto",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash",
+      "id": "gemini-4-hydrogen",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash-lite",
+      "id": "gemini-4-neon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-argon",
+      "id": "gemini-4-carbon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
@@ -176,13 +176,13 @@ curl http://localhost:5918/openai/v1/models \
 }
 ```
 
-> 💡 **模型选择建议**：四个模型对应不同的速度/质量权衡。
-> - `gemini-flash`：最快（响应约 4-5 秒），适合 **agent / 高频 / 高并发**场景，推荐作为默认选择。
-> - `gemini-argon`：4 Argon，面向复杂任务；只有账号真的有 Argon 时才会出现在列表里。
-> - `gemini-flash-lite`：最轻量最快的档位（3.5 Flash-Lite），Pro/Flash 被限额时可作为可用兜底。
-> - `gemini-pro`：质量最高但较慢（响应约 9-17 秒，长上下文更慢），适合对质量要求高、不在意延迟的场景。
+> 💡 **模型选择建议**：列表展示各账号心跳报出的网页真实名字（多账号取并集并按心跳顺序排列；未拿到首次心跳前暂显示 `gemini-pro` / `gemini-flash` / `gemini-flash-lite`），四个模型对应不同的定位与速度/质量权衡（旧名作为隐藏别名仍可调用）：
+> - `gemini-auto`（网页名 `Auto`，旧名 `gemini-flash-lite`）：自动选择，适合常规轻量请求，其它档位限额时也可作为可用兜底。
+> - `gemini-4-hydrogen`（网页名 `4 Hydrogen`，旧名 `gemini-flash`）：日常主力、响应快，适合 **agent / 高频 / 高并发**场景，推荐作为默认选择。
+> - `gemini-4-neon`（网页名 `4 Neon`，旧名 `gemini-pro`）：深度分析、质量最高但较慢（长上下文更慢），适合对质量要求高、不在意延迟的场景。
+> - `gemini-4-carbon`（网页名 `4 Carbon`，11-24 前叫 `4 Argon`，旧名 `gemini-argon` / `gemini-4-argon`）：面向代码和复杂任务；只有至少一个账号心跳确实报出该模型时才会出现在列表里。
 >
-> agent 类客户端（会并发发起大量请求）建议优先用 `gemini-flash`。本服务的流式接口为真正的增量流式，首字一生成即开始推送。
+> agent 类客户端（会并发发起大量请求）建议优先用 `gemini-4-hydrogen`（旧名 `gemini-flash` 仍可用）。本服务的流式接口为真正的增量流式，首字一生成即开始推送。
 
 ### POST /openai/v1/chat/completions
 
@@ -525,9 +525,24 @@ curl http://localhost:5918/claude/v1/models \
 {
   "data": [
     {
-      "id": "gemini-2.0-flash",
+      "id": "gemini-auto",
       "type": "model",
-      "display_name": "Gemini 2.0 Flash"
+      "display_name": "gemini-auto"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "type": "model",
+      "display_name": "gemini-4-hydrogen"
+    },
+    {
+      "id": "gemini-4-neon",
+      "type": "model",
+      "display_name": "gemini-4-neon"
+    },
+    {
+      "id": "gemini-4-carbon",
+      "type": "model",
+      "display_name": "gemini-4-carbon"
     }
   ]
 }
@@ -539,7 +554,7 @@ curl http://localhost:5918/claude/v1/models \
 
 **请求**：
 ```bash
-curl http://localhost:5918/claude/v1/models/gemini-2.0-flash \
+curl http://localhost:5918/claude/v1/models/gemini-4-hydrogen \
   -H "Authorization: Bearer sk-你的API密钥"
 ```
 
@@ -647,7 +662,7 @@ curl -X POST http://localhost:5918/claude/v1/messages/count_tokens \
 
 ### GET /gemini/v1beta/models
 
-获取 Gemini 模型列表。
+获取 Gemini 模型列表（返回当前心跳发现的网页真实名字，如 `models/gemini-auto`、`models/gemini-4-hydrogen`、`models/gemini-4-neon`、`models/gemini-4-carbon`，口径与 `/openai/v1/models` 中的 Gemini 部分一致）。
 
 **请求**：
 ```bash
@@ -797,7 +812,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-26T03:58:12.104233+00:00",
       "last_error": "",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "browser"
     },
@@ -818,7 +833,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-24T14:40:05.901123+00:00",
       "last_error": "Google session expired (login redirect)",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "server"
     }
@@ -900,8 +915,11 @@ curl http://localhost:5918/admin/accounts \
     {
       "id": "account-0",
       "label": "主账号",
-      "status": "healthy",
+      "status": "active",
+      "is_healthy": true,
       "requests": 10,
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
+      "models_count": 4,
       "last_check": "2025-05-17T23:35:00"
     }
   ]
@@ -1516,7 +1534,7 @@ curl http://localhost:5918/admin/access-keys \
 
 ### GET /admin/access-keys/options
 
-面板签发表单的候选项：账号池里的账号 + 对外可见的模型名（口径与 `GET /v1/models` 一致）。
+面板签发表单的候选项：账号池里的账号 + 当前对外可见的模型名（口径与 `GET /v1/models` 一致）。
 
 **请求**：
 ```bash
@@ -1528,7 +1546,7 @@ curl http://localhost:5918/admin/access-keys/options \
 ```json
 {
   "accounts": [{"id": "account-0", "label": "我的主号", "status": "active"}],
-  "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"]
+  "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"]
 }
 ```
 
@@ -1546,7 +1564,7 @@ curl http://localhost:5918/admin/access-keys/options \
 | `duration_days` | number | ❌ | 有效天数，**惰性激活**：持有人首次使用才开始计时（上限 36500） |
 | `request_limit` | integer | ❌ | 请求数上限，留空=不限 |
 | `bound_account_ids` | string[] | ❌ | 绑定账号，留空=不限制 |
-| `allowed_models` | string[] | ❌ | 允许模型，留空=不限制 |
+| `allowed_models` | string[] | ❌ | 允许模型（写旧名或新真实名均可，按同模型/同族互通），留空=不限制 |
 | `enabled` | boolean | ❌ | 是否立即可用，默认 `true` |
 
 **请求**：
@@ -1718,14 +1736,14 @@ curl -X POST http://localhost:5918/openai/v1/chat/completions \
 
 ## 超时
 
-生成超时**按模型族分层**（非流式与流式同一个预算），可用 `GENERATE_TIMEOUTS` 覆盖：
+生成超时**按模型族分层**（非流式与流式同一个预算），可用 `GENERATE_TIMEOUTS` 覆盖（旧配置写 `argon=` 仍按 `carbon` 生效）：
 
 | 模型族 | 默认超时 |
 |------|------|
 | flash-lite | 60 秒 |
 | flash | 120 秒 |
 | pro | 300 秒 |
-| argon | 300 秒 |
+| carbon | 300 秒 |
 | 认不出的族 | 60 秒 |
 
 疑似生图的请求与 `GENERATE_TIMEOUT_IMAGE`（默认 180 秒）**取大**。超时不再重试三遍——失败就是失败。

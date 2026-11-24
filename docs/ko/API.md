@@ -67,15 +67,17 @@ v1.6.4부터 각 API는 두 가지 경로 형식을 지원합니다:
 
 ## 🧠 모델과 사고 수준
 
-| 공개 모델명 | 자동으로 매핑되는 웹 모델(현재 실측) | 설명 |
-|------|------|------|
-| `gemini-pro` | 3.1 Pro | 품질 최고, 다소 느림 |
-| `gemini-flash` | 3.8 Flash | 빠름, 기본값으로 권장 |
-| `gemini-flash-lite` | 3.5 Flash-Lite | 가장 가볍고 빠름. Pro/Flash가 사용량 제한에 걸렸을 때의 대안 |
-| `gemini-argon` | 4 Argon | 복잡한 작업용. **계정이 실제로 Argon을 가진 경우에만 목록에 표시** |
+| 목록에 표시되는 실제 이름 | 웹 이름 | 포지셔닝 | 사용 가능한 구 이름 / 별칭 |
+|------|------|------|------|
+| `gemini-auto` | Auto | 자동 선택 | `gemini-flash-lite` |
+| `gemini-4-hydrogen` | 4 Hydrogen | 일상 작업 | `gemini-flash`, `gemini-hydrogen` |
+| `gemini-4-neon` | 4 Neon | 심층 분석 | `gemini-pro`, `gemini-neon` |
+| `gemini-4-carbon` | 4 Carbon *(11-24 이전 `4 Argon`)* | 코드 및 복잡한 작업. **계정 하트비트에 해당 모델이 있을 때만 목록에 표시** | `gemini-argon`, `gemini-4-argon`, `gemini-carbon` |
 
-- **매핑은 자동입니다**: 각 계정의 하트비트가 그 계정에서 지금 실제로 쓸 수 있는 웹 모델을 알려 줍니다. 공개 이름은 바뀌지 않고, 내부적으로 웹의 현재 세대에 자동으로 맞춰집니다(Google이 세대를 바꿔도 클라이언트를 고칠 필요 없음).
-- **`gemini-flash-thinking`은 폐지되었습니다**: "flash + 사고 모드"라는 가짜 모델이었을 뿐이며, 이제 사고는 모든 모델이 가진 수준입니다(아래 참고). 기존 클라이언트 호환을 위해 `gemini-flash-thinking`, `gemini-2.5-flash-thinking`, `gemini-2.0-flash-thinking`과 내부 이름 `gemini-3-flash-thinking*`은 **계속 호출할 수 있습니다**(`gemini-flash`의 숨은 별칭). 다만 어떤 모델 목록에도 나타나지 않습니다. 사고 내용이 필요하면 수준 파라미터를 지정하세요. 예외: 액세스 키의 "허용 모델"에 `gemini-flash-thinking`이 포함된 경우 그 키의 모델 목록에는 계속 표시됩니다(그것만 허용한 예전 키가 빈 목록을 받지 않도록). 새로 발급하는 키에는 `gemini-flash`를 선택하세요. ⚠️ 동작 변경: 예전 클라이언트가 수준 없이 `gemini-flash-thinking`을 호출하면 v1.6.42에서는 사고 내용이 반환되었지만 이제는 반환되지 않습니다(요청하지 않은 사고는 반환하지 않음).
+- **웹 실제 이름이 목록에 동적으로 반영됩니다**: `/v1/models`(OpenAI), `/claude/v1/models`, `/gemini/v1beta/models` 등 모델 목록과 패널에는 각 계정의 하트비트가 보고한 Gemini 웹 실제 이름(`gemini-` + 소문자 슬러그)이 하트비트 순서대로 표시됩니다(다중 계정은 합집합으로 중복 제거). `gemini-4-carbon` 같은 비기본 모델은 최소 한 계정의 하트비트에 실제로 포함될 때만 목록에 나타납니다. Google이 웹에서 모델 이름을 바꾸거나 새 모델을 추가하면 다음 하트비트에서 자동으로 반영되며 서비스를 업그레이드할 필요가 없습니다.
+- **구 이름·별칭 호환 및 변경 이력 영구 저장**: `gemini-pro` / `gemini-flash` / `gemini-flash-lite`, `gemini-argon` / `gemini-4-argon`, 그리고 버전 번호 없는 계열명(`gemini-neon` / `gemini-hydrogen` / `gemini-carbon`) 등 기존 이름은 목록에 표시되지는 않지만 모두 숨은 별칭으로 계속 호출할 수 있습니다. 또한 하트비트로 한 번이라도 확인된 실제 이름은 `data/`(예: `data/model-names.json`)에 영구 저장되어 재시작 후에도 유지되므로, 추후 Google이 이름을 바꿔도 이전 실제 이름으로 계속 호출할 수 있습니다.
+- **초기 시작 폴백**: 서비스 시작 직후 아직 어떤 계정도 하트비트에 성공하지 못한 상태에서는 빈 목록을 방지하기 위해 임시로 `gemini-pro` / `gemini-flash` / `gemini-flash-lite`를 표시하며, 하트비트 성공 후 웹 실제 이름으로 전환됩니다.
+- **`gemini-flash-thinking`은 폐지되었습니다**: "flash + 사고 모드"라는 가짜 모델이었을 뿐이며, 이제 사고는 모든 모델이 가진 수준입니다(아래 참고). 기존 클라이언트 호환을 위해 `gemini-flash-thinking`, `gemini-2.5-flash-thinking`, `gemini-2.0-flash-thinking`과 내부 이름 `gemini-3-flash-thinking*`은 **계속 호출할 수 있습니다**(`gemini-4-hydrogen` / `gemini-flash`의 숨은 별칭). 다만 어떤 모델 목록에도 나타나지 않습니다. 사고 내용이 필요하면 수준 파라미터를 지정하세요. 예외: 액세스 키의 "허용 모델"에 `gemini-flash-thinking`이 포함된 경우 그 키의 모델 목록에는 계속 표시됩니다(그것만 허용한 예전 키가 빈 목록을 받지 않도록). 새로 발급하는 키에는 `gemini-4-hydrogen`을 선택하거나 `gemini-flash`를 지정하세요(둘 다 같은 모델로 호환됩니다). ⚠️ 동작 변경: 예전 클라이언트가 수준 없이 `gemini-flash-thinking`을 호출하면 v1.6.42에서는 사고 내용이 반환되었지만 이제는 반환되지 않습니다(요청하지 않은 사고는 반환하지 않음).
 - **사고는 3단계**: `low` / `medium` / `high`, 웹의 낮음 / 중간 / 높음에 대응합니다(실측상 `high`가 가장 깊고 가장 느림. `low`와 `medium`의 차이는 실측에서 구분되지 않았습니다).
 - **기본값 `low`**: 클라이언트가 **수준을 지정하지 않으면**(사고 파라미터를 전혀 보내지 않은 경우와, 사고는 요청했지만 몇 단계인지 밝히지 않은 경우) "기본 사고 수준"(환경 변수 `DEFAULT_THINKING_LEVEL` 또는 패널의 "설정 → 사고", 저장 즉시 적용·재시작 불필요)을 사용합니다. 출고 기본값은 `low`.
   - ⚠️ **속도 비용**: 실측상 기본 `low`는 사고하지 않을 때보다 **요청당 평균 약 5초 더 걸립니다**(flash 간단한 질문: 6.5 / 8.8초 → 8.6 / 16.6초). 속도가 가장 중요하면 기본값을 **`off`**로 설정하세요(사고 안 함·가장 빠름. 이전 버전에서 파라미터 없이 보낼 때와 업스트림 요청이 완전히 같음). 앞단 프록시에 첫 바이트 타임아웃이 있는 경우(EdgeOne 무료 15초 등) 비스트리밍 요청에 특히 주의하세요.스트리밍에도 비용이 있습니다: 사고를 요청하지 않은 요청은 기본값으로 켠 사고를 반환하지 않으므로 **본문은 사고가 끝난 뒤에 시작됩니다**(그동안 keep-alive 프레임을 보내므로 프록시가 연결을 끊지 않습니다). 추론이 필요한 질문에서 `gemini-pro`의 `low`는 실측 총 36~47초였습니다. 첫 토큰까지의 시간이 중요하면 `off`를 쓰세요. ⚠️ `off`(그리고 기본 수준 자체)는 **수준을 지정하지 않은** 요청에 적용됩니다: 사고 파라미터를 보내지 않은 요청과, 사고는 요청했지만 몇 단계인지 밝히지 않은 요청(Claude Code의 기본 설정 요청이 바로 이런 경우이므로 Claude Code도 기본 수준을 따릅니다). 클라이언트가 **수준을 명시적으로 지정한** 경우(Codex / Cursor가 low/medium/high를 고른 경우, Anthropic이 `budget_tokens`를 보낸 경우, Claude Code의 `/effort max` 등)에는 기본 수준이 적용되지 않습니다. 모든 사고를 끄려면(진짜 가장 빠름) 아래 마스터 스위치(`EXTENDED_THINKING_ENABLED=false`)를 끄세요.
@@ -240,25 +242,25 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-pro",
+      "id": "gemini-auto",
       "object": "model",
       "created": 1234567890,
       "owned_by": "google"
     },
     {
-      "id": "gemini-flash",
+      "id": "gemini-4-hydrogen",
       "object": "model",
       "created": 1234567890,
       "owned_by": "google"
     },
     {
-      "id": "gemini-flash-lite",
+      "id": "gemini-4-neon",
       "object": "model",
       "created": 1234567890,
       "owned_by": "google"
     },
     {
-      "id": "gemini-argon",
+      "id": "gemini-4-carbon",
       "object": "model",
       "created": 1234567890,
       "owned_by": "google"
@@ -267,13 +269,13 @@ curl http://localhost:5918/openai/v1/models \
 }
 ```
 
-> 💡 **모델 선택 가이드**: 네 가지 모델은 서로 다른 속도/품질 트레이드오프를 제공합니다.
-> - `gemini-flash`: 가장 빠름(응답 약 4-5초), **agent / 고빈도 / 고동시성** 시나리오에 적합, 기본 선택으로 권장.
-> - `gemini-argon`: 4 Argon, 복잡한 작업용. 계정이 실제로 Argon을 가진 경우에만 목록에 표시됩니다.
-> - `gemini-flash-lite`: 가장 가볍고 빠른 등급(3.5 Flash-Lite), Pro/Flash가 사용량 제한에 걸렸을 때 사용 가능한 대체 옵션.
-> - `gemini-pro`: 최고 품질이지만 느림(응답 약 9-17초, 긴 컨텍스트에서 더 느림), 품질 중시하고 지연 시간을 신경 쓰지 않는 시나리오에 적합.
+> 💡 **모델 선택 가이드**: 목록에 표시되는 이름은 각 계정의 하트비트가 보고한 Gemini 웹의 실제 이름입니다(구 이름 `gemini-flash-lite` / `gemini-flash` / `gemini-pro` / `gemini-argon`도 별칭으로 계속 호출 가능).
+> - `gemini-auto`(웹: `Auto`, 구 `gemini-flash-lite`): 자동 선택 등급. 가장 가볍고 빠르며, 다른 모델이 사용량 제한에 걸렸을 때 대체 옵션으로 활용할 수 있습니다.
+> - `gemini-4-hydrogen`(웹: `4 Hydrogen`, 구 `gemini-flash`): 일상 작업용. 가장 빠르며(응답 약 4-5초), **agent / 고빈도 / 고동시성** 시나리오의 기본 선택으로 권장합니다.
+> - `gemini-4-neon`(웹: `4 Neon`, 구 `gemini-pro`): 심층 분석용. 최고 품질이지만 지연 시간이 깁니다(응답 약 9-17초, 긴 컨텍스트에서 더 느림).
+> - `gemini-4-carbon`(웹: `4 Carbon`, 11-24 이전 `4 Argon` / 구 `gemini-argon`): 코드 및 복잡한 작업용. 계정이 실제로 해당 모델을 가진 경우에만 목록에 표시됩니다.
 >
-> agent 클라이언트(많은 동시 요청 발행)는 `gemini-flash`를 우선 사용하는 것이 좋습니다. 본 서비스의 스트리밍 인터페이스는 진정한 증분 스트리밍으로, 첫 글자가 생성되는 즉시 푸시를 시작합니다.
+> agent 클라이언트(많은 동시 요청 발행)는 `gemini-4-hydrogen`(`gemini-flash`)을 우선 사용하는 것이 좋습니다. 본 서비스의 스트리밍 인터페이스는 진정한 증분 스트리밍으로, 첫 글자가 생성되는 즉시 푸시를 시작합니다.
 
 
 ### POST /openai/v1/responses
@@ -537,6 +539,39 @@ curl http://localhost:5918/claude/v1/models \
   -H "Authorization: Bearer sk-당신의키"
 ```
 
+**응답**:
+
+```json
+{
+  "data": [
+    {
+      "id": "gemini-auto",
+      "type": "model",
+      "created_at": "2026-11-24T12:00:00Z",
+      "display_name": "gemini-auto"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "type": "model",
+      "created_at": "2026-11-24T12:00:00Z",
+      "display_name": "gemini-4-hydrogen"
+    },
+    {
+      "id": "gemini-4-neon",
+      "type": "model",
+      "created_at": "2026-11-24T12:00:00Z",
+      "display_name": "gemini-4-neon"
+    },
+    {
+      "id": "gemini-4-carbon",
+      "type": "model",
+      "created_at": "2026-11-24T12:00:00Z",
+      "display_name": "gemini-4-carbon"
+    }
+  ]
+}
+```
+
 ### POST /claude/v1/messages/count_tokens
 
 Token 개수 추정
@@ -745,7 +780,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-26T03:58:12.104233+00:00",
       "last_error": "",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "browser"
     },
@@ -766,7 +801,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-24T14:40:05.901123+00:00",
       "last_error": "Google session expired (login redirect)",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "server"
     }
@@ -851,7 +886,9 @@ curl http://localhost:5918/admin/accounts \
       "label": "주 계정",
       "status": "active",
       "last_check": "2025-05-17T10:30:00Z",
-      "requests_count": 150
+      "requests_count": 150,
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
+      "models_count": 4
     }
   ]
 }
@@ -1339,6 +1376,15 @@ curl http://localhost:5918/admin/access-keys/options \
   -H "Authorization: Bearer sk-당신의키"
 ```
 
+**응답**:
+
+```json
+{
+  "accounts": [{"id": "account-0", "label": "메인 계정", "status": "active"}],
+  "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"]
+}
+```
+
 ### POST /admin/access-keys
 
 액세스 키 발급
@@ -1353,7 +1399,7 @@ curl http://localhost:5918/admin/access-keys/options \
 | `duration_days` | number | ❌ | 유효 일수. **지연 활성화**: 소지자의 최초 사용부터 계산 시작 (최대 36500) |
 | `request_limit` | integer | ❌ | 요청 한도. 비우면 무제한 |
 | `bound_account_ids` | string[] | ❌ | 바인딩 계정. 비우면 제한 없음 |
-| `allowed_models` | string[] | ❌ | 허용 모델. 비우면 제한 없음 |
+| `allowed_models` | string[] | ❌ | 허용 모델. 비우면 제한 없음. 구 이름(예: `gemini-flash`)과 새 실제 이름(예: `gemini-4-hydrogen`)은 같은 모델/패밀리로 상호 호환됩니다 |
 | `enabled` | boolean | ❌ | 즉시 사용 가능 여부. 기본 `true` |
 
 **요청**:
@@ -1538,14 +1584,14 @@ console.log(data.choices[0].message.content);
 
 ## 타임아웃
 
-생성 타임아웃은 **모델 패밀리 단위로 구분**되며(비스트리밍과 스트리밍이 같은 예산) `GENERATE_TIMEOUTS`로 재정의할 수 있습니다:
+생성 타임아웃은 **모델 패밀리 단위로 구분**되며(비스트리밍과 스트리밍이 같은 예산) `GENERATE_TIMEOUTS`로 재정의할 수 있습니다(구 설정의 `argon=`도 `carbon`과 동일하게 인식됩니다):
 
 | 모델 패밀리 | 기본 타임아웃 |
 |------|------|
 | flash-lite | 60초 |
 | flash | 120초 |
 | pro | 300초 |
-| argon | 300초 |
+| carbon | 300초 |
 | 인식되지 않는 패밀리 | 60초 |
 
 이미지 생성으로 추정되는 요청은 위 값과 `GENERATE_TIMEOUT_IMAGE`(기본 180초) 중 **더 큰 쪽**을 채택합니다. 타임아웃은 더 이상 3번 재시도하지 않습니다 —— 실패는 실패입니다.

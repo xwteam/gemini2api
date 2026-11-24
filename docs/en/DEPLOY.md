@@ -344,7 +344,7 @@ kill -9 <PID>
 | `USAGE_STATS_ENABLED` | true | Enable usage statistics (time-series snapshots + persistence) |
 | `USAGE_STATS_INTERVAL` | 300 | Snapshot collection interval (seconds) |
 | `USAGE_STATS_RETENTION_DAYS` | 30 | Historical data retention (days) |
-| `MODEL_WHITELIST` | — | Model whitelist (comma-separated; empty = no filtering; when set, filters each `/models` list) |
+| `MODEL_WHITELIST` | — | Model whitelist (comma-separated; empty = no filtering; when set, filters each `/models` list; writing either old names or new real names works interchangeably as the same model/family) |
 | `CHAT_CLEANUP_ENABLED` | true | Enable auto-cleanup of Gemini web sessions |
 | `CHAT_CLEANUP_KEEP_HOURS` | 24.0 | Web session retention (hours); older ones are cleaned up |
 | `CHAT_CLEANUP_INTERVAL_HOURS` | 6.0 | Auto-cleanup task run interval (hours) |
@@ -358,9 +358,9 @@ kill -9 <PID>
 | `FALLBACK_MODELS` | — | Fallback models (comma-separated, tried in order); empty = automatically use all "chat-capable" third-party models in the pool (excludes non-chat models such as image/video/audio/embedding by name) with random round-robin, switching to the next one whenever one fails (errors or empty) |
 | `BARD_ERROR_CODES` | — | Lookup table mapping the codes of reject blocks Gemini returns inside an **HTTP 200** body to a meaning, e.g. `1152=rate_limit,404=session_expired`; categories are `rate_limit` / `session_expired` / `context_too_long` / `captcha`. **While empty, every reject block is treated as unknown (cool down that account + retry on another), which is a deliberate safe fallback** |
 | `DEFAULT_THINKING_LEVEL` | low | Default level when the client does not specify a level: `off` / `low` / `medium` / `high`. `low` adds about 5 s per request on average (measured); set `off` for maximum speed. Switch it live in the panel (Settings → Thinking) |
-| `GENERATE_TIMEOUTS` | — | Per-model-family override for the non-streaming generation timeout (seconds), e.g. `pro=300,flash=120`; empty = built-in tiers flash-lite 60 / flash 120 / pro 300 / argon 300 (60 for unrecognized families). ⚠️ This is a **time-to-first-byte** timeout and must stay below your front proxy's first-byte limit |
+| `GENERATE_TIMEOUTS` | — | Per-model-family override for the non-streaming generation timeout (seconds), e.g. `pro=300,flash=120`; empty = built-in tiers flash-lite 60 / flash 120 / pro 300 / carbon 300 (60 for unrecognized families; old `argon=` overrides are still accepted as equivalent to `carbon`). ⚠️ This is a **time-to-first-byte** timeout and must stay below your front proxy's first-byte limit |
 | `GENERATE_TIMEOUT_IMAGE` | 180.0 | Non-streaming timeout (seconds) for requests that look like image generation. Takes the larger of this and the model-family tier, and only applies to the non-streaming path |
-| `TOKEN_PRICES` | — | Price table for the estimated USD on access-key usage, e.g. `gemini-pro=2.0/12.0` (public model name=input/output price, USD per million tokens). Empty uses the built-in defaults. Statistics only, never a limit, and not a bill |
+| `TOKEN_PRICES` | — | Price table for the estimated USD on access-key usage, e.g. `gemini-4-neon=2.0/12.0` or `gemini-pro=2.0/12.0` (model name=input/output price, USD per million tokens; accepts both new real names and old names). Empty uses the built-in defaults. Statistics only, never a limit, and not a bill |
 
 ## Docker Compose Reference
 

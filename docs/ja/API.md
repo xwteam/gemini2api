@@ -59,15 +59,15 @@ v1.6.4 以降、各 API は 2 種類のパスに対応しています。
 
 ## 🧠 モデルと思考レベル
 
-| 公開モデル名 | 自動でマッピングされる Web 版のモデル（現時点の実測） | 説明 |
-|------|------|------|
-| `gemini-pro` | 3.1 Pro | 最高品質、やや遅い |
-| `gemini-flash` | 3.8 Flash | 高速。既定としておすすめ |
-| `gemini-flash-lite` | 3.5 Flash-Lite | 最軽量・最速。Pro/Flash がレート制限されたときの代替 |
-| `gemini-argon` | 4 Argon | 複雑なタスク向け。**アカウントが実際に Argon を持つ場合のみ一覧に出ます** |
+| 一覧に出る実名 | Web 版の名前 | 位置づけ | 利用可能な旧名・別名 |
+|------|------|------|------|
+| `gemini-auto` | `Auto` | 自動選択 | `gemini-flash-lite` |
+| `gemini-4-hydrogen` | `4 Hydrogen` | 日常用途 | `gemini-flash`、`gemini-hydrogen` |
+| `gemini-4-neon` | `4 Neon` | 深い分析 | `gemini-pro`、`gemini-neon` |
+| `gemini-4-carbon` | `4 Carbon`（11-24 以前は `4 Argon`） | コーディング・複雑な作業。**アカウントのハートビートにある場合のみ一覧に表示** | `gemini-argon`、`gemini-4-argon`、`gemini-carbon` |
 
-- **マッピングは自動です**：各アカウントのハートビートが、そのアカウントで今実際に使える Web 版モデルを報告します。公開名は変わらず、内部では Web 版の現行世代に自動で追従します（Google が世代交代してもクライアントの変更は不要）。
-- **`gemini-flash-thinking` は廃止しました**：これは「flash + 思考モード」という見せかけのモデルにすぎず、思考は今やすべてのモデルが持つレベルになりました（下記）。旧クライアント互換のため、`gemini-flash-thinking`・`gemini-2.5-flash-thinking`・`gemini-2.0-flash-thinking` と内部名 `gemini-3-flash-thinking*` は**引き続き呼び出せます**（`gemini-flash` の隠しエイリアス）。ただしどのモデル一覧にも出ません。思考内容が必要な場合はレベルパラメータを指定してください。 例外：アクセスキーの「許可モデル」に `gemini-flash-thinking` が含まれている場合、そのキーのモデル一覧には引き続き表示されます（それだけを許可した古いキーで一覧が空にならないように）。新しく発行するキーでは `gemini-flash` を選んでください。⚠️ 挙動の変更：旧クライアントがレベルを指定せずに `gemini-flash-thinking` を呼ぶと v1.6.42 では思考内容が返っていましたが、現在は返りません（要求されていない思考は返しません）。
+- **一覧は Web 版の実名に自動追従します**：各アカウントのハートビートが返す Web 版の実モデル名から `gemini-` + スラッグ（例：`4 Neon` → `gemini-4-neon`）を動的に生成し、複数アカウントの和集合（ハートビート順）を一覧表示します。Google が名称変更や新モデル追加を行った場合も次のハートビートで自動追従するため、サービスのアップグレードは不要です（`gemini-4-carbon` などの非ベースモデルは、少なくとも 1 つのアカウントのハートビートで返された場合のみ一覧に出る規則もそのままです）。起動直後でまだどのアカウントもハートビートに成功していない間は、空一覧を防ぐため一時的に `gemini-pro` / `gemini-flash` / `gemini-flash-lite` を表示し、ハートビート取得後に Web の実名へ切り替わります。従来の名前（`gemini-pro` / `gemini-flash` / `gemini-flash-lite` / `gemini-argon` / `gemini-4-argon`）とバージョン番号なしの名前（`gemini-neon` / `gemini-hydrogen` / `gemini-carbon`）は隠しエイリアスとして引き続き呼び出せます（一覧には出ません）。また、ハートビートで一度出現した実モデル名は `data/`（例：`data/model-names.json`）に保存され再起動後も残るため、将来 Google が改名しても旧実名を引き続き呼び出せます。
+- **`gemini-flash-thinking` は廃止しました**：これは「flash + 思考モード」という見せかけのモデルにすぎず、思考は今やすべてのモデルが持つレベルになりました（下記）。旧クライアント互換のため、`gemini-flash-thinking`・`gemini-2.5-flash-thinking`・`gemini-2.0-flash-thinking` と内部名 `gemini-3-flash-thinking*` は**引き続き呼び出せます**（`gemini-4-hydrogen` / `gemini-flash` と同等の隠しエイリアス）。ただしどのモデル一覧にも出ません。思考内容が必要な場合はレベルパラメータを指定してください。 例外：アクセスキーの「許可モデル」に `gemini-flash-thinking` が含まれている場合、そのキーのモデル一覧には引き続き表示されます（それだけを許可した古いキーで一覧が空にならないように）。新しく発行するキーでは `gemini-4-hydrogen` を選択するか `gemini-flash` を指定してください（どちらも同等に動作します）。⚠️ 挙動の変更：旧クライアントがレベルを指定せずに `gemini-flash-thinking` を呼ぶと v1.6.42 では思考内容が返っていましたが、現在は返りません（要求されていない思考は返しません）。
 - **思考は 3 段階**：`low` / `medium` / `high`。Web 版の低 / 中 / 高に対応します（実測では `high` が最も深く最も遅い。`low` と `medium` の差は実測では見分けられませんでした）。
 - **既定は `low`**：クライアントが**レベルを指定しない**場合（思考パラメータをまったく送らない場合と、思考は要求したがレベルを示さない場合）は「既定の思考レベル」（環境変数 `DEFAULT_THINKING_LEVEL`、またはパネルの「設定 → 思考」。保存すると即時反映、再起動不要）を使います。出荷時は `low`。
   - ⚠️ **速度のコスト**：実測では既定の `low` は思考なしより**1 リクエストあたり平均約 5 秒遅く**なります（flash の簡単な質問：6.5 / 8.8 秒 → 8.6 / 16.6 秒）。速度を最優先するなら既定を **`off`** にしてください（思考なし・最速。旧版でパラメータを付けなかったときと上流へのリクエストが完全に同じ）。前段プロキシに初回バイトのタイムアウトがある場合（EdgeOne 無料版の 15 秒など）は非ストリーミングリクエストに特に注意してください。ストリーミングにもコストがあります：思考を要求していないリクエストでは既定値で有効にした思考を返さないため、**本文は思考が終わってから始まります**（その間はキープアライブを送るのでプロキシに切断されません）。推論が必要な質問では `gemini-pro` の `low` は実測で合計 36～47 秒でした。最初のトークンまでの時間が重要なら `off` を使ってください。⚠️ `off`（および既定レベルそのもの）が対象とするのは**レベルが指定されていない**リクエストです：思考パラメータを送らないものと、思考は要求したがレベルを示さないもの（Claude Code の初期設定のリクエストがこれに当たるため、Claude Code も既定レベルに従います）。クライアントが**明示的にレベルを指定した**場合（Codex / Cursor が low/medium/high を選んだ場合、Anthropic が `budget_tokens` を送った場合、Claude Code の `/effort max` など）、既定レベルは効きません。すべての思考を止める（本当に最速にする）には下のマスタースイッチ（`EXTENDED_THINKING_ENABLED=false`）をオフにしてください。
@@ -108,25 +108,25 @@ curl http://localhost:5918/openai/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "gemini-pro",
+      "id": "gemini-auto",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash",
+      "id": "gemini-4-hydrogen",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-flash-lite",
+      "id": "gemini-4-neon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
     },
     {
-      "id": "gemini-argon",
+      "id": "gemini-4-carbon",
       "object": "model",
       "created": 1715970000,
       "owned_by": "gemini"
@@ -135,13 +135,13 @@ curl http://localhost:5918/openai/v1/models \
 }
 ```
 
-> 💡 **モデル選択ガイド**：4つのモデルは異なる速度/品質のトレードオフを提供します。
-> - `gemini-flash`：最速(応答約4-5秒)、**agent / 高頻度 / 高並行**シナリオに最適、デフォルト推奨。
-> - `gemini-argon`：4 Argon。複雑なタスク向けで、アカウントが実際に Argon を持つ場合のみ一覧に出ます。
-> - `gemini-flash-lite`：最軽量・最速のティア（3.5 Flash-Lite）。Pro/Flash がレート制限に達したときの利用可能なフォールバック。
-> - `gemini-pro`：最高品質だが遅い(応答約9-17秒、長いコンテキストではさらに遅い)、品質重視でレイテンシを気にしないシナリオに適しています。
+> 💡 **モデル選択ガイド**：一覧にはアカウントのハートビートで返された Web 版の実名（順番もハートビート準拠）が表示されます。4 つのモデルはそれぞれ用途と速度/品質のバランスが異なります。
+> - `gemini-4-hydrogen`（旧名 `gemini-flash`）：`4 Hydrogen`（日常用途）。高速で **agent / 高頻度 / 高並行** シナリオに最適、デフォルト推奨。
+> - `gemini-4-carbon`（旧名 `gemini-argon` / `gemini-4-argon`）：`4 Carbon`（11-24 以前は `4 Argon`）。コーディングや複雑な作業向けで、アカウントのハートビートにこのモデルが含まれる場合のみ一覧に出ます。
+> - `gemini-auto`（旧名 `gemini-flash-lite`）：`Auto`。自動選択・最軽量ティアで、上位モデルがレート制限に達したときの代替にも使えます。
+> - `gemini-4-neon`（旧名 `gemini-pro`）：`4 Neon`。深い分析向けで高品質ですがやや遅いため、品質重視でレイテンシを気にしないシナリオに適しています。
 >
-> agentクライアント(多数の並行リクエストを発行)は `gemini-flash` を優先すべきです。本サービスのストリーミングインターフェースは真の増分ストリーミングで、最初の文字が生成されるとすぐにプッシュを開始します。
+> agent クライアント（多数の並行リクエストを発行）は `gemini-4-hydrogen`（または旧名 `gemini-flash`）を優先すべきです。本サービスのストリーミングインターフェースは真の増分ストリーミングで、最初の文字が生成されるとすぐにプッシュを開始します。
 
 ### POST /openai/v1/chat/completions
 
@@ -455,9 +455,24 @@ curl http://localhost:5918/claude/v1/models \
 {
   "data": [
     {
-      "id": "gemini-2.5-pro",
+      "id": "gemini-auto",
       "type": "model",
-      "display_name": "Gemini 2.5 Pro"
+      "display_name": "gemini-auto"
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "type": "model",
+      "display_name": "gemini-4-hydrogen"
+    },
+    {
+      "id": "gemini-4-neon",
+      "type": "model",
+      "display_name": "gemini-4-neon"
+    },
+    {
+      "id": "gemini-4-carbon",
+      "type": "model",
+      "display_name": "gemini-4-carbon"
     }
   ]
 }
@@ -580,11 +595,28 @@ curl http://localhost:5918/gemini/v1beta/models \
 {
   "models": [
     {
-      "name": "models/gemini-2.5-pro",
-      "displayName": "Gemini 2.5 Pro",
-      "description": "Most capable model",
-      "inputTokenLimit": 1000000,
-      "outputTokenLimit": 4096
+      "name": "models/gemini-auto",
+      "display_name": "gemini-auto",
+      "description": "Auto, adapts to your needs",
+      "supported_generation_methods": ["generateContent", "streamGenerateContent"]
+    },
+    {
+      "name": "models/gemini-4-hydrogen",
+      "display_name": "gemini-4-hydrogen",
+      "description": "4 Hydrogen, everyday help",
+      "supported_generation_methods": ["generateContent", "streamGenerateContent"]
+    },
+    {
+      "name": "models/gemini-4-neon",
+      "display_name": "gemini-4-neon",
+      "description": "4 Neon, deeper analysis",
+      "supported_generation_methods": ["generateContent", "streamGenerateContent"]
+    },
+    {
+      "name": "models/gemini-4-carbon",
+      "display_name": "gemini-4-carbon",
+      "description": "4 Carbon, code & complex work; listed only when an account actually has it",
+      "supported_generation_methods": ["generateContent", "streamGenerateContent"]
     }
   ]
 }
@@ -709,7 +741,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-26T03:58:12.104233+00:00",
       "last_error": "",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "browser"
     },
@@ -730,7 +762,7 @@ curl http://localhost:5918/admin/status \
       "last_success_at": "2026-10-24T14:40:05.901123+00:00",
       "last_error": "Google session expired (login redirect)",
       "last_error_at": null,
-      "models": ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"],
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
       "models_count": 4,
       "keepalive_mode": "server"
     }
@@ -816,8 +848,10 @@ curl http://localhost:5918/admin/accounts \
     {
       "id": "account-0",
       "label": "メインアカウント",
-      "status": "healthy",
-      "last_used": "2025-05-17T10:30:00Z"
+      "status": "active",
+      "last_used": "2026-10-26T03:58:10.512014+00:00",
+      "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"],
+      "models_count": 4
     }
   ]
 }
@@ -1375,6 +1409,14 @@ curl http://localhost:5918/admin/access-keys/options \
   -H "Authorization: Bearer sk-あなたのキー"
 ```
 
+**レスポンス:**
+```json
+{
+  "accounts": [{"id": "account-0", "label": "メインアカウント", "status": "active"}],
+  "models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"]
+}
+```
+
 ### POST /admin/access-keys
 
 アクセスキーを発行します。
@@ -1389,7 +1431,7 @@ curl http://localhost:5918/admin/access-keys/options \
 | `duration_days` | number | ❌ | 有効日数。**遅延アクティベーション**：保持者の初回利用から計時開始（上限 36500） |
 | `request_limit` | integer | ❌ | リクエスト上限。空で無制限 |
 | `bound_account_ids` | string[] | ❌ | バインドするアカウント。空で制限なし |
-| `allowed_models` | string[] | ❌ | 許可するモデル。空で制限なし |
+| `allowed_models` | string[] | ❌ | 許可するモデル。空で制限なし（旧名と Web 実名のどちらを指定しても同一モデル／ファミリーとして相互に通用します） |
 | `enabled` | boolean | ❌ | 即座に使用可能にするか。デフォルト `true` |
 
 **リクエスト:**
@@ -1491,14 +1533,14 @@ X-RateLimit-Reset: 1715970060
 
 ## タイムアウト
 
-生成タイムアウトは**モデルファミリー単位で段階化**されており（非ストリーミングとストリーミングで同じ予算）、`GENERATE_TIMEOUTS` で上書きできます。
+生成タイムアウトは**モデルファミリー単位で段階化**されており（非ストリーミングとストリーミングで同じ予算）、`GENERATE_TIMEOUTS` で上書きできます（旧設定の `argon=` も引き続き `carbon` と同等に受理されます）。
 
 | モデルファミリー | デフォルトのタイムアウト |
 |------|------|
 | flash-lite | 60 秒 |
 | flash | 120 秒 |
 | pro | 300 秒 |
-| argon | 300 秒 |
+| carbon | 300 秒 |
 | 認識できないファミリー | 60 秒 |
 
 画像生成と推定されるリクエストは、上記の値と `GENERATE_TIMEOUT_IMAGE`（デフォルト 180 秒）のうち**大きい方**を採用します。タイムアウトは 3 回リトライしなくなりました —— 失敗は失敗です。

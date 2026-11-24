@@ -341,7 +341,7 @@ kill -9 <PID>
 | `USAGE_STATS_ENABLED` | true | 啟用用量統計（時序快照 + 持久化） |
 | `USAGE_STATS_INTERVAL` | 300 | 快照採集間隔（秒） |
 | `USAGE_STATS_RETENTION_DAYS` | 30 | 歷史數據保留天數 |
-| `MODEL_WHITELIST` | — | 模型白名單（逗號分隔，為空則不過濾；非空時過濾各 `/models` 列表） |
+| `MODEL_WHITELIST` | — | 模型白名單（逗號分隔，為空則不過濾；非空時過濾各 `/models` 列表；寫舊名或新真實名字完全互通，按同一個模型／模型族比對） |
 | `CHAT_CLEANUP_ENABLED` | true | 啟用 Gemini 網頁端會話自動清理 |
 | `CHAT_CLEANUP_KEEP_HOURS` | 24.0 | 網頁會話保留時長（小時），超過則清理 |
 | `CHAT_CLEANUP_INTERVAL_HOURS` | 6.0 | 自動清理任務運行間隔（小時） |
@@ -355,9 +355,9 @@ kill -9 <PID>
 | `FALLBACK_MODELS` | — | 兜底模型（逗號分隔、按序嘗試）；留空＝自動選用池中所有「適合聊天」的第三方（按名稱排除 image/video/audio/embedding 等非聊天模型）並隨機輪詢、一個失敗（報錯/空）就換下一個 |
 | `BARD_ERROR_CODES` | — | Gemini 在 **HTTP 200** 內文裡回傳的拒絕區塊的 code→語意對照表，形如 `1152=rate_limit,404=session_expired`；分類可取 `rate_limit` / `session_expired` / `context_too_long` / `captcha`。**留空時所有拒絕區塊按未知處理（冷卻該帳號 + 換帳號重試），這是刻意的安全兜底** |
 | `DEFAULT_THINKING_LEVEL` | low | 客戶端沒指定檔位時的預設檔位 `off` / `low` / `medium` / `high`。`low` 實測每請求平均多約 5 秒，最重視速度設 `off`；面板「設定 → 思考」可即時切換 |
-| `GENERATE_TIMEOUTS` | — | 非流式生成超時按模型族覆寫（秒），形如 `pro=300,flash=120`；留空＝內建分層 flash-lite 60 / flash 120 / pro 300 / argon 300（認不出的族回落 60）。⚠️ 這是**首位元組**超時，必須小於前置代理的首位元組上限 |
+| `GENERATE_TIMEOUTS` | — | 非流式生成超時按模型族覆寫（秒），形如 `pro=300,flash=120`；留空＝內建分層 flash-lite 60 / flash 120 / pro 300 / carbon 300（認不出的族回落 60；舊配置寫 `argon=` 仍接受並等同 `carbon`）。⚠️ 這是**首位元組**超時，必須小於前置代理的首位元組上限 |
 | `GENERATE_TIMEOUT_IMAGE` | 180.0 | 疑似生圖請求的非流式超時（秒）。與模型族檔位取大，只作用於非流式路徑 |
-| `TOKEN_PRICES` | — | 存取金鑰用量的美元估算價格表，形如 `gemini-pro=2.0/12.0`（公開模型名=輸入價/輸出價，單位 USD／百萬 token）。留空用內建預設值。只統計不限額，且不是帳單 |
+| `TOKEN_PRICES` | — | 存取金鑰用量的美元估算價格表，形如 `gemini-4-neon=2.0/12.0`（模型名=輸入價/輸出價，單位 USD／百萬 token；寫新真實名字或 `gemini-pro` 等舊名皆可，按同一個模型族計價）。留空用內建預設值。只統計不限額，且不是帳單 |
 
 ## Docker Compose 參考
 
