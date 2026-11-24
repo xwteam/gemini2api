@@ -1132,7 +1132,7 @@ GEMINI_MODELS = {
     # 而发错档位的表现是"回答质量下降"，不报错、几周都发现不了。
     # 这一行只是兜底：心跳跑通后会被 _parse_models_from_status 采纳到的真实条目覆盖
     # （同 id，capacity 换成账号级实测值）。它同时是这个 id 的**族名来源**：谷歌给它改了
-    # 类别名（Argon → Carbon），心跳发现时按 id 认族（见 _discovered_family），族名不跟着变。
+    # 类别名（Argon → Carbon），心跳发现时按 id 认族（见 _hardcoded_extra_family），族名不跟着变。
     "gemini-4-argon": {"id": "95a4c0abcba24364", "capacity": 2, "pro_only": True, "family": "carbon", "model_number": 8},
 }
 
@@ -1306,7 +1306,8 @@ def _entry_category(entry: list):
 
     真实 Carbon 条目这两格都是 "Carbon"（11-24 前是 "Argon"）—— 这是**不带版本号**的产品族名字，
     所以用它当 family 键；名字（"4 Carbon"）带版本号，Google 改一次版本号就会变成另一个 family。
-    写死表里已有的 id 按 id 认族（见 _discovered_family），类别名改了族名也不变。
+    写死表里已有的 id 按 id 认族（见 _hardcoded_extra_family），类别名改了族名也不变；
+    别的 id 用去掉版本号的类别名（"5 Xenon" → xenon，见 _category_family）。
     """
     for idx in (1, 10):
         value = _entry_field(entry, idx)
@@ -1371,13 +1372,38 @@ def _derived_alias_family(name: str) -> str | None:
     return families.pop() if len(families) == 1 else None
 
 
-def _discovered_family(category: str, model_id: str) -> str:
-    """心跳发现的条目的族名：写死表里有这个 id 的非契约行 → 用那一行的族（谷歌给同一个模型改了
-    类别名，Argon → Carbon，族名不跟着变）；否则用类别名的 slug（再按 _FAMILY_RENAMES 归一）。"""
+def _hardcoded_extra_family(model_id: str) -> str | None:
+    """写死表里这个 id 的**非契约**行的族名（95a4… → carbon）；没有 → None。
+
+    谷歌给同一个模型改类别名（Argon → Carbon、Carbon → 4 Carbon）时族名不跟着变，
+    类别名怎么写都不影响它：这种条目根本不看类别名。"""
     for info in GEMINI_MODELS.values():
         if info["id"] == model_id and info["family"] not in _BASE_FAMILIES:
             return str(info["family"])
-    return canonical_family(_discover_slug(category))
+    return None
+
+
+def _category_family(category) -> str | None:
+    """表外条目的族名：类别名 slug 后**去掉版本号成分**（"4 Carbon" → carbon、"5 Xenon" → xenon），
+    再按 _FAMILY_RENAMES 归一；不是合法族名 / 是基础族 / 含契约词 → None。
+
+    族键必须与版本无关（规格 R1）：§0 里 Hydrogen 的类别已经是 "4 Hydrogen"，类别名带版本号是谷歌
+    现在的常态。过去拿整段 slug（"4-carbon"）去对 _DISCOVER_FAMILY_RE（要求字母开头），整条被丢，
+    gemini-argon / gemini-carbon 一起 400。
+    """
+    if not isinstance(category, str):
+        return None
+    parts = [p for p in _discover_slug(category).split("-") if p and not _VERSION_PART_RE.match(p)]
+    slug = "-".join(parts)
+    if not _DISCOVER_FAMILY_RE.match(slug) or slug in _BASE_FAMILIES:
+        return None
+    # family 也不许含契约词：category="Flash Thinking" 会得到 family "flash-thinking" ——
+    # 那是已下线的旧 family，它的公开名已经是指向 gemini-flash 的隐藏别名，不该被心跳
+    # 重新"复活"成一个独立模型；同理 "Pro Max" 这类也不是一个新产品族。
+    if _DISCOVER_RESERVED_WORDS.intersection(parts):
+        return None
+    family = canonical_family(slug)
+    return None if family in _BASE_FAMILIES else family
 
 
 def _describe_discovered_model(entry: list, capacity: int) -> dict | None:
@@ -1394,7 +1420,8 @@ def _describe_discovered_model(entry: list, capacity: int) -> dict | None:
 
     校验链（任一不过就返回 None，由调用方照旧打那条 WARNING）：
       - model_id 必须是 16 位小写十六进制（真实 id 全是这个形态）
-      - 必须有 category，且 slug 后是合法 family，且**不在 _BASE_FAMILIES 里**
+      - 族名：写死表里有这个 id 的非契约行就用那一行的族（不看类别名）；否则必须有 category，
+        slug 后去掉版本号是合法 family，且**不在 _BASE_FAMILIES 里**、不含契约词
       - 必须有真实名字，且 slug 后是合法公开名，且不顶掉任何既有对外名字
       - model_number 必须是正整数（bool 不算）。参考实现缺这一格时默认 1，我们不猜：
         对一个完全不认识的模型猜错编号就是"静默发成另一个模型"，而这正是最该防的事。
@@ -1403,18 +1430,11 @@ def _describe_discovered_model(entry: list, capacity: int) -> dict | None:
     if not isinstance(mid, str) or not _DISCOVER_ID_RE.match(mid):
         return None
 
-    category = _entry_category(entry)
-    if not isinstance(category, str):
+    # 族名先定，再看名字：写死表里有这个 id 的非契约行 → 按 id 认（类别名不看）；
+    # 否则按类别名（去掉版本号）认，见 _category_family。
+    family = _hardcoded_extra_family(mid) or _category_family(_entry_category(entry))
+    if family is None:
         return None
-    slug_family = _discover_slug(category)
-    if not _DISCOVER_FAMILY_RE.match(slug_family) or slug_family in _BASE_FAMILIES:
-        return None
-    # family 也不许含契约词：category="Flash Thinking" 会得到 family "flash-thinking" ——
-    # 那是已下线的旧 family，它的公开名已经是指向 gemini-flash 的隐藏别名，不该被心跳
-    # 重新"复活"成一个独立模型；同理 "Pro Max" 这类也不是一个新产品族。
-    if _DISCOVER_RESERVED_WORDS.intersection(slug_family.split("-")):
-        return None
-    family = _discovered_family(category, mid)
 
     display = _entry_real_name(entry)
     name = _name_from_display(display)
@@ -1532,9 +1552,9 @@ def route_model(client, model: str) -> str | None:
          （现有语义：心跳没给到的基础族按同档补、还没心跳按 _FAMILY_DEFAULT 兜底）；
       3. 按族的别名（gemini-argon / gemini-carbon / gemini-neon …，及去掉版本号的真实名字）→ 本账号
          **心跳报过**的这个族；本账号没有这个族就往下走（最后多半是 None）；
-      4. 别的账号报的名字、或改名历史里的名字 → 那个名字对应的 model id，本账号**此刻列表里有这个
-         id** 才答，没有就是 None —— 绝不把一个账号报的名字按族换成本账号的另一个 id 发出去
-         （那等于悄悄换模型）；
+      4. 别的账号报的名字、或改名历史里的名字 → 那个名字对应的 model id，本账号**这一轮心跳报过
+         这个 id**（_reported_ids，含显示名被拒的条目）且族对得上才答，没有就是 None —— 绝不把
+         一个账号报的名字按族换成本账号的另一个 id 发出去（那等于悄悄换模型）；
       5. 内部名（gemini-3-*、心跳发现来的内部名）→ 原样（须在本账号的 _model_table() 里）。
     返回的名字一定在 client._model_table() 里；None 时调用方抛 ModelUnavailable，池换号。
 
@@ -1577,8 +1597,18 @@ def route_model(client, model: str) -> str | None:
     from app.core.model_names import history
     rec = history.lookup(name)
     if rec is not None:
-        for internal in real.values():
-            if (table.get(internal) or {}).get("id") in rec["ids"]:
+        # 按 id 找：本账号这一轮心跳**报过**的每个 id（含显示名被拒、列成契约名的那个），
+        # 而不只是名字被采纳的那些 —— 4 Neon 被改叫「3 Pro」被拒时，这个账号还有 e6fa…，
+        # gemini-4-neon 照样要能到它。族也得对得上：历史文件里万一有跨族的脏记录，
+        # 也不能把这个名字发成另一个族的模型。
+        reported_ids = getattr(client, "_reported_ids", None)
+        reported_ids = reported_ids if isinstance(reported_ids, dict) else {}
+        want = canonical_family(rec["family"])
+        for mid in rec["ids"]:
+            internal = reported_ids.get(mid)
+            info = table.get(internal) if internal is not None else None
+            if (isinstance(info, dict) and info.get("id") == mid
+                    and canonical_family(str(info.get("family", ""))) == want):
                 return internal
         return None
 
@@ -2261,6 +2291,7 @@ class GeminiWebClient:
     # 还没有一次成功的心跳（见 _parse_models_from_status）
     _real_names: dict | None = None
     _reported_families: frozenset | None = None
+    _reported_ids: dict | None = None
 
     def __init__(self, psid: str | None = None, psidts: str | None = None):
         self._psid = psid or settings.gemini_psid
@@ -2308,6 +2339,9 @@ class GeminiWebClient:
         self._real_names: dict[str, str] | None = None
         # 本账号这一轮心跳**报过**的族（不含同档补出来的），按族别名路由时用（见 route_model）
         self._reported_families: frozenset | None = None
+        # 本账号这一轮心跳报过的每个 model id → 内部名（含显示名被拒、列成契约名的基础条目），
+        # 历史名按 id 路由时用（见 route_model 第 4 步）。每轮整体替换。
+        self._reported_ids: dict[str, str] | None = None
         # 真实名字 → (网页名字, 定位说明)，给 /v1beta/models 的 description 用
         self._model_notes: dict[str, tuple] = {}
 
@@ -3277,16 +3311,17 @@ class GeminiWebClient:
         listing: list[str] = []
         notes: dict[str, tuple] = {}
         records: list[tuple] = []
-        seen_ids: set = set()
+        # 这一轮认出来的每个 id → 内部名，**不管显示名采没采纳**（历史名按 id 路由，见 route_model）
+        reported_ids: dict[str, str] = {}
         for entry in discovered:
             mid = entry[0]
-            if mid in seen_ids:
+            if mid in reported_ids:
                 continue
-            seen_ids.add(mid)
             display = _entry_real_name(entry)
             internal = id_to_name.get(mid)
             fam = GEMINI_MODELS.get(internal or "", {}).get("family")
             if internal and fam in _BASE_FAMILIES:
+                reported_ids[mid] = internal
                 name, why = _base_real_name(display, mid, fam, real)
                 if name is None:
                     if display is not None and why != "no usable name":
@@ -3298,6 +3333,7 @@ class GeminiWebClient:
             elif mid in adopted_ids:
                 internal = name = adopted_ids[mid]
                 fam = adopted[name]["family"]
+                reported_ids[mid] = internal
                 if name in real:
                     continue
             else:
@@ -3308,6 +3344,7 @@ class GeminiWebClient:
             records.append((name, mid, fam))
         self._real_names = real
         self._reported_families = frozenset(reported)
+        self._reported_ids = reported_ids
         self._model_notes = notes
         self._available_models = listing
         from app.core.model_names import history

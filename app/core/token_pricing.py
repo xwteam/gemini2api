@@ -91,6 +91,9 @@ def price_table_name(model: str) -> str:
 
     归一链：模型名 → 模型族（gemini_client.model_family：别名、真实名字、改名历史都认）→ 族的稳定
     名字；认不出族的原样返回（第三方中转的模型名就该原样留着、显示为未计价）。
+
+    族先按池里各账号**此刻**报的名字认（AccountPool.family_of），认不出才查改名历史：历史文件按
+    最后一次心跳记族，两个账号把同一个名字报成不同族时它会跟着心跳来回翻，价格不能跟着翻。
     """
     name = str(model or "").strip()
     if not name:
@@ -100,7 +103,11 @@ def price_table_name(model: str) -> str:
         from app.core.gemini_client import _FAMILY_PUBLIC, model_family
     except Exception:          # pragma: no cover - 只在导入环境异常时
         return name
-    family = model_family(name)
+    try:
+        from app.core.account_pool import account_pool
+        family = account_pool.family_of(name)
+    except Exception:          # pragma: no cover - 池还没起来 / 导入环境异常：只看名字和历史
+        family = model_family(name)
     if family is None:
         return name
     return _FAMILY_PUBLIC.get(family) or name

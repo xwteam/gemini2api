@@ -15,7 +15,12 @@
 满了按「最久没在心跳里见过」淘汰 —— 当前还在用的名字每天至少被刷新一次，淘汰不到它们。
 seen 只按天刷新，所以同样的心跳反复跑不会每轮都写盘。
 
-读：文件缺失 / 损坏 / 结构不对一律当空（= 没有历史），逐条校验，不合格的条目丢掉。
+一个名字只属于一个族：同一个名字换了族（一轮异常心跳把 Hydrogen 的 id 报成「4 Carbon」），整条
+记录换掉，不把两个族的 id 并在一起 —— 并在一起的话，异常过去以后这条脏映射还永远留在盘上，
+没有 Carbon 的账号会把 gemini-4-carbon 发成 Hydrogen（悄悄换模型）。
+
+读：文件缺失 / 损坏 / 结构不对 / 解析出错一律当空（= 没有历史），逐条校验，不合格的条目丢掉。
+这张表在请求路径上（「是不是 Gemini 模型」的闸门、计价），读坏了绝不能抛。
 写：持锁；落盘走同目录临时文件 + ``os.replace``（``app.utils.atomic_io``），失败只记日志。
 
 本模块只依赖标准库和 ``app.utils.atomic_io``，tests/conftest.py 会在每个测试前把它指到临时文件。
@@ -23,6 +28,7 @@ seen 只按天刷新，所以同样的心跳反复跑不会每轮都写盘。
 
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -75,7 +81,9 @@ def _parse(data) -> dict:
         if not ids or not _valid(name, ids[0], family):
             continue
         seen = rec.get("seen")
-        seen = int(seen) if isinstance(seen, (int, float)) and not isinstance(seen, bool) else 0
+        # json 把 1e999 / Infinity 读成 inf、NaN 读成 nan，int() 会抛：不是有限数就当 0（最先被淘汰）
+        seen = (int(seen) if isinstance(seen, (int, float)) and not isinstance(seen, bool)
+                and math.isfinite(seen) else 0)
         out[name] = {"ids": list(dict.fromkeys(ids)), "family": family, "seen": seen}
     if len(out) > MAX_NAMES:
         keep = sorted(out, key=lambda n: out[n]["seen"], reverse=True)[:MAX_NAMES]
@@ -101,10 +109,15 @@ class ModelNameHistory:
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             data = {}
-        except (OSError, ValueError) as e:   # ValueError：坏 JSON / 不是 UTF-8
+        # ValueError：坏 JSON / 不是 UTF-8；RecursionError：嵌套太深的 JSON
+        except (OSError, ValueError, RecursionError) as e:
             logger.warning(f"Ignoring unreadable model name history {path}: {e}")
             data = {}
-        self._names = _parse(data)
+        try:
+            self._names = _parse(data)
+        except Exception as e:   # 兜底：解析出错也当空，绝不让每次 lookup 都重新读盘再抛一次
+            logger.warning(f"Ignoring malformed model name history {path}: {e}")
+            self._names = {}
         return self._names
 
     def reset(self, path: _PathLike = None) -> None:
@@ -145,11 +158,17 @@ class ModelNameHistory:
                     changed = True
                     continue
                 touched = False
-                if model_id not in rec["ids"]:
-                    rec["ids"] = (rec["ids"] + [model_id])[-MAX_IDS_PER_NAME:]
-                    touched = True
                 if rec["family"] != family:
+                    # 换了族：整条换掉（见模块说明），旧族的 id 一个都不留
+                    logger.info(
+                        "Model name %s now belongs to family %s (was %s, ids %s); "
+                        "replacing its history record", name, family, rec["family"], rec["ids"],
+                    )
+                    rec["ids"] = [model_id]
                     rec["family"] = family
+                    touched = True
+                elif model_id not in rec["ids"]:
+                    rec["ids"] = (rec["ids"] + [model_id])[-MAX_IDS_PER_NAME:]
                     touched = True
                 if touched or now - rec["seen"] >= SEEN_REFRESH_SECONDS:
                     rec["seen"] = now

@@ -633,3 +633,248 @@ def test_known_ids_keep_their_hardcoded_rows():
                                "pro": "gemini-3-pro"}
     assert c._discovered_models == {}
     assert GEMINI_MODELS[c._real_names["gemini-fast"]]["id"] == FREE_FLASH_ID
+
+
+# ---------------------------------------------------------------------------
+# 复审修复（fix round）：每条先写成失败的测试，再改实现
+# ---------------------------------------------------------------------------
+
+XENON_ID = "0123456789abcdef"     # 一个写死表里没有的新 id
+
+
+def VERSIONED_CARBON():
+    """类别名带版本号的 Carbon：§0 里 Hydrogen 的 [1]/[10] 就已经是 "4 Hydrogen"，Carbon 迟早也会。"""
+    return live_entry(CARBON_ID, "4 Carbon", "Code & complex work", "4 Carbon", 8)
+
+
+def test_a_versioned_category_does_not_drop_a_known_model():
+    """族名按 id 认：写死表里有 95a4… 这一行，类别名是 "Carbon" 还是 "4 Carbon" 都是 carbon。"""
+    c = client_with(AUTO(), HYDROGEN(), NEON(), VERSIONED_CARBON())
+
+    assert c._available_models == LIVE_NAMES
+    assert c._family_model["carbon"] == "gemini-4-carbon"
+    for name in ("gemini-4-carbon", "gemini-carbon", "gemini-argon", "gemini-4-argon"):
+        assert sent_id(c, name) == CARBON_ID, name
+
+
+def test_a_brand_new_model_with_a_versioned_category_gets_the_unversioned_family():
+    """全新的 id、类别 "5 Xenon"：族键是去掉版本号的类别名 xenon，名字照网页 gemini-5-xenon。"""
+    xenon = live_entry(XENON_ID, "5 Xenon", "Frontier work", "5 Xenon", 9)
+    c = client_with(AUTO(), HYDROGEN(), NEON(), CARBON(), xenon)
+
+    assert c._available_models == LIVE_NAMES + ["gemini-5-xenon"]
+    assert c._family_model["xenon"] == "gemini-5-xenon"
+    assert sent_id(c, "gemini-5-xenon") == XENON_ID
+    assert sent_id(c, "gemini-xenon") == XENON_ID, "不带版本号的名字照样能调"
+    assert make_pool(c).family_of("gemini-5-xenon") == "xenon"
+
+
+def test_a_known_id_keeps_its_family_whatever_the_category_is_renamed_to():
+    """95a4… 的族名按 id 认：谷歌哪天把类别改成一个全新的词（甚至带契约词、或者干脆没有），
+    它还是 carbon；契约名照旧按 id 表走，顶不掉。"""
+    for category in ("Krypton", "5 Krypton", "Pro Max", "Pro", None, "   "):
+        c = client_with(AUTO(), HYDROGEN(), NEON(),
+                        live_entry(CARBON_ID, category, "Code & complex work", "4 Carbon", 8))
+        assert c._family_model.get("carbon") == "gemini-4-carbon", category
+        assert sent_id(c, "gemini-carbon") == CARBON_ID, category
+        assert sent_id(c, "gemini-pro") == NEON_ID, category
+
+
+@pytest.mark.parametrize("category", ["4 Pro", "3.5 Flash", "Flash Thinking 2", "4.1"])
+def test_a_versioned_category_still_cannot_mint_a_base_or_contract_family(category):
+    """去掉版本号以后照旧走原来的校验：不许是基础族、不许含契约词、不许是空的。"""
+    c = client_with(AUTO(), HYDROGEN(), NEON(), live_entry(XENON_ID, category, "x", "5 Xenon", 9))
+    assert "gemini-5-xenon" not in c._available_models
+    assert c._discovered_models == {}
+
+
+@pytest.mark.parametrize("rejected", ["3 Pro", "Pro", "Carbon"])
+def test_a_history_name_still_reaches_its_id_when_the_new_web_name_is_rejected(rejected):
+    """谷歌把 4 Neon 改成一个被拒的名字（撞契约名 / 别名 / 另一个 id 的内部名）：这个账号还有
+    e6fa…，只是列表里显示成 gemini-pro；客户端里配好的 gemini-4-neon 照样要发到 e6fa…。"""
+    c = live_client()                                   # 记下 gemini-4-neon → NEON_ID
+    c._parse_models_from_status(status_raw(AUTO(), HYDROGEN(), NEON(rejected), CARBON()))
+
+    assert "gemini-4-neon" not in c._available_models
+    assert "gemini-pro" in c._available_models
+    assert sent_id(c, "gemini-4-neon") == NEON_ID
+    assert sent_id(free_client(), "gemini-4-neon") is None, "别的账号没有 e6fa…，照旧不答"
+
+
+def test_a_renamed_discovered_model_still_answers_its_history_name():
+    """非基础族也一样：谷歌把 4 Carbon 改叫 4.1 Carbon（同一个 id），gemini-4-carbon 照样到 95a4…。"""
+    c = live_client()
+    c._parse_models_from_status(status_raw(
+        AUTO(), HYDROGEN(), NEON(),
+        live_entry(CARBON_ID, "Carbon", "Code & complex work", "4.1 Carbon", 8)))
+
+    assert c._available_models == ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon",
+                                   "gemini-4.1-carbon"]
+    assert sent_id(c, "gemini-4-carbon") == CARBON_ID
+    assert sent_id(c, "gemini-4.1-carbon") == CARBON_ID
+
+
+def test_a_name_reported_under_another_family_replaces_its_record(tmp_path):
+    """名字换了族就整条换掉，不把两个族的 id 并在一个名字下（并在一起就是「悄悄换模型」的来源）。"""
+    hist = model_names.ModelNameHistory(tmp_path / "names.json")
+    hist.record([("gemini-4-carbon", CARBON_ID, "carbon")], now=1000)
+    hist.record([("gemini-4-carbon", HYDROGEN_ID, "flash")], now=1001)
+    assert hist.lookup("gemini-4-carbon") == {"ids": [HYDROGEN_ID], "family": "flash"}
+
+    hist.record([("gemini-4-carbon", CARBON_ID, "carbon")], now=1002)
+    assert hist.lookup("gemini-4-carbon") == {"ids": [CARBON_ID], "family": "carbon"}
+    hist.record([("gemini-4-carbon", "1111111111111111", "carbon")], now=1003)
+    assert hist.lookup("gemini-4-carbon") == {
+        "ids": [CARBON_ID, "1111111111111111"], "family": "carbon"}, "同族的不同 id 照旧并存"
+
+
+def test_a_history_name_is_never_answered_by_a_model_of_another_family():
+    """历史名按 id 找到了本账号的模型，族也得对得上才答（第二道闸：历史文件里已经有脏数据时）。"""
+    model_names.history.record([("gemini-odd", HYDROGEN_ID, "carbon")])
+    b = client_with(AUTO(), HYDROGEN(), NEON())
+
+    assert sent_id(b, "gemini-odd") is None
+
+
+def test_one_abnormal_round_does_not_leave_a_cross_family_mapping_behind():
+    """A 正常心跳 → 一轮异常：Hydrogen 的 id 顶着 "4 Carbon" 的名字 → A 恢复。
+    之后一个没有 Carbon 的 Pro 账号 B 不能把 gemini-4-carbon 发成 Hydrogen（R7 禁止的悄悄换模型）。"""
+    a = live_client()
+    poisoned = live_entry(HYDROGEN_ID, "4 Hydrogen", "Everyday help", "4 Carbon", 1)
+    a._parse_models_from_status(status_raw(AUTO(), poisoned, NEON()))
+    a._parse_models_from_status(status_raw(AUTO(), HYDROGEN(), NEON(), CARBON()))   # 恢复
+
+    assert model_names.history.lookup("gemini-4-carbon") == {"ids": [CARBON_ID], "family": "carbon"}
+    b = client_with(AUTO(), HYDROGEN(), NEON())
+    assert sent_id(b, "gemini-4-carbon") is None
+
+    pool = make_pool(b)
+    _wire(pool, [])
+    with pytest.raises(gc.ModelUnavailable):
+        asyncio.run(pool.generate("hi", "gemini-4-carbon"))
+
+
+def test_the_price_of_a_live_name_follows_the_accounts_not_the_last_heartbeat(monkeypatch):
+    """两个账号把同一个名字报成不同族时，历史文件按最后一次心跳翻；计价不能跟着翻：
+    当前有账号报着这个名字，就按账号（池里的顺序）认族。"""
+    from app.core import account_pool as ap
+    from app.core.token_pricing import price_table_name
+
+    a = live_client()                                                      # 4 Carbon = carbon
+    odd = client_with(AUTO(), live_entry(HYDROGEN_ID, "4 Hydrogen", "x", "4 Carbon", 1), NEON())
+    pool = make_pool(a, odd)
+    monkeypatch.setattr(ap.account_pool, "_accounts", pool._accounts)
+
+    for client in (a, odd, a, odd):
+        client._parse_models_from_status(status_raw(
+            *((AUTO(), HYDROGEN(), NEON(), CARBON()) if client is a
+              else (AUTO(), live_entry(HYDROGEN_ID, "4 Hydrogen", "x", "4 Carbon", 1), NEON()))))
+        assert price_table_name("gemini-4-carbon") == "gemini-carbon"
+
+
+@pytest.mark.parametrize("seen", ["NaN", "Infinity", "-Infinity", "1e999", "-1e999"])
+def test_a_non_finite_seen_in_the_history_file_is_harmless(tmp_path, seen):
+    path = tmp_path / "names.json"
+    path.write_text('{"names": {"gemini-4-neon": {"ids": ["%s"], "family": "pro", "seen": %s}}}'
+                    % (NEON_ID, seen), encoding="utf-8")
+    hist = model_names.ModelNameHistory(path)
+
+    assert hist.lookup("gemini-4-neon") == {"ids": [NEON_ID], "family": "pro"}
+    assert hist.items() == [("gemini-4-neon", "pro")]
+    hist.record([("gemini-4-neon", NEON_ID, "pro")], now=10**7)        # seen 当 0：按天刷新、写盘
+    text = path.read_text(encoding="utf-8")
+    assert "NaN" not in text and "Infinity" not in text
+    assert model_names.ModelNameHistory(path).lookup("gemini-4-neon") is not None
+
+
+def test_a_broken_history_file_never_takes_down_the_request_path(monkeypatch):
+    """坏历史文件 = 空表：第三方模型的闸门、计价都照常，不能每个请求都 500。"""
+    from app.core.token_pricing import price_table_name
+
+    path = model_names.NAMES_PATH
+    for content in ('{"names": {"gemini-4-neon": {"ids": ["%s"], "family": "pro", "seen": 1e999}}}'
+                    % NEON_ID, "[" * 200_000):
+        path.write_text(content, encoding="utf-8")
+        model_names.history.reset()
+        assert AccountPool().is_gemini_model("gpt-4o") is False
+        assert price_table_name("gemini-4-neon") in ("gemini-pro", "gemini-4-neon")
+        assert price_table_name("gpt-4o") == "gpt-4o"
+
+
+# ---- 安全规则的回归测试（复审发现删掉这些规则全量测试照样全绿）----
+
+@pytest.mark.parametrize("display,alias", [("Carbon", "gemini-carbon"), ("Argon", "gemini-argon")])
+def test_a_base_entry_may_not_take_another_familys_alias(display, alias):
+    """(a) Neon 条目叫 "Carbon" / "Argon"：不许占用 carbon 族的固定别名，否则 gemini-carbon 会发成 pro。"""
+    c = client_with(AUTO(), HYDROGEN(), NEON(display), CARBON())
+
+    assert alias not in c._available_models
+    assert "gemini-pro" in c._available_models
+    assert sent_id(c, "gemini-carbon") == CARBON_ID
+    assert sent_id(c, alias) == CARBON_ID
+    assert sent_id(c, "gemini-pro") == NEON_ID
+
+
+def test_a_discovered_entry_may_not_take_another_familys_alias():
+    """(b) 新族 Xenon 的条目叫 "Carbon"：不许以 gemini-carbon 被采纳。"""
+    impostor = live_entry(XENON_ID, "Xenon", "x", "Carbon", 9)
+    c = client_with(AUTO(), HYDROGEN(), NEON(), CARBON(), impostor)
+
+    assert "gemini-carbon" not in c._available_models
+    assert sent_id(c, "gemini-carbon") == CARBON_ID
+    without_carbon = client_with(AUTO(), HYDROGEN(), NEON(), impostor)
+    assert sent_id(without_carbon, "gemini-carbon") is None
+
+
+def test_each_name_keeps_at_most_max_ids(tmp_path):
+    """(c) 同一个名字挂的 id 有上限（内存里、落盘再读回来都是）。"""
+    path = tmp_path / "names.json"
+    hist = model_names.ModelNameHistory(path)
+    ids = [f"{i:016x}" for i in range(10)]
+    for n, mid in enumerate(ids):
+        hist.record([("gemini-auto", mid, "flash-lite")], now=1000 + n)
+
+    assert hist.lookup("gemini-auto")["ids"] == ids[-model_names.MAX_IDS_PER_NAME:]
+    assert len(model_names.ModelNameHistory(path).lookup("gemini-auto")["ids"]) \
+        == model_names.MAX_IDS_PER_NAME
+
+
+def test_an_oversized_history_file_is_capped_on_load(tmp_path):
+    """(d) 文件里条目超过 MAX_NAMES：读进来就封顶，留最近见过的。"""
+    path = tmp_path / "names.json"
+    total = model_names.MAX_NAMES + 10
+    path.write_text(json.dumps({"names": {
+        f"gemini-x{i}": {"ids": [f"{i:016x}"], "family": "x", "seen": i} for i in range(total)
+    }}), encoding="utf-8")
+    hist = model_names.ModelNameHistory(path)
+
+    assert len(hist.items()) == model_names.MAX_NAMES
+    assert hist.lookup(f"gemini-x{total - 1}") is not None
+    assert hist.lookup("gemini-x0") is None, "最久没见过的被淘汰"
+
+
+def test_a_family_alias_only_goes_to_families_the_account_reported():
+    """(e) 只报了 Auto 的账号：契约名 gemini-pro 照旧按同档补全能调，gemini-neon 不行
+    （同档补出来的 pro 不是这个账号真有 Neon）。"""
+    c = client_with(AUTO())
+
+    assert sent_id(c, "gemini-pro") is not None
+    assert sent_id(c, "gemini-neon") is None
+    assert sent_id(c, "gemini-hydrogen") is None
+    assert sent_id(c, "gemini-flash-lite") == AUTO_ID
+
+
+def test_a_flood_of_ever_changing_names_cannot_blow_up_the_history():
+    """(f) 每轮换一批新名字（不是同一批反复来），从心跳这条路也要撞到 MAX_NAMES 的上限。"""
+    per_round = gc._DISCOVER_MAX_PER_ROUND
+    rounds = model_names.MAX_NAMES // per_round + 4
+    c = live_client()
+    for r in range(rounds):
+        batch = [live_entry(f"{r * per_round + i:016x}", f"Fam{r}x{i}", "x",
+                            f"{r} Fam{r}x{i}", 9) for i in range(per_round)]
+        c._parse_models_from_status(status_raw(AUTO(), HYDROGEN(), NEON(), *batch))
+        assert len(c._discovered_models) == per_round
+
+    assert len(model_names.history.items()) == model_names.MAX_NAMES
+    assert json.loads(model_names.NAMES_PATH.read_text(encoding="utf-8"))["names"].__len__() \
+        == model_names.MAX_NAMES

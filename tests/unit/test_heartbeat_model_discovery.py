@@ -189,10 +189,18 @@ BAD_ENTRIES = {
     "model_number_string": argon_entry(f17="8", f9=None),
     "model_number_true": argon_entry(f17=True, f9=None),
     "model_number_missing": argon_entry(f17=None, f9=None),
-    "no_category": argon_entry(f1=None, f10=None),
-    "blank_category": argon_entry(f1="   ", f10="  "),
+    # 类别名的校验只管**表外**的 id：写死表里有的 id（95a4…）按 id 认族、不看类别名（复审修复：
+    # 类别名带版本号 "4 Carbon" 时整条被丢，gemini-argon / gemini-carbon 一起 400）。所以这三条
+    # 换成表外的新 id + 全新名字，只有类别名这一条规则能挡住它们；95a4… 在类别缺失 / 空白 /
+    # 写成 "Pro" 时照样按 carbon 采纳，见 test_real_model_names 的
+    # test_a_known_id_keeps_its_family_whatever_the_category_is_renamed_to。
+    "no_category": argon_entry(f0="0123456789abcd01", f1=None, f10=None,
+                               f11="9 Turbo", f19="9 Turbo"),
+    "blank_category": argon_entry(f0="0123456789abcd02", f1="   ", f10="  ",
+                                  f11="9 Turbo", f19="9 Turbo"),
     "no_display": argon_entry(f11=None, f19=None, f1=None),
-    "category_is_a_base_family": argon_entry(f1="Pro", f10="Pro"),
+    "category_is_a_base_family": argon_entry(f0="0123456789abcd03", f1="4 Pro", f10="4 Pro",
+                                             f11="9 Turbo", f19="9 Turbo"),
     # 最凶的一条：category 顶掉 pro 这个 family，而 display 是个全新名字（不会被
     # "与写死表同名"那条规则挡下）。采纳它就等于把 gemini-pro 重新指向任意 model_id。
     "category_hijacks_a_base_family": argon_entry(
