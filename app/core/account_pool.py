@@ -2,6 +2,7 @@ import json
 import time
 import asyncio
 import logging
+import unicodedata
 from enum import Enum
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -90,6 +91,47 @@ def _prepare_accounts_file() -> Path:
 
 def _clean_cookie(value) -> str:
     return (value or "").strip().strip('"').strip("'").rstrip(";")
+
+
+# 账号标签的长度上限（v1.6.55 规格 C2，按字符数计，去首尾空白之后）
+LABEL_MAX_LEN = 64
+
+
+def clean_label(raw) -> str:
+    """面板在线改的标签：去首尾空白后 1～LABEL_MAX_LEN 个字符、不含控制字符（Unicode Cc：C0、DEL、C1）。
+    孤立的代理码位（Cs，JSON 里的 "\\ud800"）写不进 UTF-8 的 accounts.json，一并拒绝。
+    返回去掉首尾空白的标签；不合法抛 ValueError（消息照抄给面板看，中英双语）。"""
+    label = raw.strip() if isinstance(raw, str) else ""
+    if not 1 <= len(label) <= LABEL_MAX_LEN or any(unicodedata.category(ch) in ("Cc", "Cs") for ch in label):
+        raise ValueError(
+            f"label must be 1-{LABEL_MAX_LEN} characters after trimming, without control characters"
+            f" / 标签去掉首尾空白后须为 1～{LABEL_MAX_LEN} 个字符，且不能含控制字符"
+        )
+    return label
+
+
+class DuplicateAccountError(ValueError):
+    """要添加的谷歌登录（__Secure-1PSID）池里已经有了（v1.6.55 规格 C1：409，不新建）。
+
+    消息里只有已有账号的 ID，绝不带 Cookie 值。"""
+
+    def __init__(self, account_id: str):
+        self.account_id = account_id
+        super().__init__(
+            f"An account with this __Secure-1PSID already exists ({account_id})"
+            f" / 池里已有用这个 __Secure-1PSID 的账号（{account_id}）"
+        )
+
+
+def client_says(client, method: str, *args) -> bool:
+    """问 client 一个是 / 否；没有这个方法（旧替身）或出错都按「否」。"""
+    fn = getattr(client, method, None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn(*args))
+    except Exception:
+        return False
 
 
 def _breaker_counts(exc: Exception) -> bool:
@@ -389,9 +431,10 @@ class AccountPool:
         )
         self._accounts.append(account)
 
-    async def _init_account_client(self, account: Account):
+    async def _init_account_client(self, account: Account, cookies: list | None = None):
+        """cookies：添加账号时带来的整套 Cookie（见 add_account），在第一次 GET /app 之前装进罐。"""
         client = GeminiWebClient(psid=account.psid, psidts=account.psidts)
-        await client.initialize()
+        await client.initialize(**({"cookies": cookies} if cookies is not None else {}))
         account.client = client
         if client.is_healthy:
             account.status = AccountStatus.ACTIVE
@@ -925,21 +968,67 @@ class AccountPool:
                 return a
         return available[0]
 
-    async def add_account(self, psid: str, psidts: str, label: str = "") -> Account:
+    def _account_using(self, psid: str) -> Account | None:
+        """池里用着这个谷歌登录（__Secure-1PSID）的账号：配置里的 PSID，或 client 当前用的那个
+        （POST /admin/reload-cookies 换了 PSID 不回写 Account.psid，见 GeminiWebClient.owns_cookie_set）。"""
+        for a in self._accounts:
+            if a.psid == psid or client_says(a.client, "owns_cookie_set", psid):
+                return a
+        return None
+
+    async def add_account(self, psid: str, psidts: str, label: str = "",
+                          cookies: list | None = None) -> Account:
+        """cookies：整套 Cookie（v1.6.55 规格 C1，已由 admin 接口校验、且其中 .google.com 的
+        __Secure-1PSID/1PSIDTS 与 psid/psidts 一致），第一次初始化之前装进新账号的罐；不给 = 与 v1.6.54 一致。
+
+        池里已有这个 PSID 抛 DuplicateAccountError：两个账号共用一个罐文件（按 PSID 的哈希命名）会互相覆盖。
+        """
+        psid = _clean_cookie(psid)
+        dup = self._account_using(psid)
+        if dup is not None:
+            raise DuplicateAccountError(dup.id)
         # 用单调计数器生成 id，删除中间账号后也绝不撞号（不再用易撞号的 len()）。
         self._sync_id_seq()
         account_id = f"account-{self._next_id_seq}"
         self._next_id_seq += 1
         account = Account(
             id=account_id,
-            psid=psid.strip().strip('"').strip("'").rstrip(";"),
-            psidts=psidts.strip().strip('"').strip("'").rstrip(";"),
+            psid=psid,
+            psidts=_clean_cookie(psidts),
             label=label or account_id,
         )
-        await self._init_account_client(account)
+        await self._init_account_client(account, **({"cookies": cookies} if cookies is not None else {}))
+        # 初始化要联网：期间同一个 PSID 的另一次添加可能已经进池。查完到 append 之间没有 await，不会再被插队
+        dup = self._account_using(psid)
+        if dup is not None:
+            if account.client:
+                try:
+                    await account.client.shutdown()
+                except Exception as e:
+                    logger.warning(f"Account {account_id}: shutting down the duplicate client failed: {e}")
+            raise DuplicateAccountError(dup.id)
         self._accounts.append(account)
         self._save_to_file()
         return account
+
+    def set_label(self, account_id: str, label) -> Account | None:
+        """面板在线改标签（v1.6.55 规格 C2）：只改 label 并原子写回 accounts.json，凭据、状态、保活方式
+        一概不碰。label 不合法抛 ValueError（见 clean_label）；账号不存在返回 None。写盘失败时内存里的
+        标签退回原值再抛出，不留「面板上改了、重启又回去」的半截状态。"""
+        label = clean_label(label)
+        for account in self._accounts:
+            if account.id != account_id:
+                continue
+            old = account.label
+            account.label = label
+            try:
+                self._save_to_file()
+            except Exception:
+                account.label = old
+                raise
+            logger.info(f"Account {account_id}: label updated")
+            return account
+        return None
 
     def persist_account_cookies(self, account_id: str, psid: str, psidts: str) -> bool:
         """把面板换上的新 cookie 回写到 accounts.json（只碰凭据字段，不碰账号状态）。

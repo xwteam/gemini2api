@@ -2349,7 +2349,11 @@ class GeminiWebClient:
         # 真实名字 → (网页名字, 定位说明)，给 /v1beta/models 的 description 用
         self._model_notes: dict[str, tuple] = {}
 
-    async def initialize(self):
+    async def initialize(self, cookies: list[StoredCookie] | None = None):
+        """cookies：添加账号时带来的整套 Cookie（POST /admin/accounts，v1.6.55 规格 C1；已由 admin 接口
+        校验、转好域名，且其中 .google.com 的 __Secure-1PSID/1PSIDTS 与构造时的 psid/psidts 一致）。
+        给了就在第一次 GET /app 之前整套装进罐（与 reload_cookies 同一个 replace_cookies），否则第一次
+        初始化只带着 PSID / PSIDTS 落在谷歌登录页、账号一加上就是过期。不给 = 与 v1.6.54 一致。"""
         fingerprint_config.load()
 
         # 构造时传入的值（.env 的 GEMINI_PSID/PSIDTS，或 accounts.json 的条目）就是运维
@@ -2405,6 +2409,13 @@ class GeminiWebClient:
         elif prev_cfg_psidts is not None:
             # 配置里的 PSIDTS 被清空了：快照留着会把"重新填上"误判成没变。
             self._cookie_jar.remove(_CFG_PSIDTS_SNAPSHOT)
+
+        if cookies is not None:
+            # 整套换上（内部记录即上面的配置快照保留）。罐文件可能是删掉的旧账号留下的（同一个 PSID）、
+            # 上面又按「配置没变」沿用了里面的旧值：一律以这次带来的整套为准。
+            self._cookie_jar.replace_cookies(cookies)
+            self._psid = self._cookie_jar.get("__Secure-1PSID") or cfg_psid
+            self._psidts = self._cookie_jar.get("__Secure-1PSIDTS") or ""
 
         self._current_target = header_builder.get_impersonate_target()
         self._http = AsyncSession(

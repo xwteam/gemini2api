@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app.config import APP_VERSION, mask_secret
 from app.core import keepalive_modes
-from app.core.account_pool import account_pool
+from app.core.account_pool import DuplicateAccountError, account_pool, client_says
 from app.core.fingerprint.cookie_jar import (
     GOOGLE_DOMAIN,
     CookieImportError,
@@ -92,17 +92,6 @@ def _sync_legacy_writeback(account, psid: str, psidts: str) -> None:
         logger.warning(f"Account {account.id}: could not sync the cookie cache with accounts.json: {e}")
 
 
-def _client_says(client, method: str, *args) -> bool:
-    """问 client 一个是 / 否；没有这个方法（旧替身）或出错都按「否」。"""
-    fn = getattr(client, method, None)
-    if fn is None:
-        return False
-    try:
-        return bool(fn(*args))
-    except Exception:
-        return False
-
-
 def _accounts_for_full_set(psid: str) -> list:
     """POST /admin/reload-cookies 带整套 Cookie（插件没填账号 ID 时走这条）该依次试哪些账号。
 
@@ -114,12 +103,12 @@ def _accounts_for_full_set(psid: str) -> list:
       自己整套 Cookie 的账号。全都有的话返回空列表，由调用方报 409。
     """
     candidates = [a for a in account_pool.accounts if a.client]
-    owners = [a for a in candidates if _client_says(a.client, "owns_cookie_set", psid)]
+    owners = [a for a in candidates if client_says(a.client, "owns_cookie_set", psid)]
     if owners:
         return owners
     if len(candidates) <= 1:
         return candidates
-    return [a for a in candidates if not _client_says(a.client, "has_full_cookie_set")]
+    return [a for a in candidates if not client_says(a.client, "has_full_cookie_set")]
 
 
 NO_MATCHING_ACCOUNT = (
@@ -218,9 +207,35 @@ def _log_full_cookie_set(account_id: str, items: list[StoredCookie]) -> None:
 
 
 class AddAccountRequest(BaseModel):
-    psid: str
-    psidts: str = ""
+    # 整套 Cookie（v1.6.55 规格 C1）：cookies / cookie_header 同 ReloadCookiesRequest，二选一。带了整套
+    # psid / psidts 可以不填（取整套里 .google.com 的 __Secure-1PSID/1PSIDTS），填了必须一致；都没带时
+    # psid 必填（400），其余与 v1.6.54 一致。
+    psid: Optional[str] = None
+    psidts: Optional[str] = None
     label: str = ""
+    cookies: Optional[list[BrowserCookie]] = None
+    cookie_header: Optional[str] = None
+
+
+MISSING_PSID = (
+    "psid is required unless the full cookie set is sent (cookies or cookie_header)"
+    " / 不带整段 Cookie（cookies / cookie_header）时 psid 必填"
+)
+
+
+def _invalid_request(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"error": {"message": message, "type": "invalid_request_error"}},
+    )
+
+
+def _without_cookie_values(text: str, values) -> str:
+    """异常消息原样回给面板之前，把这次请求带来的 Cookie 值抹掉（错误信息里绝不能出现 Cookie 值）。
+    太短的值（< 8 个字符）不当成凭据，免得把消息里的普通字样抹花。"""
+    for value in sorted({v for v in values if v and len(v) >= 8}, key=len, reverse=True):
+        text = text.replace(value, "***")
+    return text
 
 
 @router.post("/reload-cookies")
@@ -354,28 +369,77 @@ async def list_accounts():
 @router.post("/accounts")
 async def add_account(req: AddAccountRequest, request: Request):
     try:
-        account = await account_pool.add_account(
-            psid=req.psid,
-            psidts=req.psidts,
-            label=req.label,
+        full = _full_cookie_set(req)
+        if full is not None:
+            psid, psidts = _session_pair_of(
+                full, clean_cookie_value(req.psid) or None, clean_cookie_value(req.psidts) or None,
+            )
+        else:
+            psid, psidts = clean_cookie_value(req.psid), req.psidts or ""
+    except CookieImportError as e:
+        return _invalid_cookies(e)
+    if not psid:
+        return _invalid_request(MISSING_PSID)
+    # 整套 Cookie 由 add_account 交给新账号的第一次初始化，在第一次 GET /app 之前装罐（见
+    # GeminiWebClient.initialize）；装罐用的是与 reload_cookies 同一个 replace_cookies。
+    extra = {"cookies": full} if full is not None else {}
+    try:
+        account = await account_pool.add_account(psid=psid, psidts=psidts, label=req.label, **extra)
+    except DuplicateAccountError as e:
+        return JSONResponse(
+            status_code=409,
+            content={"error": {"message": str(e), "type": "duplicate_account"}},
         )
-        # 新添加的账号同样按来源记保活方式（面板 / 脚本 → server）。记录按 PSID 存、删账号时不清：
-        # 不记的话，删掉一个浏览器保活的账号、再用同一份 cookie 加回来，会直接继承旧的 browser ——
-        # 服务端不轮换、插件也不再推，几小时后过期。
-        _record_keepalive_mode(account, _push_source(request))
-        return {
-            "status": "ok",
-            "account": {
-                "id": account.id,
-                "label": account.label,
-                "status": account.status.value,
-            },
-        }
     except Exception as e:
+        values = [psid, psidts, req.psid, req.psidts, *(c.value for c in full or ())]
         return JSONResponse(
             status_code=500,
-            content={"error": {"message": str(e), "type": "add_account_error"}},
+            content={"error": {"message": _without_cookie_values(str(e), values), "type": "add_account_error"}},
         )
+    if full is not None:
+        # 与 PUT /admin/accounts/{id}/cookies 同口径：add_account 已把 psid / psidts 写进 accounts.json，
+        # 让罐文件名与配置快照跟上，下次启动才认得这份整套 Cookie
+        _log_full_cookie_set(account.id, full)
+        _sync_persisted_config(account, account.psid, account.psidts)
+    # 新添加的账号同样按来源记保活方式（面板 / 脚本 → server）。记录按 PSID 存、删账号时不清：
+    # 不记的话，删掉一个浏览器保活的账号、再用同一份 cookie 加回来，会直接继承旧的 browser ——
+    # 服务端不轮换、插件也不再推，几小时后过期。
+    _record_keepalive_mode(account, _push_source(request))
+    return {
+        "status": "ok",
+        "account": {
+            "id": account.id,
+            "label": account.label,
+            "status": account.status.value,
+        },
+        "full_cookie_set": full is not None,
+    }
+
+
+class UpdateLabelRequest(BaseModel):
+    # 缺字段 / null 一律按不合法处理（400，见 clean_label），不走 FastAPI 的 422
+    label: Optional[str] = None
+
+
+@router.patch("/accounts/{account_id}")
+async def update_account_label(account_id: str, req: UpdateLabelRequest):
+    """在线改账号标签（v1.6.55 规格 C2）：只改标签，凭据、状态、保活方式一概不碰。"""
+    try:
+        account = account_pool.set_label(account_id, req.label)
+    except ValueError as e:
+        return _invalid_request(str(e))
+    except OSError as e:
+        logger.error(f"Account {account_id}: could not save the new label: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": f"Could not save accounts file: {e}", "type": "persist_error"}},
+        )
+    if account is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": {"message": f"Account {account_id} not found", "type": "not_found"}},
+        )
+    return {"status": "ok", "account": {"id": account.id, "label": account.label}}
 
 
 @router.delete("/accounts/{account_id}")
