@@ -157,7 +157,7 @@
 - 右上角控制欄：主題切換、服務重啟、登出
 - 儀表板：執行時間實時計時、二維碼卡片（支援圖片放大）、系統資訊（版本/Python/OS/記憶體/CPU/PID/執行模式）、設定管理（輪換策略/並行上限）、帳號狀態總覽、可用模型列表
 - **熱更新資源**：`api/` 目錄 volume 掛載，二維碼圖片和文字設定修改後重新整理頁面即生效，無需重建容器
-- 帳號管理：新增/刪除帳號、單獨更新 Cookie、健康檢測
+- 帳號管理：新增帳號（可直接貼上整段 Cookie）/刪除帳號、線上編輯標籤、單獨更新 Cookie、健康檢測
 - **設定頁面**：可視化管理執行時設定（效能、速率限制、健康檢查、帳號管理等），修改即時生效並傳播到執行時
 - **模型對應**：將請求中的模型名對應到實際使用的模型（如 gpt-4o → gemini-2.5-pro）
 - **存取金鑰**：簽發／編輯／停用／撤銷可分送的入站金鑰，列表直接顯示狀態、用量與權限範圍（與下面的「API Key 管理」無關，那管的是第三方**出站** Key）
@@ -196,6 +196,17 @@
 > [!TIP]
 > 使用 Docker 部署無需本地安裝 Python 環境，只需 Docker 和有效的 Cookie 即可。
 
+### 💾 小記憶體機器
+
+實測（v1.6.54，掛 3 個帳號連續執行數小時）：整個服務約占 **85～105 MB 記憶體**，閒置時 CPU 不到 1%；服務本身處理一個請求約 2 毫秒，耗時幾乎全在等谷歌生成。
+
+- **依上面的占用推算，256 MB 記憶體可以執行，建議 512 MB 以上**（含系統與 Docker 本身）；每多一個帳號大約多幾 MB。
+- 會隨時間慢慢變大的主要是**用量統計**（`data/usage-stats.json` 裡的歷史快照，預設保留 30 天；實測 9.7 MB 的檔案讀進記憶體約 14 MB）。記憶體吃緊時可以（面板「設定」頁同樣能改）：
+  - 縮短保留天數：`USAGE_STATS_RETENTION_DAYS=7`；
+  - 拉長採集間隔：`USAGE_STATS_INTERVAL=900`；
+  - 或直接關閉統計：`USAGE_STATS_ENABLED=false`（面板的用量統計頁就不再有資料）。
+- 映像約 312 MB，只占硬碟、不占記憶體；`linux/amd64` 與 `linux/arm64` 都可以直接拉取。
+
 ---
 
 ## ⚡ 快速部署
@@ -209,7 +220,7 @@
 > [!IMPORTANT]
 > **Google 2026-11-20 改版後，只有下面這兩個值已經不夠了。** 只帶 `__Secure-1PSID` / `__Secure-1PSIDTS` 開啟 Gemini 會被導向 Google 登入頁、以未登入訪客身份執行（只剩一個 Auto 模型，其他模型一律報錯）。現在需要瀏覽器裡**完整的 Google Cookie**，包括 `gemini.google.com` 自己的 `OSID` / `__Secure-OSID`；只有這兩個值的帳號會被判為驗證失敗（狀態 `expired`），錯誤訊息是「谷歌要求完整 Cookie（含 gemini.google.com 的 OSID），請把瀏覽器插件升級到 1.4.0 或在面板貼上整段 Cookie」。
 > - **建議**：安裝瀏覽器擴充功能 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) **1.4.0 以上**，它會把整套 Cookie（含 `OSID`）自動推過來；1.3.x 及更早只推這兩個值，請升級。
-> - **手動**：先依下面的步驟用這兩個值把帳號加上，再到面板「帳號管理」→「更新 Cookie」貼上**整段 Cookie**：開發者工具 → **Network**（網路）→ 任選一個發往 `gemini.google.com` 的請求 → Request Headers 裡的 `Cookie`，整段複製。
+> - **手動**：直接在面板「帳號管理」→「新增帳號」或「更新 Cookie」裡貼上**整段 Cookie**（新增帳號時貼上整段後無需再填下面這兩個值）：開發者工具 → **Network**（網路）→ 任選一個發往 `gemini.google.com` 的請求 → Request Headers 裡的 `Cookie`，整段複製。（首次透過 `.env` / `accounts.json` 啟動時可依下面步驟填寫這兩個值，之後再到面板「更新 Cookie」貼上整段；帳號標籤也可在面板裡直接線上修改。）
 > - 完整 Cookie 只保存在該帳號的 `data/cookies/<hash>.json`，`.env` / `accounts.json` 照舊只存這兩個值；每個請求依 Cookie 的真實網域發送（`OSID` 只發給 gemini.google.com）。
 
 1. 使用 Chrome 或 Edge 瀏覽器存取 [gemini.google.com](https://gemini.google.com)
@@ -304,7 +315,7 @@ gemini2api 內置 Cookie 自動輪換機制：預設每 30 分鐘（`REFRESH_INT
 > **`REFRESH_INTERVAL` 的預設值已由 5 分鐘改為 30 分鐘，並在程式碼裡夾了 10 分鐘的硬性下限**（設定得更小會被自動抬到 10，並在啟動日誌裡點名）。
 > 原因：以前輪換迴圈**只在「啟動時拿不到 token」的情況下才會被拉起**，正常啟動的閘道其實從不輪換，Cookie 過幾個小時就死（[issue #11](https://github.com/xwteam/gemini2api/issues/11)）。現在改成啟動就常駐，同一個間隔下對 Google 的背景請求量會漲到約 3.5 倍，所以間隔必須相應放寬——輪換太勤在 Google 看來很像自動化，容易觸發風控、反而把工作階段搞死。
 
-如需手動更新 Cookie，可透過 Web 面板的「帳號管理」→「更新 Cookie」操作，無需重啟服務。現在要貼上**整段 Cookie**（含 `OSID`），見上面「1. 取得 Cookie」裡的說明。
+如需手動新增帳號或更新 Cookie，可透過 Web 面板的「帳號管理」→「新增帳號」或「更新 Cookie」直接貼上**整段 Cookie**（含 `OSID`），無需重啟服務；帳號標籤也可在面板線上修改，見上面「1. 取得 Cookie」裡的說明。
 
 > [!NOTE]
 > Cookie 壽命受 Google 風控策略影響，資料中心 IP 通常可維持數小時。如 Cookie 頻繁過期，建議使用住宅 IP 或增加帳號數量做輪詢。
@@ -484,7 +495,8 @@ response = client.chat.completions.create(
 | GET | `/status` | 服務狀態（帳號池概覽 + 輪詢策略） |
 | GET | `/system-info` | 系統資訊（版本/Python/OS/記憶體/CPU/PID/執行模式） |
 | GET | `/accounts` | 所有帳號列表及狀態 |
-| POST | `/accounts` | 動態新增新帳號 |
+| POST | `/accounts` | 動態新增新帳號（支援整套 Cookie） |
+| PATCH | `/accounts/{id}` | 修改帳號標籤 |
 | DELETE | `/accounts/{id}` | 移除指定帳號 |
 | GET | `/accounts/{id}/check` | 檢測單個帳號狀態 |
 | GET | `/check-account` | 檢測所有帳號狀態 |
@@ -743,6 +755,8 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 感謝所有在 [Issues](https://github.com/xwteam/gemini2api/issues) 裡提交 bug 復現、日誌、相容性回饋和功能建議的使用者。這些回饋直接推動了 Cookie 保活、多帳號輪換、模型選擇、多語言支援、Web 面板等核心能力的迭代。
 
 特別感謝 [@Cznorth](https://github.com/Cznorth) 在 [PR #16](https://github.com/xwteam/gemini2api/pull/16) 裡第一時間指出：谷歌 2026-11-20 改版後，Google 登入頁裡也帶著 `SNlM0e`，服務會把它誤當成有效工作階段、實際以未登入訪客身分執行。這個判斷已經併入 [v1.6.53](https://github.com/xwteam/gemini2api/releases/tag/v1.6.53)，同一版還補上了整套 Cookie 登入與瀏覽器擴充功能 1.4.0。
+
+同時感謝 [@lianjiexu08-ui](https://github.com/lianjiexu08-ui) 提交的 [PR #12](https://github.com/xwteam/gemini2api/pull/12)、[#13](https://github.com/xwteam/gemini2api/pull/13)、[#14](https://github.com/xwteam/gemini2api/pull/14)：#12 指出了面板新增的帳號在容器重建後會遺失的問題（自 v1.6.49 起帳號已預設持久化儲存至 `data/`），#13 線上編輯帳號標籤與 #14 新增帳號時直接貼上整段 Cookie 的思路已在 v1.6.55 實現。
 
 ---
 

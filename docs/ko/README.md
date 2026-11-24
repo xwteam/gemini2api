@@ -156,7 +156,7 @@
 - 우측 상단 제어 바: 테마 전환, 서비스 재시작, 로그아웃
 - 대시보드: 실시간 가동 시간 카운터, QR 코드 카드(이미지 확대 지원), 시스템 정보(버전/Python/OS/메모리/CPU/PID/실행 모드), 구성 관리(로테이션 전략/동시성 제한), 계정 상태 개요, 사용 가능한 모델 목록
 - **핫 업데이트 리소스**: `api/` 디렉토리 볼륨 마운트, QR 코드 이미지 및 텍스트 구성 수정 후 페이지 새로고침만으로 적용, 컨테이너 재빌드 불필요
-- 계정 관리: 계정 추가/삭제, 개별 쿠키 업데이트, 건강 검사
+- 계정 관리: 계정 추가(전체 Cookie 헤더를 바로 붙여넣기 가능)/삭제, 라벨 온라인 편집, 개별 쿠키 업데이트, 건강 검사
 - **설정 페이지**: 런타임 구성 시각화 관리(성능, 속도 제한, 건강 검사, 계정 관리 등), 수정 즉시 적용 및 런타임에 전파
 - **모델 매핑**: 요청의 모델 이름을 실제 사용 모델로 매핑(예: gpt-4o → gemini-2.5-pro)
 - **액세스 키**: 배포용 인바운드 키를 발급/편집/비활성화/삭제하며, 상태·사용량·적용 범위가 목록에 바로 표시됩니다(아래의 "API Key 관리"와는 무관합니다. 그쪽은 타사 **아웃바운드** Key를 관리합니다)
@@ -195,6 +195,17 @@
 > [!TIP]
 > Docker 배포를 사용하면 로컬에 Python 환경을 설치할 필요가 없으며, Docker와 유효한 쿠키만 있으면 됩니다.
 
+### 💾 메모리가 작은 머신
+
+실측(v1.6.54, 계정 3개로 몇 시간 연속 실행): 서비스 전체가 **약 85~105 MB의 메모리**를 쓰고, 유휴 시 CPU는 1% 미만입니다. 서비스 자체가 요청 하나를 처리하는 데는 약 2밀리초가 걸리며, 시간은 거의 전부 Google의 생성을 기다리는 데 쓰입니다.
+
+- **위 사용량으로 추산하면 256 MB 메모리로도 실행할 수 있으며, 512 MB 이상을 권장**합니다(OS와 Docker 자체 포함). 계정이 하나 늘 때마다 몇 MB씩 늘어납니다.
+- 시간이 지나며 커지는 것은 주로 **사용량 통계**입니다(`data/usage-stats.json`의 기록 스냅샷, 기본 30일 보관; 실측 9.7 MB 파일이 메모리에서 약 14 MB). 메모리가 빠듯하면 다음처럼 할 수 있습니다(패널 '설정' 페이지에서도 변경 가능):
+  - 보관 기간 줄이기: `USAGE_STATS_RETENTION_DAYS=7`
+  - 수집 간격 늘리기: `USAGE_STATS_INTERVAL=900`
+  - 또는 통계 끄기: `USAGE_STATS_ENABLED=false`(패널의 사용량 통계 페이지에 데이터가 더 이상 표시되지 않음)
+- 이미지는 약 312 MB로 디스크만 차지하고 메모리는 쓰지 않습니다. `linux/amd64`와 `linux/arm64` 모두 바로 pull할 수 있습니다.
+
 ---
 
 ## ⚡ 빠른 배포
@@ -208,7 +219,7 @@
 > [!IMPORTANT]
 > **Google의 2026-11-20 변경 이후로는 아래 두 값만으로는 부족합니다.** `__Secure-1PSID` / `__Secure-1PSIDTS`만으로 Gemini를 열면 Google 로그인 페이지로 리디렉션되어 로그아웃된 게스트로 동작합니다(모델은 Auto 하나뿐이고 다른 모델은 모두 오류). 이제 브라우저의 **Google 쿠키 전체**가 필요하며, 여기에는 `gemini.google.com` 자체의 `OSID` / `__Secure-OSID`도 포함됩니다. 이 두 값만 있는 계정은 인증 실패(상태 `expired`)로 처리되며, 오류 메시지는 "Google now requires the full cookie set (including the OSID cookie of gemini.google.com) … / 谷歌要求完整 Cookie（含 gemini.google.com 的 OSID）…" 입니다.
 > - **권장**: 브라우저 확장 프로그램 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) **1.4.0 이상**을 설치하면 전체 쿠키(`OSID` 포함)를 자동으로 보냅니다. 1.3.x 이하는 이 두 값만 보내므로 업그레이드하세요.
-> - **수동**: 아래 단계대로 이 두 값으로 계정을 추가한 다음, 패널의 "계정 관리" → "Cookie 갱신"에 **전체 Cookie 헤더**를 붙여넣으세요: 개발자 도구 → **Network**(네트워크) → `gemini.google.com`으로 가는 요청 하나 선택 → Request Headers의 `Cookie`를 통째로 복사.
+> - **수동**: 패널의 "계정 관리" → "계정 추가" 또는 "Cookie 갱신"에 **전체 Cookie 헤더**를 바로 붙여넣으세요(계정 추가 시 전체 헤더를 붙여넣으면 아래 두 값은 비워 두어도 됩니다): 개발자 도구 → **Network**(네트워크) → `gemini.google.com`으로 가는 요청 하나 선택 → Request Headers의 `Cookie`를 통째로 복사.(`.env` / `accounts.json`으로 처음 기동할 때는 아래 단계대로 두 값을 입력한 뒤 "Cookie 갱신"에서 전체 헤더를 붙여넣을 수도 있으며, 계정 라벨도 패널에서 온라인으로 편집할 수 있습니다.)
 > - 전체 쿠키는 해당 계정의 `data/cookies/<hash>.json`에만 저장되고, `.env` / `accounts.json`에는 예전처럼 이 두 값만 있습니다. 각 요청은 쿠키의 실제 도메인에 맞춰 보냅니다(`OSID`는 gemini.google.com에만 전송).
 
 1. Chrome 또는 Edge 브라우저로 [gemini.google.com](https://gemini.google.com) 방문
@@ -271,7 +282,7 @@ docker compose logs -f
 
 ### 쿠키 자동 유지
 
-gemini2api는 기본적으로 `REFRESH_INTERVAL`(기본 30분, 하한 10분)마다 Google RotateCookies API로 `__Secure-1PSIDTS`를 갱신합니다. 웹 패널의 "Cookie 갱신"으로 서비스를 재시작하지 않고 쿠키를 바꿀 수도 있습니다. 이제는 **전체 Cookie 헤더**(`OSID` 포함)를 붙여넣어야 합니다. 위의 "1. 쿠키 획득"을 참고하세요.
+gemini2api는 기본적으로 `REFRESH_INTERVAL`(기본 30분, 하한 10분)마다 Google RotateCookies API로 `__Secure-1PSIDTS`를 갱신합니다. 웹 패널의 "계정 관리" → "계정 추가" 또는 "Cookie 갱신"에서 **전체 Cookie 헤더**(`OSID` 포함)를 바로 붙여넣어 서비스를 재시작하지 않고 계정을 추가하거나 쿠키를 바꿀 수 있으며, 계정 라벨도 패널에서 온라인으로 수정할 수 있습니다. 위의 "1. 쿠키 획득"을 참고하세요.
 
 #### 두 가지 유지 방식: 서버 측 로테이션 / 브라우저 확장 프로그램 전송
 
@@ -628,6 +639,8 @@ PR과 Issue를 환영합니다.
 [Issues](https://github.com/xwteam/gemini2api/issues)에서 버그 재현, 로그, 호환성 피드백, 기능 제안을 제출해 주신 모든 사용자에게 감사드립니다. 이러한 피드백이 Cookie 유지, 다중 계정 순환, 모델 선택, 다국어 지원, Web 패널 등 핵심 기능의 발전을 직접적으로 이끌었습니다.
 
 [@Cznorth](https://github.com/Cznorth) 님께 특별히 감사드립니다. [PR #16](https://github.com/xwteam/gemini2api/pull/16)에서 Google의 2026-11-20 변경 이후 로그인 페이지에도 `SNlM0e`가 들어 있어, 서비스가 이를 유효한 세션으로 오인하고 실제로는 로그인하지 않은 게스트로 동작하고 있었다는 점을 가장 먼저 짚어 주셨습니다. 이 판정은 [v1.6.53](https://github.com/xwteam/gemini2api/releases/tag/v1.6.53)에 반영했고, 같은 버전에서 전체 쿠키 로그인과 브라우저 확장 1.4.0도 추가했습니다.
+
+또한 [@lianjiexu08-ui](https://github.com/lianjiexu08-ui) 님의 [PR #12](https://github.com/xwteam/gemini2api/pull/12), [#13](https://github.com/xwteam/gemini2api/pull/13), [#14](https://github.com/xwteam/gemini2api/pull/14)에도 감사드립니다. #12에서는 패널로 추가한 계정이 컨테이너 재빌드 후 사라지는 문제를 짚어 주셨고(v1.6.49부터 계정은 기본적으로 `data/`에 저장됩니다), #13의 온라인 라벨 편집과 #14의 계정 추가 시 전체 Cookie 헤더 붙여넣기 아이디어는 v1.6.55에 구현했습니다.
 
 ---
 

@@ -930,7 +930,35 @@ curl http://localhost:5918/admin/accounts \
 
 动态添加新账号。
 
-**请求**：
+**请求字段**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `psid` | string | 条件必填 | `__Secure-1PSID`；未带 `cookies` / `cookie_header` 时必填（缺失返回 400 `"type": "invalid_request_error"`）；带了整套 Cookie 时可省略，也可以同时传入做一致性校验 |
+| `psidts` | string | ❌ | `__Secure-1PSIDTS`；带了整套 Cookie 时可省略或传入校验 |
+| `label` | string | ❌ | 账号标签（默认为空） |
+| `cookies` | array | ❌ | 整套 Cookie（`BrowserCookie` 数组，格式同 `PUT /admin/accounts/{id}/cookies`） |
+| `cookie_header` | string | ❌ | 浏览器发往 `gemini.google.com` 的整段 `Cookie:` 请求头（面板「添加账号」粘贴的就是它） |
+
+**整套 Cookie 说明（v1.6.55 起）**：
+- `cookies` 与 `cookie_header` **二选一**（语义与 `PUT /admin/accounts/{id}/cookies` 一致）：带了任意一个即按整套 Cookie 处理，在新账号**首次初始化（首次 `GET /app`）前**装入其 Cookie 罐（`data/cookies/<hash>.json`，`accounts.json` 照旧存 `psid` / `psidts`），并按 Cookie 真实域名发送。
+- 带整套 Cookie 时，`psid` / `psidts` 可以不填，服务端会自动从整套里 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS` 提取；如果同时填了 `psid` / `psidts`，必须与整套里的取值一致。以下情况均返回 400（`"type": "invalid_cookies"`）：同时传了 `cookies` 和 `cookie_header`、整套里缺少 `.google.com` 的 `__Secure-1PSID`、没有可用的 google.com Cookie、或传入的 `psid` / `psidts` 与整套不一致。
+- 两者都不带时：`psid` 必填（缺失返回 400 `"type": "invalid_request_error"`），行为与 v1.6.54 一致。
+- **查重**：若池中已有账号使用相同的 PSID，返回 409（`"type": "duplicate_account"`），不会创建新账号。
+- 错误信息、响应与日志中绝不暴露任何 Cookie 值（`/admin/*` 的 422 请求体校验错误也不回显请求体）。
+
+**请求示例（整段 Cookie，推荐）**：
+```bash
+curl -X POST http://localhost:5918/admin/accounts \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.a000新的值; __Secure-1PSIDTS=sidts-新的值; OSID=…; __Secure-OSID=…",
+    "label": "新账号"
+  }'
+```
+
+**请求示例（仅 PSID / PSIDTS）**：
 ```bash
 curl -X POST http://localhost:5918/admin/accounts \
   -H "Content-Type: application/json" \
@@ -945,13 +973,47 @@ curl -X POST http://localhost:5918/admin/accounts \
 **响应**：
 ```json
 {
-  "id": "account-2",
   "status": "ok",
-  "message": "Account added successfully"
+  "account": {
+    "id": "account-2",
+    "label": "新账号",
+    "status": "active"
+  },
+  "full_cookie_set": true
 }
 ```
 
+> `full_cookie_set` 为布尔值：请求带了 `cookies` 或 `cookie_header` 时为 `true`，否则为 `false`。
+
 新添加的账号同样按请求来源记录 `keepalive_mode`（规则同 `PUT /admin/accounts/{id}/cookies`，面板「添加账号」和脚本添加的是 `server`）。删除账号不会清掉它那个 PSID 的记录，但用同一份 cookie 加回来时会按这次的来源重新记录。
+
+### PATCH /admin/accounts/{id}
+
+修改指定账号的标签（v1.6.55 起）。
+
+**请求**：
+```bash
+curl -X PATCH http://localhost:5918/admin/accounts/account-0 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{"label": "主账号"}'
+```
+
+- 请求体：`{"label": "..."}`。去除首尾空白后的长度必须为 **1～64 个字符**且**不能包含控制字符**，否则返回 400（`"type": "invalid_request_error"`）。
+- 账号不存在时返回 404（`"type": "not_found"`）。
+
+**响应**：
+```json
+{
+  "status": "ok",
+  "account": {
+    "id": "account-0",
+    "label": "主账号"
+  }
+}
+```
+
+只更新账号标签，不改动凭据、账号状态或保活方式；标签会原子写回 `accounts.json`，并在 `GET /admin/status` 与 `GET /admin/accounts` 中立即反映。
 
 ### DELETE /admin/accounts/{id}
 

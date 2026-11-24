@@ -898,7 +898,36 @@ curl http://localhost:5918/admin/accounts \
 
 새 계정 추가
 
-**요청**:
+**요청 필드**:
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `psid` | string | 조건부 필수 | `__Secure-1PSID`. `cookies` / `cookie_header`가 없을 때 필수(누락 시 400 `"type": "invalid_request_error"`). 전체 쿠키를 함께 보내면 생략 가능하며, 교차 검증을 위해 함께 전달할 수도 있음 |
+| `psidts` | string | ❌ | `__Secure-1PSIDTS`. 전체 쿠키를 보낼 때 생략하거나 검증용으로 전달 가능 |
+| `label` | string | ❌ | 계정 라벨(기본값 빈 문자열) |
+| `cookies` | array | ❌ | 전체 쿠키(`BrowserCookie` 배열, 형식은 `PUT /admin/accounts/{id}/cookies`와 동일) |
+| `cookie_header` | string | ❌ | 브라우저가 `gemini.google.com`으로 보내는 `Cookie:` 요청 헤더 전체(패널의 "계정 추가"에서 붙여넣는 값) |
+
+**전체 쿠키 안내(v1.6.55부터)**:
+- `cookies`와 `cookie_header`는 **둘 중 하나만** 지정할 수 있습니다(`PUT /admin/accounts/{id}/cookies`와 같은 규칙). 둘 중 하나가 포함되면 전체 쿠키 세트로 처리하여 새 계정의 **첫 초기화(첫 `GET /app`) 전**에 해당 계정의 쿠키 저장소(`data/cookies/<hash>.json`, `accounts.json`에는 예전처럼 `psid` / `psidts` 저장)에 장착하고 각 쿠키의 실제 도메인에 맞춰 전송합니다.
+- `cookies` 또는 `cookie_header`가 있으면 `psid` / `psidts`는 생략할 수 있으며 세트 안의 `.google.com` `__Secure-1PSID` / `__Secure-1PSIDTS`에서 자동 추출합니다. `psid` / `psidts`를 함께 보낸 경우에는 세트의 값과 일치해야 합니다. 두 필드를 동시에 보내거나, 세트에 `.google.com`의 `__Secure-1PSID`가 없거나, 사용 가능한 google.com 쿠키가 없거나, `psid` / `psidts`가 일치하지 않으면 400(`"type": "invalid_cookies"`)을 반환합니다.
+- 두 필드가 모두 없으면 `psid`가 필수이며(누락 시 400 `"type": "invalid_request_error"`), v1.6.54와 동일하게 동작합니다.
+- **중복 검사**: 이미 같은 PSID를 가진 계정이 있으면 409(`"type": "duplicate_account"`)를 반환하고 계정을 생성하지 않습니다.
+- 오류 메시지, 응답, 로그에는 쿠키 값이 절대 노출되지 않습니다(`/admin/*`의 422 요청 본문 검증 오류도 요청 본문을 되돌려 주지 않음).
+
+**요청 예제(전체 Cookie 헤더, 권장)**:
+
+```bash
+curl -X POST http://localhost:5918/admin/accounts \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-당신의키" \
+  -d '{
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.a000xxx...; __Secure-1PSIDTS=sidts-xxx...; OSID=…; __Secure-OSID=…",
+    "label": "새 계정"
+  }'
+```
+
+**요청 예제(`psid` / `psidts`만 전송)**:
 
 ```bash
 curl -X POST http://localhost:5918/admin/accounts \
@@ -915,13 +944,49 @@ curl -X POST http://localhost:5918/admin/accounts \
 
 ```json
 {
-  "id": "account-1",
-  "label": "새 계정",
-  "status": "active"
+  "status": "ok",
+  "account": {
+    "id": "account-1",
+    "label": "새 계정",
+    "status": "active"
+  },
+  "full_cookie_set": true
 }
 ```
 
+> `full_cookie_set`은 `cookies` 또는 `cookie_header`가 전달되면 `true`, 아니면 `false`입니다.
+
 새로 추가한 계정도 요청 출처에 따라 `keepalive_mode`를 기록합니다(규칙은 `PUT /admin/accounts/{id}/cookies`와 같으며, 패널의 "계정 추가"나 스크립트로 추가한 계정은 `server`). 계정을 삭제해도 그 PSID의 기록은 지워지지 않지만, 같은 쿠키로 다시 추가하면 이번 요청 출처에 따라 다시 기록합니다.
+
+### PATCH /admin/accounts/{id}
+
+계정 라벨 수정(v1.6.55부터)
+
+**요청**:
+
+```bash
+curl -X PATCH http://localhost:5918/admin/accounts/account-0 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-당신의키" \
+  -d '{"label": "주 계정"}'
+```
+
+- 요청 본문: `{"label": "..."}`. 앞뒤 공백을 제거한 길이가 **1~64자**여야 하고 **제어 문자를 포함하지 않아야** 하며, 그렇지 않으면 400(`"type": "invalid_request_error"`)을 반환합니다.
+- 계정을 찾을 수 없으면 404(`"type": "not_found"`)를 반환합니다.
+
+**응답**:
+
+```json
+{
+  "status": "ok",
+  "account": {
+    "id": "account-0",
+    "label": "주 계정"
+  }
+}
+```
+
+라벨은 `accounts.json`에 원자적으로 저장되어 `GET /admin/status`와 `GET /admin/accounts`에 즉시 반영되며, 라벨만 변경하고 자격 증명, 상태, 유지 방식(`keepalive_mode`)은 건드리지 않습니다.
 
 ### DELETE /admin/accounts/{id}
 

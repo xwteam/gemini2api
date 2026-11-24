@@ -758,25 +758,90 @@ curl http://localhost:5918/admin/accounts \
 
 新增帳號。
 
-**請求體：**
-```json
-{
-  "psid": "g.a000xxx...",
-  "psidts": "sidts-xxx...",
-  "label": "新帳號"
-}
+**請求欄位：**
+
+| 欄位 | 類型 | 必填 | 說明 |
+|------|------|------|------|
+| `psid` | string | 條件必填 | `__Secure-1PSID`；未帶 `cookies` / `cookie_header` 時必填（缺失回傳 400 `"type": "invalid_request_error"`）；帶了整套 Cookie 時可省略，也可同時傳入做一致性校驗 |
+| `psidts` | string | ❌ | `__Secure-1PSIDTS`；帶了整套 Cookie 時可省略或傳入校驗 |
+| `label` | string | ❌ | 帳號標籤（預設為空） |
+| `cookies` | array | ❌ | 整套 Cookie（`BrowserCookie` 陣列，格式同 `PUT /admin/accounts/{id}/cookies`） |
+| `cookie_header` | string | ❌ | 瀏覽器發給 `gemini.google.com` 的整段 `Cookie:` 請求標頭（面板「新增帳號」貼上的就是它） |
+
+**整套 Cookie 說明（v1.6.55 起）：**
+- `cookies` 與 `cookie_header` **二選一**（語意與 `PUT /admin/accounts/{id}/cookies` 相同）：帶了任一個即依整套 Cookie 處理，在新帳號**首次初始化（首次 `GET /app`）前**裝入其 Cookie 罐（`data/cookies/<hash>.json`，`accounts.json` 照舊只存 `psid` / `psidts`），並依 Cookie 的真實網域發送。
+- 帶整套 Cookie 時，`psid` / `psidts` 可以不填，伺服器會自動從整套裡 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS` 擷取；若同時填了 `psid` / `psidts`，必須與整套裡的值一致。以下情況均回傳 400（`"type": "invalid_cookies"`）：同時傳了 `cookies` 與 `cookie_header`、整套裡缺少 `.google.com` 的 `__Secure-1PSID`、沒有可用的 google.com Cookie、或傳入的 `psid` / `psidts` 與整套不一致。
+- 兩者都不帶時：`psid` 必填（缺失回傳 400 `"type": "invalid_request_error"`），行為與 v1.6.54 一致。
+- **查重**：若池中已有帳號使用相同的 PSID，回傳 409（`"type": "duplicate_account"`），不會建立新帳號。
+- 錯誤訊息、回應與日誌中絕不暴露任何 Cookie 值（`/admin/*` 的 422 請求體驗證錯誤也不回顯請求體）。
+
+**請求範例（整段 Cookie，推薦）：**
+```bash
+curl -X POST http://localhost:5918/admin/accounts \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.a000xxx...; __Secure-1PSIDTS=sidts-xxx...; OSID=…; __Secure-OSID=…",
+    "label": "新帳號"
+  }'
+```
+
+**請求範例（僅 PSID / PSIDTS）：**
+```bash
+curl -X POST http://localhost:5918/admin/accounts \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "psid": "g.a000xxx...",
+    "psidts": "sidts-xxx...",
+    "label": "新帳號"
+  }'
 ```
 
 **回應：**
 ```json
 {
-  "id": "account-2",
-  "label": "新帳號",
-  "healthy": true
+  "status": "ok",
+  "account": {
+    "id": "account-2",
+    "label": "新帳號",
+    "status": "active"
+  },
+  "full_cookie_set": true
 }
 ```
 
+> `full_cookie_set` 為布林值：請求帶了 `cookies` 或 `cookie_header` 時為 `true`，否則為 `false`。
+
 新增的帳號同樣依請求來源記錄 `keepalive_mode`（規則同 `PUT /admin/accounts/{id}/cookies`，面板「新增帳號」和腳本新增的是 `server`）。刪除帳號不會清掉它那個 PSID 的記錄，但用同一份 cookie 加回來時會依這次的來源重新記錄。
+
+### PATCH /admin/accounts/{id}
+
+修改指定帳號的標籤（v1.6.55 起）。
+
+**請求：**
+```bash
+curl -X PATCH http://localhost:5918/admin/accounts/account-0 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"label": "主帳號"}'
+```
+
+- 請求體：`{"label": "..."}`。去除首尾空白後的長度必須為 **1～64 個字元**且**不可包含控制字元**，否則回傳 400（`"type": "invalid_request_error"`）。
+- 帳號不存在時回傳 404（`"type": "not_found"`）。
+
+**回應：**
+```json
+{
+  "status": "ok",
+  "account": {
+    "id": "account-0",
+    "label": "主帳號"
+  }
+}
+```
+
+只更新帳號標籤，不更動憑據、帳號狀態或保活方式；標籤會原子寫回 `accounts.json`，並在 `GET /admin/status` 與 `GET /admin/accounts` 中立即反映。
 
 ### DELETE /accounts/{id}
 

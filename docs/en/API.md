@@ -844,7 +844,35 @@ curl http://localhost:5918/admin/accounts \
 
 Add a new account.
 
-**Request:**
+**Request fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `psid` | string | Conditional | `__Secure-1PSID`; required when neither `cookies` nor `cookie_header` is given (missing returns 400 `"type": "invalid_request_error"`); optional when a full cookie set is sent (or may be given to cross-check) |
+| `psidts` | string | ❌ | `__Secure-1PSIDTS`; optional when a full cookie set is sent (or may be given to cross-check) |
+| `label` | string | ❌ | Account label (empty by default) |
+| `cookies` | array | ❌ | Full cookie set (`BrowserCookie` array, same format as `PUT /admin/accounts/{id}/cookies`) |
+| `cookie_header` | string | ❌ | Whole `Cookie:` request header sent to `gemini.google.com` (what the panel's "Add Account" pastes) |
+
+**Full cookie set (from v1.6.55):**
+- `cookies` and `cookie_header` are **mutually exclusive** (same semantics as `PUT /admin/accounts/{id}/cookies`): when either is provided, it is treated as a full cookie set and loaded into the account's cookie jar (`data/cookies/<hash>.json`, while `accounts.json` still stores `psid` / `psidts`) **before** the new account's first initialization (first `GET /app`), with each cookie sent to its real domain.
+- When `cookies` or `cookie_header` is provided, `psid` / `psidts` may be omitted and are extracted from `.google.com`'s `__Secure-1PSID` / `__Secure-1PSIDTS` in the set; if `psid` / `psidts` are also supplied, they must match the set. Sending both `cookies` and `cookie_header`, a set missing `.google.com`'s `__Secure-1PSID`, a set with no usable google.com cookies, or a `psid` / `psidts` mismatch returns 400 (`"type": "invalid_cookies"`).
+- When neither is provided, `psid` is required (missing returns 400 `"type": "invalid_request_error"`), matching v1.6.54 behavior.
+- **Duplicate check**: if an existing account already has the same PSID, returns 409 (`"type": "duplicate_account"`) without creating an account.
+- Cookie values never appear in error messages, responses, or logs (and 422 body-validation errors on `/admin/*` do not echo the request body).
+
+**Request example (whole Cookie header, recommended):**
+```bash
+curl -X POST http://localhost:5918/admin/accounts \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.a000xxx...; __Secure-1PSIDTS=sidts-xxx...; OSID=…; __Secure-OSID=…",
+    "label": "New Account"
+  }'
+```
+
+**Request example (`psid` / `psidts` only):**
 ```bash
 curl -X POST http://localhost:5918/admin/accounts \
   -H "Content-Type: application/json" \
@@ -863,12 +891,43 @@ curl -X POST http://localhost:5918/admin/accounts \
   "account": {
     "id": "account-1",
     "label": "New Account",
-    "status": "healthy"
+    "status": "active"
+  },
+  "full_cookie_set": true
+}
+```
+
+> `full_cookie_set` is `true` when `cookies` or `cookie_header` was provided, `false` otherwise.
+
+A newly added account also gets its `keepalive_mode` recorded from the request source (same rules as `PUT /admin/accounts/{id}/cookies`; accounts added through the panel's "Add Account" or by a script are `server`). Deleting an account does not clear the record for its PSID, but adding it back with the same cookies records it again from the new request.
+
+### PATCH /admin/accounts/{id}
+
+Edit an account's label (from v1.6.55).
+
+**Request:**
+```bash
+curl -X PATCH http://localhost:5918/admin/accounts/account-0 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"label": "Primary Account"}'
+```
+
+- Request body: `{"label": "..."}`. After trimming leading/trailing whitespace, length must be **1–64 characters** with **no control characters**; otherwise returns 400 (`"type": "invalid_request_error"`).
+- Account not found returns 404 (`"type": "not_found"`).
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "account": {
+    "id": "account-0",
+    "label": "Primary Account"
   }
 }
 ```
 
-A newly added account also gets its `keepalive_mode` recorded from the request source (same rules as `PUT /admin/accounts/{id}/cookies`; accounts added through the panel's "Add Account" or by a script are `server`). Deleting an account does not clear the record for its PSID, but adding it back with the same cookies records it again from the new request.
+Atomically persisted to `accounts.json` and reflected immediately in `GET /admin/status` and `GET /admin/accounts`; only updates the label without touching credentials, account status, or keep-alive mode.
 
 ### DELETE /admin/accounts/{id}
 

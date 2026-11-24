@@ -861,7 +861,36 @@ curl http://localhost:5918/admin/accounts \
 
 新しいアカウントを追加します。
 
-**リクエスト:**
+**リクエストフィールド:**
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| `psid` | string | 条件付き必須 | `__Secure-1PSID`。`cookies` / `cookie_header` がない場合は必須（欠落時は 400 `"type": "invalid_request_error"`）。Cookie 一式を指定する場合は省略可能、または整合性検証のために併記可 |
+| `psidts` | string | ❌ | `__Secure-1PSIDTS`。Cookie 一式を指定する場合は省略可能または検証用に併記可 |
+| `label` | string | ❌ | アカウントのラベル（デフォルトは空） |
+| `cookies` | array | ❌ | Cookie 一式（`BrowserCookie` 配列。形式は `PUT /admin/accounts/{id}/cookies` と同じ） |
+| `cookie_header` | string | ❌ | ブラウザが `gemini.google.com` に送る `Cookie:` リクエストヘッダー全体（パネルの「アカウント追加」で貼り付けるもの） |
+
+**Cookie 一式（v1.6.55 以降）:**
+- `cookies` と `cookie_header` は**どちらか一方のみ**指定可能（挙動は `PUT /admin/accounts/{id}/cookies` と同じ）：どちらかを指定すると Cookie 一式として扱われ、新しいアカウントの**初回初期化（最初の `GET /app`）前**にその Cookie ジャー（`data/cookies/<hash>.json`、`accounts.json` には従来どおり `psid` / `psidts` を記録）へ読み込まれ、実際のドメインに従って送信されます。
+- `cookies` または `cookie_header` を指定した場合、`psid` / `psidts` は省略でき、一式内の `.google.com` の `__Secure-1PSID` / `__Secure-1PSIDTS` から抽出されます。`psid` / `psidts` を併記した場合は一式と一致する必要があります。両方同時に指定した場合、一式に `.google.com` の `__Secure-1PSID` がない場合、有効な google.com Cookie がない場合、または `psid` / `psidts` が不一致の場合は 400（`"type": "invalid_cookies"`）を返します。
+- どちらも指定しない場合は `psid` が必須となり（欠落時は 400 `"type": "invalid_request_error"`）、v1.6.54 と同じ挙動になります。
+- **重複チェック**: すでに同じ PSID を持つアカウントが存在する場合は 409（`"type": "duplicate_account"`）を返し、アカウントは作成されません。
+- エラーメッセージ、レスポンス、ログに Cookie の値は一切出力されません（`/admin/*` の 422 リクエストボディ検証エラーもリクエストボディを返しません）。
+
+**リクエスト例（Cookie ヘッダー全体、推奨）:**
+
+```bash
+curl -X POST http://localhost:5918/admin/accounts \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.新しい値; __Secure-1PSIDTS=sidts-新しい値; OSID=…; __Secure-OSID=…",
+    "label": "新規アカウント"
+  }'
+```
+
+**リクエスト例（PSID / PSIDTS のみ）:**
 
 ```bash
 curl -X POST http://localhost:5918/admin/accounts \
@@ -882,12 +911,45 @@ curl -X POST http://localhost:5918/admin/accounts \
   "account": {
     "id": "account-1",
     "label": "新規アカウント",
-    "status": "healthy"
+    "status": "active"
+  },
+  "full_cookie_set": true
+}
+```
+
+> `full_cookie_set` は `cookies` または `cookie_header` を指定した場合に `true`、それ以外は `false` になります。
+
+新しく追加したアカウントも送信元から `keepalive_mode` を記録します（ルールは `PUT /admin/accounts/{id}/cookies` と同じ。パネルの「アカウント追加」やスクリプトで追加したものは `server`）。アカウントを削除してもその PSID の記録は消えませんが、同じ Cookie で追加し直すと今回の送信元で記録し直します。
+
+### PATCH /admin/accounts/{id}
+
+アカウントのラベルを変更します（v1.6.55 以降）。
+
+**リクエスト:**
+
+```bash
+curl -X PATCH http://localhost:5918/admin/accounts/account-0 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{"label": "メインアカウント"}'
+```
+
+- リクエストボディ：`{"label": "..."}`。前後の空白を除いた長さが **1〜64 文字**で**制御文字を含まない**必要があります（それ以外は 400 `"type": "invalid_request_error"`）。
+- アカウントが存在しない場合は 404（`"type": "not_found"`）を返します。
+
+**レスポンス:**
+
+```json
+{
+  "status": "ok",
+  "account": {
+    "id": "account-0",
+    "label": "メインアカウント"
   }
 }
 ```
 
-新しく追加したアカウントも送信元から `keepalive_mode` を記録します（ルールは `PUT /admin/accounts/{id}/cookies` と同じ。パネルの「アカウント追加」やスクリプトで追加したものは `server`）。アカウントを削除してもその PSID の記録は消えませんが、同じ Cookie で追加し直すと今回の送信元で記録し直します。
+`accounts.json` へアトミックに永続化され、`GET /admin/status` と `GET /admin/accounts` に即座に反映されます。ラベルのみを更新し、認証情報、ステータス、保持方式（`keepalive_mode`）には一切触れません。
 
 ### DELETE /admin/accounts/{id}
 

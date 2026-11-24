@@ -156,7 +156,7 @@ Level parameters per protocol (**no level specified → default level**; a reque
 - Top-right control bar: theme toggle, service restart, logout
 - Dashboard: real-time uptime counter, QR code cards (image zoom support), system info (version/Python/OS/memory/CPU/PID/mode), config management, account status overview, available models list
 - **Hot-update resources**: `api/` directory volume mount, QR code images and text config changes take effect on page refresh without container rebuild
-- Account management: add/delete accounts, update individual cookies, health checks
+- Account management: add accounts (paste the whole Cookie header directly) / delete accounts, edit labels online, update individual cookies, health checks
 - **Settings page**: visual runtime config management (performance, rate limiting, health checks, account management), changes take effect immediately
 - **Model mapping**: map request model names to actual models (e.g., gpt-4o → gemini-2.5-pro)
 - **Access keys**: issue / edit / disable / revoke distributable inbound keys, with state, usage and scope shown right in the list (unrelated to "API Key management" below, which manages third-party **outbound** keys)
@@ -195,6 +195,17 @@ Level parameters per protocol (**no level specified → default level**; a reque
 > [!TIP]
 > Docker deployment requires no local Python installation, just Docker and valid cookies.
 
+### 💾 Low-Memory Machines
+
+Measured on v1.6.54 with 3 accounts after several hours of uptime: the whole service uses about **85–105 MB of RAM** and under 1% CPU when idle. The service's own work per request takes about 2 ms; almost all of the time is spent waiting for Google to generate.
+
+- **Based on the figures above, 256 MB of RAM should be enough; 512 MB or more is recommended** (including the OS and Docker itself). Each extra account adds a few MB.
+- The part that grows over time is mainly **usage statistics** (the history snapshots in `data/usage-stats.json`, kept for 30 days by default; a 9.7 MB file takes about 14 MB in memory). If memory is tight (these can also be changed on the panel's Settings page):
+  - keep less history: `USAGE_STATS_RETENTION_DAYS=7`;
+  - sample less often: `USAGE_STATS_INTERVAL=900`;
+  - or turn statistics off: `USAGE_STATS_ENABLED=false` (the panel's usage page will then have no data).
+- The image is about 312 MB on disk and does not count toward RAM; both `linux/amd64` and `linux/arm64` can be pulled directly.
+
 ---
 
 ## ⚡ Quick Deployment
@@ -208,7 +219,7 @@ Level parameters per protocol (**no level specified → default level**; a reque
 > [!IMPORTANT]
 > **Since Google's 2026-11-20 change, the two values below are no longer enough.** With only `__Secure-1PSID` / `__Secure-1PSIDTS`, Gemini redirects to the Google sign-in page and runs as a signed-out guest (a single Auto model; every other model fails). You now need the **full set of Google cookies** from your browser, including `gemini.google.com`'s own `OSID` / `__Secure-OSID`. An account with only these two values is reported as an authentication failure (status `expired`) with the message "Google now requires the full cookie set (including the OSID cookie of gemini.google.com): upgrade the browser plugin to 1.4.0 or paste the whole Cookie header in the panel".
 > - **Recommended:** install the browser extension [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) **1.4.0 or later**; it pushes the full set (including `OSID`) automatically. 1.3.x and earlier push only these two values — please upgrade.
-> - **Manually:** add the account with these two values as below, then open the panel's "Account Management" → "Update Cookie" and paste the **whole Cookie header**: DevTools → **Network** → pick any request to `gemini.google.com` → copy the entire `Cookie` value under Request Headers.
+> - **Manually:** paste the **whole Cookie header** directly in the panel's "Account Management" → "Add Account" or "Update Cookie" (when pasting the whole header in "Add Account", the two fields below can be left empty): DevTools → **Network** → pick any request to `gemini.google.com` → copy the entire `Cookie` value under Request Headers. (If bootstrapping first via `.env` / `accounts.json`, you can still fill in the two values below and later paste the whole header under "Update Cookie"; account labels can also be edited online in the panel.)
 > - The full set is stored only in the account's `data/cookies/<hash>.json`; `.env` / `accounts.json` still hold just these two values. Every request sends cookies by their real domain (`OSID` goes to gemini.google.com only).
 
 1. Open Chrome or Edge browser and visit [gemini.google.com](https://gemini.google.com)
@@ -303,7 +314,7 @@ gemini2api has built-in cookie auto-rotation: it refreshes `__Secure-1PSIDTS` ev
 > **The default for `REFRESH_INTERVAL` changed from 5 minutes to 30 minutes, and the code now clamps it to a 10-minute floor** (smaller values are raised to 10 and named in the startup log).
 > Why: the rotation loop used to be started **only when the gateway failed to obtain a token at boot**, which means a normally started gateway never rotated at all and its cookies died after a few hours ([issue #11](https://github.com/xwteam/gemini2api/issues/11)). Now that the loop is always resident, the same interval would raise background traffic to Google roughly 3.5×, so the interval has to widen to match — rotating too often looks automated to Google and tends to get the session flagged, which kills it faster than not rotating.
 
-To manually update cookies, use the Web panel's "Account Management" → "Update Cookie" without restarting the service. Paste the **whole Cookie header** (including `OSID`) there — see "1. Get Cookies" above.
+To manually add an account or update cookies, use the Web panel's "Account Management" → "Add Account" or "Update Cookie" and paste the **whole Cookie header** (including `OSID`) directly without restarting the service; account labels can also be edited online in the panel — see "1. Get Cookies" above.
 
 > [!NOTE]
 > Cookie lifetime is affected by Google's risk control policies. Datacenter IPs typically last several hours. If cookies expire frequently, consider using residential IPs or adding more accounts for rotation.
@@ -483,7 +494,8 @@ response = client.chat.completions.create(
 | GET | `/status` | Service status (account pool overview + rotation strategy) |
 | GET | `/system-info` | System info (version/Python/OS/memory/CPU/PID/run mode) |
 | GET | `/accounts` | All accounts list and status |
-| POST | `/accounts` | Dynamically add new account |
+| POST | `/accounts` | Dynamically add new account (supports full cookie set) |
+| PATCH | `/accounts/{id}` | Edit account label |
 | DELETE | `/accounts/{id}` | Remove account |
 | GET | `/accounts/{id}/check` | Check single account status |
 | GET | `/check-account` | Check all accounts status |
@@ -745,6 +757,8 @@ PRs and Issues welcome.
 Thanks to everyone who submitted bug reports, logs, compatibility feedback, and feature suggestions through [Issues](https://github.com/xwteam/gemini2api/issues). Your feedback directly drove the development of Cookie persistence, multi-account rotation, model selection, multi-language support, and the Web panel.
 
 Special thanks to [@Cznorth](https://github.com/Cznorth) for [PR #16](https://github.com/xwteam/gemini2api/pull/16), which was the first to point out that after Google's 2026-11-20 change the Google sign-in page also carries an `SNlM0e`, so the service mistook it for a valid session and actually ran as a logged-out guest. This check is part of [v1.6.53](https://github.com/xwteam/gemini2api/releases/tag/v1.6.53), which also adds full-cookie sign-in and browser plugin 1.4.0.
+
+Thanks also to [@lianjiexu08-ui](https://github.com/lianjiexu08-ui) for [PR #12](https://github.com/xwteam/gemini2api/pull/12), [#13](https://github.com/xwteam/gemini2api/pull/13), and [#14](https://github.com/xwteam/gemini2api/pull/14): #12 pointed out that accounts added through the panel were lost after container rebuilds (accounts have been stored under `data/` by default since v1.6.49), and the ideas from #13 (online label editing) and #14 (pasting the full Cookie header when adding an account) have been implemented in v1.6.55.
 
 ---
 
