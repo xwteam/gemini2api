@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-v1.6.53-success?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.6.54-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -62,6 +62,7 @@
 
 | 日期 | 更新內容 |
 |------|----------|
+| 2026-11-24 22:02:00 | v1.6.54 - 🏷️ **模型列表改用網頁實名並按帳號即時同步**：谷歌更名後，各介面與面板模型列表現直接列出真實名稱 gemini-auto、gemini-4-hydrogen、gemini-4-neon 與 gemini-4-carbon（原 4 Argon），日後隨網站自動更新。各帳號獨立維護自身即時模型，列表取可用或金鑰綁定帳號聯集，請求僅派發給持有該模型的帳號。舊名、無版本別名與歷史真名皆維持相容，白名單、熔斷與計費互通，並修復 4 Carbon 錯名與 300 秒逾時。 |
 | 2026-11-24 20:30:00 | v1.6.53 - 🔑 **谷歌改版後恢復登入**：11 月 20 日起谷歌要求整套 Cookie（含 gemini.google.com 的 OSID），只給 __Secure-1PSID/1PSIDTS 會被跳到登入頁，舊版卻把登入頁當成登入成功，一直以訪客身分執行（只剩一個 Auto 模型，其他模型報 400）。現在接收整套 Cookie 並按各自網域傳送，被跳到登入頁會如實報過期並提示處理方式；瀏覽器擴充功能需升級到 1.4.0，或在面板貼上整段 Cookie。GHCR 映像新增 arm64 |
 | 2026-10-27 11:41:00 | v1.6.52 - 🎚️ **模型名後綴選思考檔位**：只能填模型名、填不了推理參數的客戶端，寫 gemini-pro@think=high 就能選檔（none / low / medium / high），OpenAI chat、Responses、Anthropic 三個介面通用，後綴優先於請求體裡的思考參數 |
 | 2026-10-27 11:17:00 | v1.6.51 - 🧹 **回答裡不再夾著引用標記**：帶附件或聯網檢索的回答裡，谷歌會插入 [cite_start]、[cite: 1] 這類引用標記（網頁裡顯示成引用小標），過去原樣傳給客戶端（實測帶圖問顏色回「红色[cite: 1]」）；現在串流、非串流都剝掉，串流還會扣住只到一半的標記，[cite: 附錄] 這類正文原樣保留 |
@@ -71,7 +72,6 @@
 | 2026-10-26 21:14:00 | v1.6.47 - 🙅 **谷歌的「語言模型」拒答套話不再當成回答**：谷歌有時整段只回一句「我只是一个语言模型，无法提供这方面的帮助。」「由于程序代码的局限，我没法办到。」這類話（問的明明是「17 是質數嗎」這種好答的問題，模型故障時也會出現），過去原樣回傳給客戶端；現在和失敗套話一樣換號重試、可走兜底，但不計入模型熔斷 |
 | 2026-10-26 20:26:00 | v1.6.46 - 🩺 **谷歌模型出故障時少等**：谷歌某個模型卡住時，串流請求過去會被每 60 秒一個的空心跳幀一直吊著（實測乾等 4 分鐘），現在和非串流一樣按預算逾時、並當場斷開連線釋放帳號；谷歌 1～2 秒就回的失敗套話（I seem to be encountering an error…）不再當成回答返回，改為換號或兜底，也不再寫進會話；新增模型級熔斷：同一模型接連出故障時，開了兜底的請求直接走兜底，不再每次先白等一兩分鐘，之後自動試探谷歌是否恢復 |
 | 2026-10-26 16:41:00 | v1.6.45 - ⏱️ **生成逾時不再回純文字 500**：谷歌卡住、超過生成預算時，用戶端過去拿到純文字 500（SDK 解析不了，也不轉兜底）；現在各協定統一回 504 + `timeout_error`，`/v1/chat/completions` 開了兜底會先轉第三方兜底，逾時不再重試、也不會把帳號標成過期。💬 **多輪對話真正續上同一個會話**：帶 `conversation_id` 的對話過去每一輪其實都新開了會話、只發最後一句，長對話會悄悄遺失上下文；現在按 `[cid, rid, rcid]` 續接並釘回同一個帳號，串流也續接，接不上就自動改發完整歷史 |
-| 2026-10-26 14:01:00 | v1.6.44 - 🔄 **瀏覽器保活擴充功能重新生效**：會話被谷歌打回登入頁的帳號過去仍報 active（只把 is_healthy 設為 false），擴充功能只認 expired、一直不救，線上兩個帳號因此掉線約 37 小時；現在如實報 expired，換 cookie 成功後當場恢復。🔁 **不再和瀏覽器互相頂掉會話**：擴充功能推送 cookie 的帳號自動改為「瀏覽器保活」，伺服器不再輪換它（此前兩邊各自換 PSIDTS，後換的一方被踢下線，保活越來越短）；面板手動更新的帳號仍由伺服器輪換。配套擴充功能 v1.3.0：瀏覽器 cookie 一變就主動推送 |
 
 ---
 

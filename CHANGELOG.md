@@ -4,6 +4,25 @@
 
 ---
 
+## [1.6.54] - 2026-11-24
+
+### Changed
+
+- 🏷️ **模型列表直接展示谷歌网页真实名字并随网站自动更新**：谷歌 11-24 网页将四个模型更新为 `Auto`（id `8c46e95b1a07cecc`）、`4 Hydrogen`（id `56fdd199312815e2`）、`4 Neon`（id `e6fa609c3fa255c0`）与 `4 Carbon`（原 `4 Argon`，model id `95a4c0abcba24364` 不变）。系统现在优先读取心跳条目中谷歌网页提供的真实模型名称（跳过定位说明句），规范化为 `gemini-auto`、`gemini-4-hydrogen`、`gemini-4-neon` 与 `gemini-4-carbon`，并在 `/v1/models`（OpenAI）、`/v1beta/models`（Gemini 原生）、Claude `/v1/models` 及 Web 面板模型列表/测试页全面直接列出这些名字（按心跳返回顺序）；谷歌后续再次改名时，下一轮心跳即自动跟随更新，无需修改代码。基础 family（`pro` / `flash` / `flash-lite`）的底层识别仍按既定 id 表维持不变，仅对外展示名改为心跳真实名字；非基础 family（如 `carbon`）沿用原有发现与校验机制。启动后尚无任何账号心跳成功时，列表兜底照旧返回 `gemini-pro`、`gemini-flash`、`gemini-flash-lite`（不返回空列表）。
+- 🔄 **按账号实时维护模型列表与精确路由**：每个账号各自保存自己心跳拿到的「真实名字 → model id」映射，下一轮心跳整表替换而非累加，非 Pro 账号持有不同模型或不同 model id 时各自按实测列表处理。`/v1/models` 等列表返回当前请求可用账号的真实名字并集（同名去重）：访问密钥绑定了账号时只统计绑定的账号，未绑定时统计全部 ACTIVE 账号（不包含已过期或禁用账号）。客户端请求真实名字（含历史曾用名）时，仅发送给自己当前列表里包含对应 model id 的账号，落到不含该模型的账号时自动换号（不计失败、不触发冷却），全部可用账号都没有该模型返回 HTTP 400，有该模型的账号均满载则返回 HTTP 529；绝不把某个账号上报的模型名按 family 映射到另一个账号的不同 model id 上。契约旧名与不带版本号的类别别名则按各账号自身的 family 解析并路由至持有对应 family 的账号。
+- 🔁 **兼容旧名与无版本号别名，全链路按 family 互通**：旧名 `gemini-pro`、`gemini-flash`、`gemini-flash-lite`、`gemini-argon`（含 `gemini-4-argon`），不带版本号的类别别名 `gemini-neon`（对应 `pro`）、`gemini-hydrogen`（对应 `flash`）、`gemini-carbon`（对应 `carbon`），以及谷歌改名前心跳曾返回的真实名字，均继续正常可调但不列入公开列表。新增契约名冲突保护：心跳拿到的真实名字不允许覆盖 `gemini-pro` / `gemini-flash` / `gemini-flash-lite` 或既有别名键，发生冲突时输出一条 `WARNING` 日志并跳过该展示名、回退用契约名列出。同时统一全链路模型判断：OpenAI / Responses / Claude / Gemini 原生路径的路由闸门、模型映射（model-mapping）、Gem `base_model`、`gemini.py` 模型描述、全局 `MODEL_WHITELIST` 与访问密钥 `allowed_models`（新旧名按 family 互通放行）、账号池熔断 `family_of` 同族计数、计费价格表 `token_pricing`（`carbon` 沿用原 `argon` 单价）与用量统计均按 family 归一处理；响应回显继续保留客户端请求时的模型名称。
+- ⏱️ **`carbon` 生成超时调整为 300 秒**：生成超时配置补充 `carbon: 300`（秒），环境变量 `GENERATE_TIMEOUTS` 中原有 `argon=` 旧配置继续自动生效并作用于 `carbon`。
+- 🖥️ **面板静态文案同步更新**：同步更新 Web 面板中写死旧模型名（如 `gemini-pro`、`gemini-argon` 等）的静态提示与说明文案。
+
+### Added
+
+- 🗂️ **网页历史真实模型名持久化**：心跳每次拿到新的真实模型名都会将「真实名字 → model id / family」持久化记录到本地数据文件（原子写入，进程重启后依然保留），后续谷歌再次把如 `4 Neon` 改名为新名称时，已配置旧真实名字的客户端仍能直达同一模型。历史名字仅用于请求解析、不在列表展示，并带格式校验与条目上限以防异常心跳数据膨胀。
+- 📋 **面板账号页展示单账号实时模型列表**：在 Web 面板账号页为每个账号单独展示其当前心跳获取到的真实模型列表，方便直接区分不同账号（例如 Pro 账号与非 Pro 账号）各自可用的模型。
+
+### Fixed
+
+- 🛠️ **修复 11-24 改名后 4 Carbon 错名、旧名失效与长任务超时问题**：修复原先解析心跳条目时优先读取定位说明字段，导致 `4 Carbon` 被错误生成为 `gemini-code-complex-work`、`gemini-argon` 无法解析且复杂编程任务因未匹配超时配置而按 60 秒默认兜底被掐断的问题（同时保持对旧格式 `"4 Argon"` 条目的解析兼容）。
+
 ## [1.6.53] - 2026-11-24
 
 ### Fixed
