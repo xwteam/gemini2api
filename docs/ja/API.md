@@ -930,6 +930,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 }
 ```
 
+ここでも Cookie 一式を受け付けます：`cookies` / `cookie_header`（どちらか一方。下の `PUT /admin/accounts/{id}/cookies` を参照）。この場合 `psid` / `psidts` は省略でき、一式の中の `.google.com` の `__Secure-1PSID` / `__Secure-1PSIDTS` を使います。指定した場合は一致が必要で、不一致なら 400。
+
 成功時は送信元から保持方式を記録し、アカウントはただちに `active` に戻ります（ルールは `PUT /admin/accounts/{id}/cookies` と同じ）。
 
 ### PUT /admin/accounts/{id}/cookies
@@ -955,6 +957,29 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
   "status": "ok",
   "message": "Cookies updated successfully"
 }
+```
+
+**Cookie 一式（v1.6.53 以降。Google の 2026-11-20 の変更以降は必須）：** `psid` / `psidts` だけだと Gemini は Google のログインページへリダイレクトされ、未ログインのゲストとして動作します（モデルは Auto の 1 つだけ、他のモデルはすべて 400）。サーバーはこれを認証失敗として扱います：リロードは 503 を返し、エラーメッセージは「Google now requires the full cookie set (including the OSID cookie of gemini.google.com) … / 谷歌要求完整 Cookie（含 gemini.google.com 的 OSID）…」です。リクエストボディに次の 2 つのフィールドのどちらか一方を追加してください（両方は不可）：
+
+| フィールド | 説明 |
+|------|------|
+| `cookies` | 配列。フィールド名は `chrome.cookies.Cookie` に準拠：`name`、`value`、`domain` は必須、`path`、`hostOnly`、`secure`、`httpOnly`、`expirationDate` は任意（余分なフィールドは無視）。ブラウザ拡張機能 1.4.0 以降は `chrome.cookies.getAll({url: "https://gemini.google.com/app"})` の結果をそのまま送ります。google.com とそのサブドメインの Cookie のみ受け付け、期限切れのものは捨てます |
+| `cookie_header` | 文字列：ブラウザが `gemini.google.com` に送る `Cookie:` リクエストヘッダー全体（パネルの「Cookie 更新」で貼り付けるもの）。リクエストヘッダーにはドメイン情報がないため、`OSID` / `__Secure-OSID` / `__Host-*` は `gemini.google.com` の host-only、それ以外は `.google.com` として記録します |
+
+- 指定するとアカウントの Google Cookie を**一式まとめて差し替え**ます（以前のレスポンスから取り込んだものも含む）。`psid` / `psidts` は引き続き必須で、一式の中の `.google.com` の `__Secure-1PSID` / `__Secure-1PSIDTS` と一致する必要があります。不一致、2 つのフィールドを両方指定、一式に `__Secure-1PSID` がない場合は 400（`"type": "invalid_cookies"`）。
+- Cookie 一式はそのアカウントの `data/cookies/<hash>.json` にのみ保存され、`accounts.json` には従来どおり `psid` / `psidts` だけを書き戻します。以後の各リクエストは Cookie の実際のドメインに従って送信します：`OSID` は gemini.google.com にだけ送り、accounts.google.com や生成画像ダウンロード用の lh3.google.com には送りません。
+- どちらのフィールドもない = 旧版の拡張機能 / スクリプト。動作は従来どおりです（ただしこの 2 つの値しかないアカウントは上記のとおり認証失敗になります）。
+- レスポンス、エラーメッセージ、ログに Cookie の値は出ません。`/admin/*` の 422（リクエストボディの検証エラー）もリクエストボディを返しません。
+
+```bash
+curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-あなたのキー" \
+  -d '{
+    "psid": "g.新しい値",
+    "psidts": "sidts-新しい値",
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.新しい値; __Secure-1PSIDTS=sidts-新しい値; OSID=…; __Secure-OSID=…"
+  }'
 ```
 
 **保持方式：** リロードに成功すると、リクエストの送信元からこのアカウントの保持方式を記録します（新しい PSID の名義で `data/keepalive-modes.json` に保存。PSID のハッシュのみを保存）：

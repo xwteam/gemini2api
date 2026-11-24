@@ -946,6 +946,29 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 {"message": "Cookies updated"}
 ```
 
+**전체 쿠키(v1.6.53부터; Google의 2026-11-20 변경 이후 필수)**: `psid` / `psidts`만 있으면 Gemini가 Google 로그인 페이지로 리디렉션되어 로그아웃된 게스트로 동작합니다(모델은 Auto 하나뿐이고 다른 모델은 모두 400). 서버는 이제 이를 인증 실패로 처리합니다: 리로드는 503을 반환하고 오류 메시지는 "Google now requires the full cookie set (including the OSID cookie of gemini.google.com) … / 谷歌要求完整 Cookie（含 gemini.google.com 的 OSID）…" 입니다. 요청 본문에 아래 두 필드 중 하나를 함께 보내세요(둘 다는 불가):
+
+| 필드 | 설명 |
+|------|------|
+| `cookies` | 배열. 필드 이름은 `chrome.cookies.Cookie`를 따릅니다: `name`, `value`, `domain` 필수, `path`, `hostOnly`, `secure`, `httpOnly`, `expirationDate` 선택(나머지 필드는 무시). 브라우저 확장 프로그램 1.4.0부터 `chrome.cookies.getAll({url: "https://gemini.google.com/app"})`의 결과를 그대로 보냅니다. google.com과 그 하위 도메인의 쿠키만 받고, 만료된 것은 버립니다 |
+| `cookie_header` | 문자열: 브라우저가 `gemini.google.com`으로 보내는 `Cookie:` 요청 헤더 전체(패널의 "Cookie 갱신"에 붙여넣는 것). 요청 헤더에는 도메인 정보가 없으므로 `OSID` / `__Secure-OSID` / `__Host-*`는 `gemini.google.com`의 host-only로, 나머지는 `.google.com`으로 기록합니다 |
+
+- 이 필드가 있으면 계정의 Google 쿠키를 **통째로 교체**합니다(이전 응답에서 캡처한 쿠키도 함께 교체). `psid` / `psidts`는 여전히 필수이며, 세트 안의 `.google.com` `__Secure-1PSID` / `__Secure-1PSIDTS`와 같아야 합니다. 일치하지 않거나, 두 필드를 함께 보내거나, 세트에 `__Secure-1PSID`가 없으면 400(`"type": "invalid_cookies"`).
+- 전체 쿠키는 해당 계정의 `data/cookies/<hash>.json`에만 저장되고, `accounts.json`에는 예전처럼 `psid` / `psidts`만 기록합니다. 이후 각 요청은 쿠키의 실제 도메인에 맞춰 보냅니다: `OSID`는 gemini.google.com에만 보내고, accounts.google.com이나 생성 이미지 다운로드용 lh3.google.com에는 보내지 않습니다.
+- 두 필드가 모두 없으면 = 구버전 확장 프로그램 / 스크립트로, 동작은 예전과 같습니다(단, 이 두 값만 있는 계정은 위와 같이 인증 실패로 처리됨).
+- 응답, 오류 메시지, 로그에는 쿠키 값이 나오지 않으며, `/admin/*`의 422(요청 본문 검증 오류)도 요청 본문을 되돌려 주지 않습니다.
+
+```bash
+curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-당신의키" \
+  -d '{
+    "psid": "g.새로운값...",
+    "psidts": "sidts-새로운값...",
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.새로운값...; __Secure-1PSIDTS=sidts-새로운값...; OSID=…; __Secure-OSID=…"
+  }'
+```
+
 **유지 방식**: 리로드에 성공하면 요청 출처에 따라 이 계정의 유지 방식을 기록합니다(새 PSID 기준으로 `data/keepalive-modes.json`에 저장되며, PSID의 해시만 저장):
 
 | 요청 | `keepalive_mode` | 효과 |
@@ -972,6 +995,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
 ```json
 {"message": "Cookies reloaded"}
 ```
+
+여기서도 전체 쿠키를 받습니다: `cookies` / `cookie_header`(둘 중 하나, 위의 `PUT /admin/accounts/{id}/cookies` 참고). 이때 `psid` / `psidts`는 생략할 수 있으며 세트 안의 `.google.com` `__Secure-1PSID` / `__Secure-1PSIDTS`를 사용합니다. 지정하면 일치해야 하며, 다르면 400.
 
 성공하면 요청 출처에 따라 유지 방식을 기록하고 계정은 즉시 `active`로 돌아갑니다(규칙은 `PUT /admin/accounts/{id}/cookies`와 같음).
 

@@ -202,6 +202,12 @@
 
 ### 1. Cookie を取得
 
+> [!IMPORTANT]
+> **Google の 2026-11-20 の変更以降、下の 2 つの値だけでは足りません。** `__Secure-1PSID` / `__Secure-1PSIDTS` だけで Gemini を開くと Google のログインページへリダイレクトされ、未ログインのゲストとして動作します（モデルは Auto の 1 つだけ、他のモデルはすべてエラー）。現在はブラウザの **Google Cookie 一式**（`gemini.google.com` 自身の `OSID` / `__Secure-OSID` を含む）が必要です。この 2 つの値しかないアカウントは認証失敗（状態 `expired`）となり、エラーメッセージは「Google now requires the full cookie set (including the OSID cookie of gemini.google.com) … / 谷歌要求完整 Cookie（含 gemini.google.com 的 OSID）…」です。
+> - **推奨**：ブラウザ拡張機能 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) **1.4.0 以降**を入れると、Cookie 一式（`OSID` を含む）を自動で送ります。1.3.x 以前はこの 2 つの値しか送らないので、アップグレードしてください。
+> - **手動**：下の手順でこの 2 つの値を使ってアカウントを追加してから、パネルの「アカウント管理」→「Cookie 更新」に **Cookie ヘッダー全体**を貼り付けます：デベロッパーツール → **Network**（ネットワーク）→ `gemini.google.com` へのリクエストを 1 つ選ぶ → Request Headers の `Cookie` を丸ごとコピー。
+> - Cookie 一式はそのアカウントの `data/cookies/<hash>.json` にのみ保存され、`.env` / `accounts.json` は従来どおりこの 2 つの値だけです。各リクエストは Cookie の実際のドメインに従って送信します（`OSID` は gemini.google.com にだけ送ります）。
+
 1. Chrome または Edge ブラウザで [gemini.google.com](https://gemini.google.com) にアクセス
 2. Google アカウントでログイン、Gemini が正常に動作することを確認
 3. `F12` キーを押して開発者ツールを開く
@@ -294,7 +300,7 @@ gemini2api には Cookie 自動ローテーション機能が組み込まれて�
 > **`REFRESH_INTERVAL` のデフォルトは 5 分から 30 分に変更され、コード側で 10 分の下限が強制されます**（それより小さい値は 10 に引き上げられ、起動ログに該当項目が出ます）。
 > 理由：従来、ローテーションループは**「起動時にトークンを取得できなかった」場合にのみ立ち上がっていました**。つまり正常に起動したゲートウェイは一度もローテーションせず、Cookie は数時間で死んでいました（[issue #11](https://github.com/xwteam/gemini2api/issues/11)）。常駐させた今、同じ間隔のままでは Google へのバックグラウンドリクエスト量が約 3.5 倍に増えるため、間隔もそれに応じて広げる必要があります —— 頻繁すぎるローテーションは Google から見れば自動化そのもので、リスク判定に引っかかってかえってセッションを殺します。
 
-Cookie を手動更新するには、Web パネルの「アカウント管理」→「Cookie 更新」を使用、サービス再起動不要。
+Cookie を手動更新するには、Web パネルの「アカウント管理」→「Cookie 更新」を使用、サービス再起動不要。現在は **Cookie ヘッダー全体**（`OSID` を含む）を貼り付けます。上の「1. Cookie を取得」を参照してください。
 
 > [!NOTE]
 > Cookie 寿命は Google のリスク管理ポリシーに影響されます。データセンター IP は通常数時間持続。Cookie が頻繁に失効する場合、住宅 IP の使用またはアカウント数を増やしてローテーションを検討してください。
@@ -304,7 +310,7 @@ Cookie を手動更新するには、Web パネルの「アカウント管理」
 同じ Google セッションを**ローテーションできるのは一方だけ**です。ブラウザとサーバーがそれぞれ RotateCookies を呼ぶと、後から呼んだ側は相手がすでに差し替えた古い `__Secure-1PSIDTS` で更新しようとして 401 になり、セッションごとログアウトされます（「よく切断されて再ログインが必要」という症状）。そのため各アカウントは次のどちらか一方を使います：
 
 - **サーバー側ローテーション**（デフォルト）：本サービスが `REFRESH_INTERVAL` ごとに RotateCookies を呼びます。新しく追加したアカウント、パネルの「Cookie 更新」、スクリプト / curl で送った Cookie はこの方式です。
-- **ブラウザ保持**：付属のブラウザ拡張機能 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) をローカルのブラウザ（住宅 IP）に入れると、ブラウザがセッションを維持し、拡張機能が新しい Cookie を本サービスへ送ります。**拡張機能からの送信に成功したアカウントは自動的にブラウザ保持へ切り替わり、以後サーバーはローテーションしません**（リクエストヘッダー `X-Gemini2API-Keepalive` で識別。このヘッダーを送らない旧版の拡張機能は、リクエストに付く `Origin: chrome-extension://…` で識別）。
+- **ブラウザ保持**：付属のブラウザ拡張機能 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) をローカルのブラウザ（住宅 IP）に入れると、ブラウザがセッションを維持し、拡張機能が新しい Cookie を本サービスへ送ります。**拡張機能からの送信に成功したアカウントは自動的にブラウザ保持へ切り替わり、以後サーバーはローテーションしません**（リクエストヘッダー `X-Gemini2API-Keepalive` で識別。このヘッダーを送らない旧版の拡張機能は、リクエストに付く `Origin: chrome-extension://…` で識別）。拡張機能は **1.4.0 以降**が必要です：Cookie 一式（`gemini.google.com` の `OSID` を含む）を送ります。1.3.x 以前は `__Secure-1PSID` / `__Secure-1PSIDTS` しか送らず、Google の 2026-11-20 の変更以降そのアカウントはゲストとしてしか動かないため、認証失敗になります。
 
 補足：
 

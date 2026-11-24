@@ -895,6 +895,29 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
 }
 ```
 
+**Full cookie set (from v1.6.53; required since Google's 2026-11-20 change):** with only `psid` / `psidts`, Gemini redirects to the Google sign-in page and runs as a signed-out guest (a single Auto model; every other model fails with 400). The server now treats that as an authentication failure: the reload returns 503 with the message "Google now requires the full cookie set (including the OSID cookie of gemini.google.com): upgrade the browser plugin to 1.4.0 or paste the whole Cookie header in the panel". Send one of these two fields as well (not both):
+
+| Field | Description |
+|------|------|
+| `cookies` | Array; field names follow `chrome.cookies.Cookie`: `name`, `value`, `domain` required; `path`, `hostOnly`, `secure`, `httpOnly`, `expirationDate` optional (extra fields are ignored). The browser extension sends the result of `chrome.cookies.getAll({url: "https://gemini.google.com/app"})` from 1.4.0. Only google.com and its subdomains are accepted; expired cookies are dropped |
+| `cookie_header` | String: the whole `Cookie:` request header the browser sends to `gemini.google.com` (what the panel's "Update Cookie" pastes). A request header carries no domains: `OSID` / `__Secure-OSID` / `__Host-*` are stored as host-only cookies of `gemini.google.com`, everything else as `.google.com` |
+
+- When present, the account's Google cookies are **replaced as a whole** (cookies captured from earlier responses go too). `psid` / `psidts` stay required and must equal the `.google.com` `__Secure-1PSID` / `__Secure-1PSIDTS` in the set; a mismatch, sending both fields, or a set without `__Secure-1PSID` returns 400 (`"type": "invalid_cookies"`).
+- The full set is stored only in the account's `data/cookies/<hash>.json`; `accounts.json` still gets only `psid` / `psidts`. Every request then sends cookies by their real domain: `OSID` goes to gemini.google.com only, never to accounts.google.com or lh3.google.com (generated-image downloads).
+- Without either field = older extensions / scripts, same behavior as before (but an account with only these two values is reported as an authentication failure, see above).
+- Cookie values never appear in responses, error messages or logs; 422 body-validation errors on `/admin/*` do not echo the request body either.
+
+```bash
+curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "psid": "g.a000new...",
+    "psidts": "sidts-new...",
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.a000new...; __Secure-1PSIDTS=sidts-new...; OSID=…; __Secure-OSID=…"
+  }'
+```
+
 **Keep-alive mode:** after a successful reload, the account's keep-alive mode is recorded from where the request came from (under the new PSID, in `data/keepalive-modes.json`, which stores only a hash of the PSID):
 
 | Request | `keepalive_mode` | Effect |
@@ -923,6 +946,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
   "healthy": true
 }
 ```
+
+The full cookie set is accepted here too: `cookies` / `cookie_header` (one of them; see `PUT /admin/accounts/{id}/cookies`). `psid` / `psidts` may then be omitted and are taken from the set's `.google.com` `__Secure-1PSID` / `__Secure-1PSIDTS`; when given they must match, otherwise 400.
 
 On success the keep-alive mode is recorded from the request source and the account is back to `active` right away, with the same rules as `PUT /admin/accounts/{id}/cookies`.
 

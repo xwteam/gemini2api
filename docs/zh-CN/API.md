@@ -1003,6 +1003,8 @@ curl -X POST http://localhost:5918/admin/reload-cookies \
   -H "Authorization: Bearer sk-你的API密钥"
 ```
 
+同样接受整套 Cookie：`cookies` / `cookie_header`（二选一，见下面 `PUT /admin/accounts/{id}/cookies`）。这时 `psid` / `psidts` 可以不填，取整套里 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS`；填了就必须一致，否则 400。
+
 成功后同样按请求来源记录 `keepalive_mode`，该账号立即恢复为 `active`（规则同 `PUT /admin/accounts/{id}/cookies`）。
 
 ### PUT /admin/accounts/{id}/cookies
@@ -1017,6 +1019,29 @@ curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
   -d '{
     "psid": "g.新的值",
     "psidts": "sidts-新的值"
+  }'
+```
+
+**整套 Cookie（v1.6.53 起；谷歌 2026-11-20 改版后必需）**：只有 `psid` / `psidts` 时，Gemini 会被跳到谷歌登录页、以未登录访客身份运行（只剩一个 Auto 模型，其他模型一律 400）。服务端现在把这种情况判为认证失败：这次 reload 返回 503，错误信息是「谷歌要求完整 Cookie（含 gemini.google.com 的 OSID），请把浏览器插件升级到 1.4.0 或在面板粘贴整段 Cookie」。请求体里再带下面两个字段之一（二选一）：
+
+| 字段 | 说明 |
+|------|------|
+| `cookies` | 数组，字段名照 `chrome.cookies.Cookie`：`name`、`value`、`domain` 必填，`path`、`hostOnly`、`secure`、`httpOnly`、`expirationDate` 可选（多余字段忽略）。浏览器插件 1.4.0 起推的就是 `chrome.cookies.getAll({url: "https://gemini.google.com/app"})` 的结果。只收 google.com 及其子域的 Cookie，已过期的丢掉 |
+| `cookie_header` | 字符串：浏览器发给 `gemini.google.com` 的整段 `Cookie:` 请求头（面板「更新 Cookie」粘贴的就是它）。请求头里没有域信息：`OSID` / `__Secure-OSID` / `__Host-*` 按 `gemini.google.com` 的 host-only 记，其余按 `.google.com` |
+
+- 带了就把该账号的谷歌 Cookie **整套换上**（之前从响应里捕获的也一并换掉）。`psid` / `psidts` 仍然必填，且必须与整套里 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS` 一致；不一致、两个字段同时给、或整套里没有 `__Secure-1PSID` 时返回 400（`"type": "invalid_cookies"`）。
+- 完整 Cookie 只存在该账号的 `data/cookies/<hash>.json`；`accounts.json` 照旧只回写 `psid` / `psidts`。之后每个请求按 Cookie 的真实域名发送：`OSID` 只发给 gemini.google.com，不会发到 accounts.google.com 或生成图下载用的 lh3.google.com。
+- 不带这两个字段 = 旧版插件 / 旧脚本，行为与之前一致（但只有这两个值的账号会被判为认证失败，见上）。
+- 响应、错误信息和日志里都不会出现 Cookie 值；`/admin/*` 的 422 请求体校验错误也不回显请求体。
+
+```bash
+curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API密钥" \
+  -d '{
+    "psid": "g.新的值",
+    "psidts": "sidts-新的值",
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.新的值; __Secure-1PSIDTS=sidts-新的值; OSID=…; __Secure-OSID=…"
   }'
 ```
 

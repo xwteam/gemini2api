@@ -202,6 +202,12 @@
 
 ### 1. 获取 Cookie
 
+> [!IMPORTANT]
+> **谷歌 2026-11-20 改版后，只有下面这两个值已经不够了。** 只带 `__Secure-1PSID` / `__Secure-1PSIDTS` 打开 Gemini 会被跳到谷歌登录页、以未登录访客身份运行（只剩一个 Auto 模型，其他模型一律报错）。现在需要浏览器里**完整的谷歌 Cookie**，包括 `gemini.google.com` 自己的 `OSID` / `__Secure-OSID`；只有这两个值的账号会被判为认证失败（状态 `expired`），错误信息是「谷歌要求完整 Cookie（含 gemini.google.com 的 OSID），请把浏览器插件升级到 1.4.0 或在面板粘贴整段 Cookie」。
+> - **推荐**：装浏览器插件 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) **1.4.0 及以上**，它会把整套 Cookie（含 `OSID`）自动推过来；1.3.x 及更早只推这两个值，请升级。
+> - **手动**：先按下面的步骤用这两个值把账号加上，再到面板「账号管理」→「更新 Cookie」粘贴**整段 Cookie**：开发者工具 → **Network**（网络）→ 任选一个发往 `gemini.google.com` 的请求 → Request Headers 里的 `Cookie`，整段复制。
+> - 完整 Cookie 只保存在该账号的 `data/cookies/<hash>.json`，`.env` / `accounts.json` 照旧只存这两个值；每个请求按 Cookie 的真实域名发送（`OSID` 只发给 gemini.google.com）。
+
 1. 使用 Chrome 或 Edge 浏览器访问 [gemini.google.com](https://gemini.google.com)
 2. 登录你的 Google 账号，确保能正常使用 Gemini 对话
 3. 按 `F12` 打开开发者工具
@@ -294,7 +300,7 @@ gemini2api 内置 Cookie 自动轮换机制：默认每 30 分钟（`REFRESH_INT
 > **`REFRESH_INTERVAL` 的默认值已由 5 分钟改为 30 分钟，并在代码里夹了 10 分钟的硬下限**（配得更小会被自动抬到 10 并在启动日志里点名）。
 > 原因：以前轮换循环**只在「启动时拿不到 token」的情况下才会被拉起**，正常启动的网关其实从不轮换，Cookie 过几个小时就死（[issue #11](https://github.com/xwteam/gemini2api/issues/11)）。现在改成启动就常驻，同一个间隔下对 Google 的后台请求量会涨到约 3.5 倍，所以间隔必须相应放宽——轮换太勤在 Google 看来很像自动化，容易触发风控、反而把 session 搞死。
 
-如需手动更新 Cookie，可通过 Web 面板的「账号管理」→「更新 Cookie」操作，无需重启服务。
+如需手动更新 Cookie，可通过 Web 面板的「账号管理」→「更新 Cookie」操作，无需重启服务。现在要粘贴**整段 Cookie**（含 `OSID`），见上面「1. 获取 Cookie」里的说明。
 
 > [!NOTE]
 > Cookie 寿命受 Google 风控策略影响，数据中心 IP 通常可维持数小时。如 Cookie 频繁过期，建议使用住宅 IP 或增加账号数量做轮询。
@@ -304,7 +310,7 @@ gemini2api 内置 Cookie 自动轮换机制：默认每 30 分钟（`REFRESH_INT
 同一个谷歌会话**只能由一方轮换**：浏览器和服务端各自调 RotateCookies 时，后一方拿着已被对方换掉的旧 `__Secure-1PSIDTS` 去换就会 401、整个会话被踢下线（表现为「经常掉线、要重新登录」）。所以每个账号在两种方式里二选一：
 
 - **服务端轮换**（默认）：本服务按 `REFRESH_INTERVAL` 定时调 RotateCookies。新添加的账号、面板「更新 Cookie」、脚本 / curl 提交的 cookie 都走这种方式。
-- **浏览器保活**：配套浏览器插件 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) 装在你本地的浏览器（住宅 IP）里，由浏览器维持会话，插件把新 cookie 推给本服务。**插件推送成功的账号会自动改为浏览器保活，服务端从此不再轮换它**（按请求头 `X-Gemini2API-Keepalive` 识别；不带这个头的旧版插件按它请求自带的 `Origin: chrome-extension://…` 识别）。
+- **浏览器保活**：配套浏览器插件 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) 装在你本地的浏览器（住宅 IP）里，由浏览器维持会话，插件把新 cookie 推给本服务。**插件推送成功的账号会自动改为浏览器保活，服务端从此不再轮换它**（按请求头 `X-Gemini2API-Keepalive` 识别；不带这个头的旧版插件按它请求自带的 `Origin: chrome-extension://…` 识别）。插件需 **1.4.0 及以上**：它推送整套 Cookie（含 `gemini.google.com` 的 `OSID`）；1.3.x 及更早只推 `__Secure-1PSID` / `__Secure-1PSIDTS`，谷歌 2026-11-20 改版后这样的账号只能以访客身份运行，会被判为认证失败。
 
 补充说明：
 

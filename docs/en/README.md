@@ -202,6 +202,12 @@ Level parameters per protocol (**no level specified → default level**; a reque
 
 ### 1. Get Cookies
 
+> [!IMPORTANT]
+> **Since Google's 2026-11-20 change, the two values below are no longer enough.** With only `__Secure-1PSID` / `__Secure-1PSIDTS`, Gemini redirects to the Google sign-in page and runs as a signed-out guest (a single Auto model; every other model fails). You now need the **full set of Google cookies** from your browser, including `gemini.google.com`'s own `OSID` / `__Secure-OSID`. An account with only these two values is reported as an authentication failure (status `expired`) with the message "Google now requires the full cookie set (including the OSID cookie of gemini.google.com): upgrade the browser plugin to 1.4.0 or paste the whole Cookie header in the panel".
+> - **Recommended:** install the browser extension [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) **1.4.0 or later**; it pushes the full set (including `OSID`) automatically. 1.3.x and earlier push only these two values — please upgrade.
+> - **Manually:** add the account with these two values as below, then open the panel's "Account Management" → "Update Cookie" and paste the **whole Cookie header**: DevTools → **Network** → pick any request to `gemini.google.com` → copy the entire `Cookie` value under Request Headers.
+> - The full set is stored only in the account's `data/cookies/<hash>.json`; `.env` / `accounts.json` still hold just these two values. Every request sends cookies by their real domain (`OSID` goes to gemini.google.com only).
+
 1. Open Chrome or Edge browser and visit [gemini.google.com](https://gemini.google.com)
 2. Log in with your Google account and verify Gemini works normally
 3. Press `F12` to open Developer Tools
@@ -294,7 +300,7 @@ gemini2api has built-in cookie auto-rotation: it refreshes `__Secure-1PSIDTS` ev
 > **The default for `REFRESH_INTERVAL` changed from 5 minutes to 30 minutes, and the code now clamps it to a 10-minute floor** (smaller values are raised to 10 and named in the startup log).
 > Why: the rotation loop used to be started **only when the gateway failed to obtain a token at boot**, which means a normally started gateway never rotated at all and its cookies died after a few hours ([issue #11](https://github.com/xwteam/gemini2api/issues/11)). Now that the loop is always resident, the same interval would raise background traffic to Google roughly 3.5×, so the interval has to widen to match — rotating too often looks automated to Google and tends to get the session flagged, which kills it faster than not rotating.
 
-To manually update cookies, use the Web panel's "Account Management" → "Update Cookie" without restarting the service.
+To manually update cookies, use the Web panel's "Account Management" → "Update Cookie" without restarting the service. Paste the **whole Cookie header** (including `OSID`) there — see "1. Get Cookies" above.
 
 > [!NOTE]
 > Cookie lifetime is affected by Google's risk control policies. Datacenter IPs typically last several hours. If cookies expire frequently, consider using residential IPs or adding more accounts for rotation.
@@ -304,7 +310,7 @@ To manually update cookies, use the Web panel's "Account Management" → "Update
 A Google session can **only be rotated by one side**: when the browser and the server both call RotateCookies, whichever goes second presents an `__Secure-1PSIDTS` the other side has already replaced, gets a 401, and the whole session is logged out (it shows up as "keeps dropping, have to log in again"). So every account uses exactly one of two modes:
 
 - **Server rotation** (default): this service calls RotateCookies every `REFRESH_INTERVAL`. Newly added accounts, and cookies submitted through the panel's "Update Cookie", scripts or curl, all use this mode.
-- **Browser keep-alive**: the companion browser extension [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) runs in your local browser (residential IP); the browser keeps the session alive and the extension pushes the fresh cookies to this service. **An account whose cookies the extension pushed successfully switches to browser keep-alive automatically, and the server stops rotating it** (recognized by the `X-Gemini2API-Keepalive` request header; older extension versions that do not send it are recognized by the `Origin: chrome-extension://…` their requests carry).
+- **Browser keep-alive**: the companion browser extension [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) runs in your local browser (residential IP); the browser keeps the session alive and the extension pushes the fresh cookies to this service. **An account whose cookies the extension pushed successfully switches to browser keep-alive automatically, and the server stops rotating it** (recognized by the `X-Gemini2API-Keepalive` request header; older extension versions that do not send it are recognized by the `Origin: chrome-extension://…` their requests carry). The extension must be **1.4.0 or later**: it pushes the full cookie set (including `gemini.google.com`'s `OSID`); 1.3.x and earlier push only `__Secure-1PSID` / `__Secure-1PSIDTS`, and since Google's 2026-11-20 change such an account only runs as a guest and is reported as an authentication failure.
 
 More details:
 

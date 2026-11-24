@@ -816,6 +816,8 @@ curl http://localhost:5918/admin/accounts/account-0/check \
 }
 ```
 
+同樣接受整套 Cookie：`cookies` / `cookie_header`（二選一，見下面 `PUT /admin/accounts/{id}/cookies`）。這時 `psid` / `psidts` 可以不填，取整套裡 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS`；填了就必須一致，否則 400。
+
 成功後同樣依請求來源記錄 `keepalive_mode`，該帳號立即恢復為 `active`（規則同 `PUT /admin/accounts/{id}/cookies`）。
 
 ### PUT /admin/accounts/{id}/cookies
@@ -836,6 +838,29 @@ curl http://localhost:5918/admin/accounts/account-0/check \
   "status": "ok",
   "message": "Cookies updated"
 }
+```
+
+**整套 Cookie（v1.6.53 起；Google 2026-11-20 改版後必需）**：只有 `psid` / `psidts` 時，Gemini 會被導向 Google 登入頁、以未登入訪客身份執行（只剩一個 Auto 模型，其他模型一律 400）。伺服器端現在把這種情況判為驗證失敗：這次 reload 回傳 503，錯誤訊息是「谷歌要求完整 Cookie（含 gemini.google.com 的 OSID），請把瀏覽器插件升級到 1.4.0 或在面板貼上整段 Cookie」。請求體裡再帶下面兩個欄位之一（二選一）：
+
+| 欄位 | 說明 |
+|------|------|
+| `cookies` | 陣列，欄位名照 `chrome.cookies.Cookie`：`name`、`value`、`domain` 必填，`path`、`hostOnly`、`secure`、`httpOnly`、`expirationDate` 選填（多餘欄位忽略）。瀏覽器擴充功能 1.4.0 起推送的就是 `chrome.cookies.getAll({url: "https://gemini.google.com/app"})` 的結果。只收 google.com 及其子網域的 Cookie，已過期的丟掉 |
+| `cookie_header` | 字串：瀏覽器發給 `gemini.google.com` 的整段 `Cookie:` 請求標頭（面板「更新 Cookie」貼上的就是它）。請求標頭裡沒有網域資訊：`OSID` / `__Secure-OSID` / `__Host-*` 依 `gemini.google.com` 的 host-only 記錄，其餘依 `.google.com` |
+
+- 帶了就把該帳號的 Google Cookie **整套換上**（之前從回應裡擷取的也一併換掉）。`psid` / `psidts` 仍然必填，且必須與整套裡 `.google.com` 的 `__Secure-1PSID` / `__Secure-1PSIDTS` 一致；不一致、兩個欄位同時給、或整套裡沒有 `__Secure-1PSID` 時回傳 400（`"type": "invalid_cookies"`）。
+- 完整 Cookie 只存在該帳號的 `data/cookies/<hash>.json`；`accounts.json` 照舊只回寫 `psid` / `psidts`。之後每個請求依 Cookie 的真實網域發送：`OSID` 只發給 gemini.google.com，不會發到 accounts.google.com 或生成圖下載用的 lh3.google.com。
+- 不帶這兩個欄位 = 舊版擴充功能 / 舊腳本，行為與之前一致（但只有這兩個值的帳號會被判為驗證失敗，見上）。
+- 回應、錯誤訊息和日誌裡都不會出現 Cookie 值；`/admin/*` 的 422 請求體驗證錯誤也不回顯請求體。
+
+```bash
+curl -X PUT http://localhost:5918/admin/accounts/account-0/cookies \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-你的API金鑰" \
+  -d '{
+    "psid": "g.新的值",
+    "psidts": "sidts-新的值",
+    "cookie_header": "SID=…; HSID=…; SSID=…; APISID=…; SAPISID=…; __Secure-1PSID=g.新的值; __Secure-1PSIDTS=sidts-新的值; OSID=…; __Secure-OSID=…"
+  }'
 ```
 
 **保活方式**：reload 成功後，依請求來源記下這個帳號由誰保活（記在新 PSID 名下，保存在 `data/keepalive-modes.json`，只存 PSID 的雜湊）：

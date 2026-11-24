@@ -202,6 +202,12 @@
 
 ### 1. 쿠키 획득
 
+> [!IMPORTANT]
+> **Google의 2026-11-20 변경 이후로는 아래 두 값만으로는 부족합니다.** `__Secure-1PSID` / `__Secure-1PSIDTS`만으로 Gemini를 열면 Google 로그인 페이지로 리디렉션되어 로그아웃된 게스트로 동작합니다(모델은 Auto 하나뿐이고 다른 모델은 모두 오류). 이제 브라우저의 **Google 쿠키 전체**가 필요하며, 여기에는 `gemini.google.com` 자체의 `OSID` / `__Secure-OSID`도 포함됩니다. 이 두 값만 있는 계정은 인증 실패(상태 `expired`)로 처리되며, 오류 메시지는 "Google now requires the full cookie set (including the OSID cookie of gemini.google.com) … / 谷歌要求完整 Cookie（含 gemini.google.com 的 OSID）…" 입니다.
+> - **권장**: 브라우저 확장 프로그램 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) **1.4.0 이상**을 설치하면 전체 쿠키(`OSID` 포함)를 자동으로 보냅니다. 1.3.x 이하는 이 두 값만 보내므로 업그레이드하세요.
+> - **수동**: 아래 단계대로 이 두 값으로 계정을 추가한 다음, 패널의 "계정 관리" → "Cookie 갱신"에 **전체 Cookie 헤더**를 붙여넣으세요: 개발자 도구 → **Network**(네트워크) → `gemini.google.com`으로 가는 요청 하나 선택 → Request Headers의 `Cookie`를 통째로 복사.
+> - 전체 쿠키는 해당 계정의 `data/cookies/<hash>.json`에만 저장되고, `.env` / `accounts.json`에는 예전처럼 이 두 값만 있습니다. 각 요청은 쿠키의 실제 도메인에 맞춰 보냅니다(`OSID`는 gemini.google.com에만 전송).
+
 1. Chrome 또는 Edge 브라우저로 [gemini.google.com](https://gemini.google.com) 방문
 2. Google 계정으로 로그인하고 Gemini 대화를 정상적으로 사용할 수 있는지 확인
 3. `F12`를 눌러 개발자 도구 열기
@@ -262,14 +268,14 @@ docker compose logs -f
 
 ### 쿠키 자동 유지
 
-gemini2api는 기본적으로 `REFRESH_INTERVAL`(기본 30분, 하한 10분)마다 Google RotateCookies API로 `__Secure-1PSIDTS`를 갱신합니다. 웹 패널의 "Cookie 갱신"으로 서비스를 재시작하지 않고 쿠키를 바꿀 수도 있습니다.
+gemini2api는 기본적으로 `REFRESH_INTERVAL`(기본 30분, 하한 10분)마다 Google RotateCookies API로 `__Secure-1PSIDTS`를 갱신합니다. 웹 패널의 "Cookie 갱신"으로 서비스를 재시작하지 않고 쿠키를 바꿀 수도 있습니다. 이제는 **전체 Cookie 헤더**(`OSID` 포함)를 붙여넣어야 합니다. 위의 "1. 쿠키 획득"을 참고하세요.
 
 #### 두 가지 유지 방식: 서버 측 로테이션 / 브라우저 확장 프로그램 전송
 
 같은 Google 세션은 **한쪽만 로테이션할 수 있습니다**. 브라우저와 서버가 각자 RotateCookies를 호출하면, 나중에 호출한 쪽은 상대가 이미 바꿔 버린 예전 `__Secure-1PSIDTS`로 갱신하려다 401을 받고 세션 전체가 로그아웃됩니다("자주 끊기고 다시 로그인해야 함"으로 나타남). 그래서 계정마다 두 방식 중 하나만 씁니다.
 
 - **서버 측 로테이션**(기본): 이 서비스가 `REFRESH_INTERVAL`마다 RotateCookies를 호출합니다. 새로 추가한 계정, 패널의 "Cookie 갱신", 스크립트 / curl로 제출한 쿠키는 모두 이 방식입니다.
-- **브라우저 유지**: 함께 제공되는 브라우저 확장 프로그램 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin)을 로컬 브라우저(주거용 IP)에 설치하면, 브라우저가 세션을 유지하고 확장 프로그램이 새 쿠키를 이 서비스로 보냅니다. **확장 프로그램이 쿠키 전송에 성공한 계정은 자동으로 브라우저 유지로 바뀌고, 서버는 더 이상 이 계정을 로테이션하지 않습니다**(요청 헤더 `X-Gemini2API-Keepalive`로 식별하며, 이 헤더를 보내지 않는 구버전 확장 프로그램은 요청에 붙는 `Origin: chrome-extension://…`로 식별).
+- **브라우저 유지**: 함께 제공되는 브라우저 확장 프로그램 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin)을 로컬 브라우저(주거용 IP)에 설치하면, 브라우저가 세션을 유지하고 확장 프로그램이 새 쿠키를 이 서비스로 보냅니다. **확장 프로그램이 쿠키 전송에 성공한 계정은 자동으로 브라우저 유지로 바뀌고, 서버는 더 이상 이 계정을 로테이션하지 않습니다**(요청 헤더 `X-Gemini2API-Keepalive`로 식별하며, 이 헤더를 보내지 않는 구버전 확장 프로그램은 요청에 붙는 `Origin: chrome-extension://…`로 식별). 확장 프로그램은 **1.4.0 이상**이어야 합니다: 전체 쿠키(`gemini.google.com`의 `OSID` 포함)를 보냅니다. 1.3.x 이하는 `__Secure-1PSID` / `__Secure-1PSIDTS`만 보내며, Google의 2026-11-20 변경 이후 그런 계정은 게스트로만 동작해 인증 실패로 처리됩니다.
 
 참고:
 
