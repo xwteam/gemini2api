@@ -368,7 +368,7 @@ def test_send_request_refuses_a_model_it_cannot_put_in_the_header():
 
     c._ensure_session_current = _noop
     c._clear_session_cookies = lambda: None
-    c._get_cookies = lambda: {}
+    c._get_cookies = lambda *a, **k: {}
     c._get_headers = lambda *a, **kw: {}
 
     with pytest.raises(ValueError) as err:
@@ -392,7 +392,7 @@ def test_an_account_without_argon_refuses_the_request_instead_of_sending_argons_
 
     c._ensure_session_current = _noop
     c._clear_session_cookies = lambda: None
-    c._get_cookies = lambda: {}
+    c._get_cookies = lambda *a, **k: {}
     c._get_headers = lambda *a, **kw: {}
 
     for name in (ARGON_PUBLIC, ARGON_INTERNAL):

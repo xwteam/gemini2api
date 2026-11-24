@@ -45,6 +45,10 @@ class _Jar:
     def get_all(self, domain="google.com"):
         return {}
 
+    def request_cookies(self, url):
+        # 真罐子按 URL 挑、装进带域名的 curl_cffi Cookies；替身只需要「name → value」这一面
+        return self.get_all()
+
     def get(self, name):
         return None
 

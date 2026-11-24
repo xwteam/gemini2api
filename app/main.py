@@ -5,6 +5,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Depends, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -234,6 +237,16 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         status_code=429,
         content={"error": {"message": "Rate limit exceeded", "type": "rate_limit"}},
     )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """/admin/* 的请求体校验失败（422）不回显输入：FastAPI 默认会把出错字段的原值（`input`，缺字段时
+    是整个请求体）原样放进响应，而换 Cookie 的请求体里是整套谷歌 Cookie。其余路径保持默认行为。"""
+    if request.url.path.startswith("/admin/"):
+        errors = [{k: v for k, v in err.items() if k not in ("input", "ctx")} for err in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+    return await request_validation_exception_handler(request, exc)
 
 
 SKIP_LOG_PREFIXES = ("/static/", "/favicon.ico", "/admin/logs")

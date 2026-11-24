@@ -667,7 +667,7 @@ def _wire_client(monkeypatch):
     c._cookie_jar = SimpleNamespace(update_from_response=lambda r: None)
     c._ensure_session_current = _noop
     c._clear_session_cookies = lambda: None
-    c._get_cookies = lambda: {}
+    c._get_cookies = lambda *a, **k: {}
     c._get_headers = lambda *a, **k: {"x-base": "1"}
     c._parse_output = lambda text: {"text": "ok", "images": [], "thoughts": ""}
     return c, sent

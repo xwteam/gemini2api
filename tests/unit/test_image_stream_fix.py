@@ -81,7 +81,7 @@ def test_image_generate_uses_extended_post_timeout():
         mp.setattr(gc, "apply_jitter", _noop)
         mp.setattr(client, "_ensure_session_current", _noop)
         mp.setattr(client, "_clear_session_cookies", lambda: None)
-        mp.setattr(client, "_get_cookies", lambda: {})
+        mp.setattr(client, "_get_cookies", lambda *a, **k: {})
         mp.setattr(client, "_get_headers", lambda *a, **kw: {})
         asyncio.run(client._send_request("画一张猫的图片", "gemini-flash"))
     finally:

@@ -1,5 +1,6 @@
 import re
 import ast
+import html
 import json
 import time
 import uuid
@@ -13,6 +14,7 @@ from pathlib import Path
 from threading import Lock
 from collections import deque
 from datetime import datetime, timezone
+from urllib.parse import urljoin, urlsplit
 
 from curl_cffi.requests import AsyncSession, RequestsError
 
@@ -20,7 +22,12 @@ from app.config import settings
 from app.core import keepalive_modes
 from app.core.fingerprint.config import fingerprint_config
 from app.core.fingerprint.header_builder import header_builder
-from app.core.fingerprint.cookie_jar import PersistentCookieJar
+from app.core.fingerprint.cookie_jar import (
+    INTERNAL_DOMAIN,
+    PersistentCookieJar,
+    StoredCookie,
+    clean_cookie_value,
+)
 from app.core.fingerprint.jitter import apply_jitter, random_delay_factor
 from app.core.usage_metrics import live_metrics
 from app.utils.tools import maybe_image_generation_intent
@@ -250,7 +257,7 @@ REFRESH_UNHEALTHY_STREAK = 3
 # 变了（运维改了 .env / accounts.json），这时才按配置值为准并清缓存。
 # 这个条目用一个非 google 域，get_all("google.com") 取不到它，绝不会被发往上游。
 _CFG_PSIDTS_SNAPSHOT = "__cfg-1PSIDTS"
-_CFG_SNAPSHOT_DOMAIN = "config.local"
+_CFG_SNAPSHOT_DOMAIN = INTERNAL_DOMAIN
 
 
 # ---------------------------------------------------------------------------
@@ -1039,6 +1046,58 @@ GENERATE_URL = (
     "assistant.lamda.BardFrontendService/StreamGenerate"
 )
 BATCHEXECUTE_URL = "https://gemini.google.com/_/BardChatUi/data/batchexecute"
+# 附件上传该带哪些 Cookie 按这个 URL 取。上传实际发往 content-push.googleapis.com（见
+# app/core/file_upload.py），它不在 google.com 的 Cookie 域里，严格按域一条都不该发；网页端现在的
+# 上传域是 push.clients6.google.com，浏览器给它发的是 .google.com 的域 Cookie、不带 gemini.google.com
+# 的 host-only OSID —— 按这个口径取，与 v1.6.52 发给上传接口的那一份是同一类 Cookie。
+UPLOAD_COOKIE_URL = "https://push.clients6.google.com/upload/"
+
+# ---------------------------------------------------------------------------
+# 登录页守卫（谷歌 11-20 改版）
+# ---------------------------------------------------------------------------
+# 只带 __Secure-1PSID/1PSIDTS 打开 /app，谷歌 302 到 accounts.google.com/ServiceLogin →
+# /v3/signin/identifier（title「Sign in - Google Accounts」，cfb2h 是 boq_identityfrontend…）。
+# 那个登录页里**照样有 SNlM0e**，过去据此认定拿到了 token：账号报 active/healthy，实际一直是未登录
+# 访客 —— 心跳只看得到一个 Auto 模型，访客用不了的模型 id 一律 HTTP 400。三个信号任一成立都按认证
+# 失败处理（与「Cookie expired - redirected to Google login page」同一条路），不采纳页面里的 token。
+_SIGNIN_HOST = "accounts.google.com"
+_CFB2H_RE = re.compile(r'"cfb2h":"([^"]*)"')
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_SIGNIN_TITLE_RE = re.compile(
+    r"^\s*sign in\b|google\s*(accounts|账号|帳戶|アカウント|계정)", re.IGNORECASE
+)
+AUTH_FULL_COOKIE_REQUIRED = (
+    "Google now requires the full cookie set (including the OSID cookie of gemini.google.com): "
+    "upgrade the browser plugin to 1.4.0 or paste the whole Cookie header in the panel"
+    " / 谷歌要求完整 Cookie（含 gemini.google.com 的 OSID），请把浏览器插件升级到 1.4.0 或在面板粘贴整段 Cookie"
+)
+
+
+def _response_url(resp) -> str:
+    """响应的最终 URL（curl_cffi 跟随重定向后的落点）。测试替身没有 url 时为空串。"""
+    try:
+        return str(getattr(resp, "url", "") or "")
+    except Exception:
+        return ""
+
+
+def _is_google_signin_page(body: str, final_url: str = "") -> bool:
+    """这个页面是谷歌账号登录页（而不是 Gemini）。
+
+    三个信号任一：最终落在 accounts.google.com；cfb2h（页面的 build 标签）含 identityfrontend；
+    <title> 是 Google 登录页（Sign in - Google Accounts 及其本地化写法）。
+    """
+    host = (urlsplit(final_url).hostname or "").lower() if final_url else ""
+    if host == _SIGNIN_HOST:
+        return True
+    body = body or ""
+    m = _CFB2H_RE.search(body)
+    if m and "identityfrontend" in m.group(1):
+        return True
+    t = _TITLE_RE.search(body)
+    if t and _SIGNIN_TITLE_RE.search(html.unescape(t.group(1)).strip()):
+        return True
+    return False
 
 MODEL_HEADER_KEY = "x-goog-ext-525001261-jspb"
 
@@ -2225,8 +2284,20 @@ class GeminiWebClient:
                 except Exception:
                     pass
 
-    def _get_cookies(self) -> dict[str, str]:
-        return self._cookie_jar.get_all()
+    def _get_cookies(self, url: str = GEMINI_APP_URL):
+        """发给 url 的 Cookie：按真实域名挑（RFC 6265 域 / 路径匹配），装在带域名的 curl_cffi
+        Cookies 罐里，直接当 cookies= 传。也能当 name → value 的映射读（.get / keys）。
+
+        必须按**实际目标 URL** 取：gemini.google.com 的 host-only OSID 不能发到 accounts.google.com
+        或 lh3.google.com（后者会把生成图下载链的第二跳当成匿名，最后一跳 403）。
+        """
+        return self._cookie_jar.request_cookies(url)
+
+    def _upload_cookies(self) -> dict:
+        """附件上传带的 Cookie（见 UPLOAD_COOKIE_URL）。给普通 dict：上传域 content-push.googleapis.com
+        不在 google.com 的 Cookie 域里，带域名的罐交给 curl 会一条都不发；dict 由 curl_cffi 记成请求
+        主机的 Cookie，发出去的就是这一份。"""
+        return dict(self._get_cookies(UPLOAD_COOKIE_URL))
 
     def _get_headers(self, method: str = "GET", content_type: str | None = None) -> dict:
         return dict(header_builder.build(url=GEMINI_APP_URL, method=method, content_type=content_type))
@@ -2236,7 +2307,7 @@ class GeminiWebClient:
         try:
             await self._ensure_session_current()
             self._clear_session_cookies()
-            cookies = self._get_cookies()
+            cookies = self._get_cookies(GEMINI_APP_EN_URL)
             headers = self._get_headers("GET")
             resp = await self._http.get(GEMINI_APP_EN_URL, cookies=cookies, headers=headers)
             self._cookie_jar.update_from_response(resp)
@@ -2251,7 +2322,10 @@ class GeminiWebClient:
                 }
             else:
                 body = resp.text
-                token_match = re.search(r'"SNlM0e":"([^"]+)"', body)
+                final_url = _response_url(resp)
+                # 登录页守卫：谷歌登录页里同样有 SNlM0e，绝不能当成登录态的 token 采纳
+                signin = _is_google_signin_page(body, final_url)
+                token_match = None if signin else re.search(r'"SNlM0e":"([^"]+)"', body)
 
                 if token_match:
                     self._adopt_session_token(token_match.group(1), body)
@@ -2259,7 +2333,7 @@ class GeminiWebClient:
                     await self._send_heartbeat()  # 拉取账号真实可用模型
                 else:
                     # 与 _obtain_session_token 同一判定：健康检查循环、/check 看到登录页也要记下来
-                    self._detect_login_redirect(body)
+                    self._detect_login_redirect(body, final_url)
 
                 # models_count 只认 RPC 的结果：之前还会拿 HTML 正则抓一遍模型名兜底，
                 # 而那条正则要求"数字.数字"（gemini-\d+\.\d+...），匹配不到 gemini-3-pro
@@ -2271,6 +2345,8 @@ class GeminiWebClient:
                     "models_count": len(self._available_models),
                     "checked_at": now,
                 }
+                if signin:
+                    result["error"] = AUTH_FULL_COOKIE_REQUIRED
         except Exception as e:
             result = {
                 "valid": False,
@@ -2343,16 +2419,22 @@ class GeminiWebClient:
         if not self._auth_expired or rejected is None:
             return False
         try:
-            return self._session_cookie_pair(self._get_cookies()) == rejected
+            return self._session_cookie_pair(self._get_cookies(ROTATE_COOKIES_URL)) == rejected
         except Exception:
             return False
 
-    def _detect_login_redirect(self, body: str) -> bool:
+    def _detect_login_redirect(self, body: str, final_url: str = "") -> bool:
         """/app 页面被谷歌打回了登录页 → 置 auth_expired 并返回 True。
 
         这是 auth_expired 唯一的置位点（_obtain_session_token 与 check_account 都经过这里）。
+        两种形态：①最终落在谷歌登录页本身（_is_google_signin_page，谷歌 11-20 改版后的常态，页面里
+        还有 SNlM0e）；②页面里没有 token、只有指向登录页的链接（改版前的形态）。
         """
-        if "accounts.google.com" in body or "ServiceLogin" in body:
+        if (
+            _is_google_signin_page(body, final_url)
+            or "accounts.google.com" in body
+            or "ServiceLogin" in body
+        ):
             self._auth_expired = True
             return True
         return False
@@ -2360,7 +2442,7 @@ class GeminiWebClient:
     async def _obtain_session_token(self):
         try:
             await self._ensure_session_current()
-            cookies = self._get_cookies()
+            cookies = self._get_cookies(GOOGLE_HOME_URL)
             headers = self._get_headers("GET")
 
             await apply_jitter("navigation")
@@ -2370,13 +2452,13 @@ class GeminiWebClient:
 
             await apply_jitter("navigation")
             self._clear_session_cookies()
-            cookies = self._get_cookies()
+            cookies = self._get_cookies(GEMINI_HOME_URL)
             resp = await self._http.get(GEMINI_HOME_URL, cookies=cookies, headers=headers)
             self._cookie_jar.update_from_response(resp)
 
             await apply_jitter("navigation")
             self._clear_session_cookies()
-            cookies = self._get_cookies()
+            cookies = self._get_cookies(GEMINI_APP_EN_URL)
             resp = await self._http.get(GEMINI_APP_EN_URL, cookies=cookies, headers=headers)
             self._cookie_jar.update_from_response(resp)
 
@@ -2388,6 +2470,17 @@ class GeminiWebClient:
                 return
 
             body = resp.text
+            final_url = _response_url(resp)
+            if _is_google_signin_page(body, final_url):
+                # 登录页守卫（谷歌 11-20 改版）：跳到了谷歌登录页 = 认证失败。那个页面里照样有
+                # SNlM0e，采纳它就是以访客身份跑（只有 Auto 一个模型、别的模型一律 400）。
+                # curl_cffi 默认跟随跳转，resp.url 就是落点；不为此对谷歌多发任何请求。
+                self._session_token = ""
+                self._detect_login_redirect(body, final_url)
+                msg = AUTH_FULL_COOKIE_REQUIRED
+                logger.error(msg)
+                self._last_reload_error = msg
+                return
             token_match = re.search(r'"SNlM0e":"([^"]+)"', body)
             if token_match:
                 self._adopt_session_token(token_match.group(1), body)
@@ -2440,7 +2533,7 @@ class GeminiWebClient:
             await apply_jitter("cookie_rotate")
             await self._ensure_session_current()
             self._clear_session_cookies()
-            cookies = self._get_cookies()
+            cookies = self._get_cookies(ROTATE_COOKIES_URL)
             cookie_names = sorted(cookies.keys())
             logger.debug(f"RotateCookies sending {len(cookies)} cookies: {cookie_names}")
             body = '[000,"-0000000000000000000"]'
@@ -2497,7 +2590,9 @@ class GeminiWebClient:
 
             rpc_id = "otAQ7b"
             # RPCData.serialize 格式：[rpcid, payload, null, "generic"]，外层再包一层 [[...]]
-            req_data = json.dumps([[[rpc_id, "[]", None, "generic"]]])
+            # payload 是 "[1]" 不是 "[]"：谷歌 11-20 改版后登录态下 "[]" 回 400、"[1]" 回 200 并带模型列表
+            # （上游 HanaokaYuzu/Gemini-API issue #381 逐项实测，web build boq_gemini-web-uiserver_20261119.18_p0）。
+            req_data = json.dumps([[[rpc_id, "[1]", None, "generic"]]])
             form_data = {"f.req": req_data, "at": self._session_token}
 
             params = {
@@ -2508,7 +2603,7 @@ class GeminiWebClient:
                 "source-path": "/app",
             }
 
-            cookies = self._get_cookies()
+            cookies = self._get_cookies(BATCHEXECUTE_URL)
             headers = self._get_headers("POST", content_type="application/x-www-form-urlencoded")
             headers.update({
                 "x-goog-ext-525001261-jspb": "[1,null,null,null,null,null,null,null,[4]]",
@@ -2552,7 +2647,7 @@ class GeminiWebClient:
                 "rt": "c",
                 "source-path": "/app",
             }
-            cookies = self._get_cookies()
+            cookies = self._get_cookies(BATCHEXECUTE_URL)
             headers = self._get_headers("POST", content_type="application/x-www-form-urlencoded")
             headers.update({
                 "x-goog-ext-525001261-jspb": "[1,null,null,null,null,null,null,null,[4]]",
@@ -3167,7 +3262,7 @@ class GeminiWebClient:
 
         await apply_jitter("api_call")
         await self._ensure_session_current()
-        cookies = self._get_cookies()
+        cookies = self._get_cookies(GENERATE_URL)
 
         # 附件上传仍复用共享 session 的逻辑（与对话同账号同会话），上传完再走流式对话
         file_ids = None
@@ -3175,7 +3270,7 @@ class GeminiWebClient:
             from app.core.file_upload import upload_files
             base_headers = self._get_headers("POST")
             file_ids = await upload_files(
-                self._http, cookies, base_headers, self._push_id, attachments
+                self._http, self._upload_cookies(), base_headers, self._push_id, attachments
             )
             if not file_ids:
                 logger.warning("All attachment uploads failed, streaming text-only")
@@ -3470,7 +3565,7 @@ class GeminiWebClient:
         # 共用同一个 _restore_body —— 两条路径对同一段正文必须逐字节一致。
         text, thoughts = _restore_body(text, canvases, thoughts)
         if images:
-            result_images = await self._build_image_entries(images, self._get_cookies())
+            result_images = await self._build_image_entries(images)
             # 真的有图时，正文里的占位 URL 一定无意义（真图在 images 里）
             text = _strip_cite_marks(_IMAGE_GEN_PLACEHOLDER_RE.sub("", text)).strip()
         else:
@@ -3503,7 +3598,7 @@ class GeminiWebClient:
                 f"Model '{model}' unavailable. "
                 f"Options: {', '.join(self._available_models or PUBLIC_MODELS)}"
             )
-        cookies = self._get_cookies()
+        cookies = self._get_cookies(GENERATE_URL)
 
         # 上传附件（与对话同账号同会话），拿到文件标识符
         file_ids = None
@@ -3511,7 +3606,7 @@ class GeminiWebClient:
             from app.core.file_upload import upload_files
             base_headers = self._get_headers("POST")
             file_ids = await upload_files(
-                self._http, cookies, base_headers, self._push_id, attachments
+                self._http, self._upload_cookies(), base_headers, self._push_id, attachments
             )
             if not file_ids:
                 logger.warning("All attachment uploads failed, falling back to text-only")
@@ -3566,13 +3661,15 @@ class GeminiWebClient:
         # AI 生成图片：lh3 URL 客户端直接访问会 403，服务端带 cookie 代下载，
         # 同时存盘（供对话接口返回可渲染 URL）+ 转 base64（供 images/generations 接口）
         if result.get("images"):
-            result["images"] = await self._build_image_entries(result["images"], self._get_cookies())
+            result["images"] = await self._build_image_entries(result["images"])
 
         return result
 
-    async def _build_image_entries(self, images: list, cookies: dict) -> list:
+    async def _build_image_entries(self, images: list, cookies=None) -> list:
         """多张生成图并发下载（最多 4 张同时），结果保持原顺序、去掉失败项。过去逐张串行，
-        一次出 4 张图要等 4 个下载时间之和。"""
+        一次出 4 张图要等 4 个下载时间之和。
+
+        cookies 默认 None = 每一跳按各自的目标 URL 从罐里取（见 _download_generated_image）。"""
         sem = asyncio.Semaphore(4)
 
         async def one(img):
@@ -3582,7 +3679,7 @@ class GeminiWebClient:
         entries = await asyncio.gather(*(one(img) for img in images))
         return [e for e in entries if e]
 
-    async def _build_image_entry(self, img: dict, cookies: dict) -> dict | None:
+    async def _build_image_entry(self, img: dict, cookies=None) -> dict | None:
         """下载生成图、存盘并返回 entry；失败时回退占位提示，不静默丢图。"""
         import base64 as _b64
         from app.core import image_store
@@ -3608,13 +3705,15 @@ class GeminiWebClient:
         return {"mime": mime, "fallback": True, "b64": "", "url": url}
 
     async def _download_generated_image(
-        self, url: str, cookies: dict, size_suffix: str | None = None
+        self, url: str, cookies=None, size_suffix: str | None = None
     ) -> bytes | None:
         """下载 AI 生成的图片字节（默认 2048px 边长，超时收敛）。
         - lh3 URL 不加尺寸后缀时只给压缩缩略图（如 512px）；加 `=s2048` 平衡画质与耗时。
-        - lh3 URL 会多级 302（lh3→fife→lh3），curl_cffi 默认跟随会在跨域时丢 cookie 致 403。
-          正确方式：先 allow_redirects=False 拿首个 302 的 location，
-          再对该 location 带 cookie allow_redirects=True 跟随到最终 PNG。
+        - lh3 URL 会多级 302（lh3.googleusercontent.com → lh3.google.com → … → 最终 PNG），先
+          allow_redirects=False 拿首个 302 的 location，再对该 location allow_redirects=True 跟随。
+        - Cookie 按每一跳的真实域名发（cookies=None 时从罐里按 URL 取）：gemini.google.com 的
+          host-only OSID / __Secure-OSID 发到 lh3.google.com，第二跳会被当成匿名、最后一跳 403；
+          第二段跟随重定向时交给 curl 的 Cookie 引擎（罐里带域名），每一跳只带该带的。
         """
         if size_suffix is None:
             size_suffix = getattr(settings, "image_download_size_suffix", None) or _IMAGE_SIZE_DEFAULT
@@ -3624,8 +3723,8 @@ class GeminiWebClient:
         headers = {"Referer": "https://gemini.google.com/"}
         try:
             r1 = await self._http.get(
-                full_url, cookies=cookies, headers=headers,
-                allow_redirects=False, timeout=timeout,
+                full_url, cookies=cookies if cookies is not None else self._get_cookies(full_url),
+                headers=headers, allow_redirects=False, timeout=timeout,
             )
             loc = r1.headers.get("location", "")
             if r1.status_code == 200 and r1.headers.get("content-type", "").startswith("image/"):
@@ -3633,9 +3732,10 @@ class GeminiWebClient:
             if not loc:
                 logger.warning(f"[imagegen] 无重定向且非图片: status={r1.status_code}")
                 return None
+            loc = urljoin(full_url, loc)
             r2 = await self._http.get(
-                loc, cookies=cookies, headers=headers,
-                allow_redirects=True, timeout=timeout,
+                loc, cookies=cookies if cookies is not None else self._get_cookies(loc),
+                headers=headers, allow_redirects=True, timeout=timeout,
             )
             if r2.status_code == 200 and r2.headers.get("content-type", "").startswith("image/"):
                 return r2.content
@@ -3779,7 +3879,8 @@ class GeminiWebClient:
         if self._http:
             await self._http.close()
 
-    def _restore_session_state(self, prev: tuple, *, cookies_changed: bool = False) -> None:
+    def _restore_session_state(self, prev: tuple, *, cookies_changed: bool = False,
+                               jar_backup: list | None = None) -> None:
         """把会话状态回滚到 reload_cookies 调用前（调用前是健康的，或者这次推来了新 cookie）。
 
         只还原 _healthy 是不够的：函数开头会清空 _session_token 并把新 Cookie 写进 jar，
@@ -3794,6 +3895,9 @@ class GeminiWebClient:
         client 当前 PSID 查，一个浏览器保活的账号会因为一次失败的推送变回 server，之后池自愈 /
         刷新循环就会对浏览器正在用的新 PSID 调 RotateCookies（复审发现的双方轮换漏洞）。不带新
         cookie 的自愈失败则不回滚：兜底轮换若刚换来新 PSIDTS，那是谷歌刚签发的，旧值已被替换。
+
+        jar_backup：这次换上的是整套 Cookie（插件 1.4.0 / 面板粘贴的整段 Cookie）时，换之前的整罐
+        副本。只把 PSID / PSIDTS 写回去不够：罐里已经是另一套 OSID / SID / HSID …，必须整罐还原。
         """
         psid, psidts, session_token, was_healthy, auth_expired, rotation_rejected_for = prev
         if not was_healthy and not cookies_changed:
@@ -3805,6 +3909,8 @@ class GeminiWebClient:
         self._auth_expired = auth_expired
         self._rotation_rejected_for = rotation_rejected_for
         if self._cookie_jar is not None:
+            if jar_backup is not None:
+                self._cookie_jar.restore(jar_backup)
             self._cookie_jar.set("__Secure-1PSID", psid)
             if psidts:
                 self._cookie_jar.set("__Secure-1PSIDTS", psidts)
@@ -3814,23 +3920,50 @@ class GeminiWebClient:
             logger.warning("Cookie reload failed; kept the previous cookies (account stays unhealthy)")
 
     async def reload_cookies(self, psid: str | None = None, psidts: str | None = None, *,
-                             keepalive_mode: str | None = None) -> dict:
+                             keepalive_mode: str | None = None,
+                             cookies: list[StoredCookie] | None = None) -> dict:
         """换上 cookie 并重新取会话：要么换上新会话，要么原样不动（见 _restore_session_state）。
 
         keepalive_mode：这份 cookie 由谁保活，admin 接口按请求来源算好传进来（keepalive_modes.
         mode_from_headers）。browser 时，这次 reload 进行期间 _rotate_cookies 一律不轮换 —— 新 PSID
         的记录要等 reload 成功后才写，不传进来的话闸口会按默认 server 放行，reload 自己的兜底轮换
         就会拿浏览器正在用的 PSIDTS 调 RotateCookies、把浏览器顶下线。自愈等内部调用不传。
+
+        cookies：整套 Cookie（已由 admin 接口校验、转好域名，且其中 .google.com 的
+        __Secure-1PSID/1PSIDTS 与 psid/psidts 一致）。给了就整套换上（罐里除内部记录外全部替换），
+        不给 = 只换 PSID / PSIDTS，与 v1.6.52 一致。
         """
         if keepalive_mode != keepalive_modes.MODE_BROWSER:
-            return await self._reload_cookies(psid, psidts)
+            return await self._reload_cookies(psid, psidts, cookies)
         self._browser_pushes_in_flight += 1
         try:
-            return await self._reload_cookies(psid, psidts)
+            return await self._reload_cookies(psid, psidts, cookies)
         finally:
             self._browser_pushes_in_flight -= 1
 
-    async def _reload_cookies(self, psid: str | None, psidts: str | None) -> dict:
+    def sync_persisted_config(self, psid: str, psidts: str) -> None:
+        """PUT /admin/accounts/{id}/cookies 带整套 Cookie 换上成功、并把 PSID / PSIDTS 回写 accounts.json
+        之后调用：让下一次启动认得这份磁盘缓存，而不是把它当陈旧缓存清掉。
+
+        ①罐文件按 PSID 的哈希命名，启动时按 accounts.json 里的 PSID 找：换了 PSID 就把罐搬过去。
+        ②启动时「配置值自己变没变」靠 _CFG_PSIDTS_SNAPSHOT 判断：回写之后 accounts.json 的 PSIDTS
+          就是这一份，快照不跟着改的话下次启动会判成「运维改了配置」→ 清空整罐 → 整套 Cookie（含
+          OSID）丢掉，只剩 PSID / PSIDTS 两条，账号又成了访客。
+        """
+        jar = self._cookie_jar
+        if jar is None:
+            return
+        psid = clean_cookie_value(psid)
+        psidts = clean_cookie_value(psidts)
+        if psid:
+            jar.rebind(psid)
+        if psidts:
+            jar.set(_CFG_PSIDTS_SNAPSHOT, psidts, domain=_CFG_SNAPSHOT_DOMAIN, secure=False)
+        else:
+            jar.remove(_CFG_PSIDTS_SNAPSHOT)
+
+    async def _reload_cookies(self, psid: str | None, psidts: str | None,
+                              cookies: list[StoredCookie] | None = None) -> dict:
         # F4（issue #11）：先快照重载前的会话状态。reload 的语义应是"要么换上新会话、
         # 要么原样不动"：旧实现在任何网络操作之前就无条件 self._healthy = False，失败返回
         # 路径却从不恢复，于是一次失败的刷新（面板误填 cookie、Google 临时 5xx、多账号池里
@@ -3841,11 +3974,18 @@ class GeminiWebClient:
         )
 
         if psid:
-            self._psid = psid.strip().strip('"').strip("'").rstrip(";")
+            self._psid = clean_cookie_value(psid)
         if psidts:
-            self._psidts = psidts.strip().strip('"').strip("'").rstrip(";")
+            self._psidts = clean_cookie_value(psidts)
         # 这次是不是推来了另一份 cookie（失败时据此决定要不要回到原来那份，见 _restore_session_state）
         cookies_changed = (self._psid, self._psidts) != prev_state[:2]
+        jar_backup = None
+        if cookies is not None:
+            # 整套换上之前先留一份整罐副本：失败时整罐还原（光写回 PSID / PSIDTS 不够）
+            jar_backup = self._cookie_jar.entries()
+            current = {(c.name, c.domain, c.path, c.value) for c in jar_backup if not c.internal}
+            incoming = {(c.name, c.domain, c.path, c.value) for c in cookies}
+            cookies_changed = cookies_changed or current != incoming
 
         self._session_token = ""
         self._healthy = False
@@ -3857,9 +3997,13 @@ class GeminiWebClient:
                 await self._http.close()
             self._http = AsyncSession(impersonate=self._current_target, timeout=60)
 
-            self._cookie_jar.set("__Secure-1PSID", self._psid)
-            if self._psidts:
-                self._cookie_jar.set("__Secure-1PSIDTS", self._psidts)
+            if cookies is not None:
+                # 整套换上：其中的 __Secure-1PSID/1PSIDTS 已由 admin 接口核对过与 psid/psidts 一致
+                self._cookie_jar.replace_cookies(cookies)
+            else:
+                self._cookie_jar.set("__Secure-1PSID", self._psid)
+                if self._psidts:
+                    self._cookie_jar.set("__Secure-1PSIDTS", self._psidts)
 
             await self._obtain_session_token()
             if self._session_token:
@@ -3886,12 +4030,14 @@ class GeminiWebClient:
 
             error_msg = self._last_reload_error or first_error
             logger.error(f"Cookie reload failed: {error_msg}")
-            self._restore_session_state(prev_state, cookies_changed=cookies_changed)
+            self._restore_session_state(prev_state, cookies_changed=cookies_changed,
+                                        jar_backup=jar_backup)
             return {"success": False, "error": error_msg}
         except Exception:
             # 已经换上新会话之后才炸的（如 _send_heartbeat 抛错）不回滚，新会话是好的
             if not self._healthy:
-                self._restore_session_state(prev_state, cookies_changed=cookies_changed)
+                self._restore_session_state(prev_state, cookies_changed=cookies_changed,
+                                            jar_backup=jar_backup)
             raise
 
     def _ensure_refresh_task(self):

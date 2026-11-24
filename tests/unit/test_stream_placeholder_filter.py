@@ -81,7 +81,7 @@ def test_real_images_path_still_strips_and_downloads(monkeypatch):
     async def _entry(img, cookies):
         return {"b64": "x", "mime": "image/png"}
 
-    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
     monkeypatch.setattr(client, "_build_image_entry", _entry)
 
     final = asyncio.run(client._finalize_stream(
@@ -99,7 +99,7 @@ def test_real_images_with_empty_text_do_not_get_the_hint(monkeypatch):
     async def _entry(img, cookies):
         return {"b64": "x", "mime": "image/png"}
 
-    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
     monkeypatch.setattr(client, "_build_image_entry", _entry)
 
     final = asyncio.run(client._finalize_stream(_RETRIEVAL, "cid", [{"url": "u"}], ""))
@@ -176,7 +176,7 @@ def _stream_client(monkeypatch, raw: str, *, chunk_size: int = 23):
 
     client._cookie_jar = _Jar()
     monkeypatch.setattr(client, "_ensure_session_current", _noop)
-    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
     monkeypatch.setattr(client, "_get_headers", lambda *a, **kw: {})
     return client
 

@@ -13,6 +13,14 @@ from pydantic import BaseModel
 from app.config import APP_VERSION, mask_secret
 from app.core import keepalive_modes
 from app.core.account_pool import account_pool
+from app.core.fingerprint.cookie_jar import (
+    GOOGLE_DOMAIN,
+    CookieImportError,
+    StoredCookie,
+    clean_cookie_value,
+    cookies_from_browser,
+    cookies_from_header,
+)
 from app.core.model_breaker import model_breaker
 
 logger = logging.getLogger(__name__)
@@ -61,6 +69,16 @@ def _record_keepalive_mode(account, mode: str) -> None:
         logger.info(f"Account {account.id}: keepalive mode -> {mode}")
 
 
+def _sync_persisted_config(account, psid: str, psidts: str) -> None:
+    """整套 Cookie 换上并回写 accounts.json 之后，让下次启动认得这份磁盘缓存（见
+    GeminiWebClient.sync_persisted_config）。同步、绝不抛：cookie 已经换上了，这一步失败只影响重启后
+    要不要再推一次，绝不能把这次成功的操作报成失败。"""
+    try:
+        account.client.sync_persisted_config(psid, psidts)
+    except Exception as e:
+        logger.warning(f"Account {account.id}: could not sync the cookie cache with accounts.json: {e}")
+
+
 async def _after_cookie_reload(account, mode: str) -> None:
     """换 cookie 成功之后的收尾（PUT /accounts/{id}/cookies 与 POST /reload-cookies 共用）。
 
@@ -74,9 +92,78 @@ async def _after_cookie_reload(account, mode: str) -> None:
     await account_pool.mark_cookies_reloaded(account)
 
 
+class BrowserCookie(BaseModel):
+    """浏览器插件推来的一条 Cookie，字段名照 chrome.cookies.Cookie（sameSite / storeId 等多余字段忽略）。"""
+    name: str
+    value: str
+    domain: str
+    path: Optional[str] = "/"
+    expirationDate: Optional[float] = None
+    secure: Optional[bool] = None
+    httpOnly: Optional[bool] = None
+    hostOnly: Optional[bool] = None
+
+
 class ReloadCookiesRequest(BaseModel):
     psid: Optional[str] = None
     psidts: Optional[str] = None
+    # 整套 Cookie（谷歌 11-20 改版后光有 PSID / PSIDTS 只能以访客身份打开 /app）：
+    # cookies = 浏览器插件 ≥1.4.0 推来的 chrome.cookies.Cookie 列表；cookie_header = 面板粘贴的整段
+    # `Cookie:` 请求头。二选一；都不带 = 旧插件 / 旧脚本，行为与 v1.6.52 一致。
+    cookies: Optional[list[BrowserCookie]] = None
+    cookie_header: Optional[str] = None
+
+
+def _full_cookie_set(req) -> list[StoredCookie] | None:
+    """请求里带的整套 Cookie（已转成罐里的条目、域名已定），没带返回 None。不合法抛 CookieImportError。"""
+    header = (req.cookie_header or "").strip()
+    if req.cookies is not None and header:
+        raise CookieImportError("send either cookies or cookie_header, not both")
+    if req.cookies is not None:
+        items = cookies_from_browser([c.model_dump() for c in req.cookies])
+    elif header:
+        items = cookies_from_header(header)
+    else:
+        return None
+    if not items:
+        raise CookieImportError("the cookie set contains no usable google.com cookies")
+    return items
+
+
+def _session_pair_of(items: list[StoredCookie], psid: Optional[str], psidts: Optional[str]) -> tuple[str, str]:
+    """整套 Cookie 里 .google.com 的 __Secure-1PSID / __Secure-1PSIDTS 必须与请求的 psid / psidts 一致。
+
+    psid / psidts 为 None（POST /admin/reload-cookies 可以不填）时取整套里的值。返回清洗后的
+    (psid, psidts)。不一致抛 CookieImportError —— 消息里不带任何值。
+    """
+    by_name = {c.name: c.value for c in items if c.domain == GOOGLE_DOMAIN}
+    set_psid = by_name.get("__Secure-1PSID", "")
+    set_psidts = by_name.get("__Secure-1PSIDTS", "")
+    if not set_psid:
+        raise CookieImportError("the cookie set has no __Secure-1PSID for .google.com")
+    want_psid = set_psid if psid is None else clean_cookie_value(psid)
+    want_psidts = set_psidts if psidts is None else clean_cookie_value(psidts)
+    if want_psid != set_psid or want_psidts != set_psidts:
+        raise CookieImportError(
+            "psid / psidts do not match __Secure-1PSID / __Secure-1PSIDTS in the cookie set"
+        )
+    return want_psid, want_psidts
+
+
+def _invalid_cookies(e: CookieImportError) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"error": {"message": str(e), "type": "invalid_cookies"}},
+    )
+
+
+def _log_full_cookie_set(account_id: str, items: list[StoredCookie]) -> None:
+    """只记条数和有没有 OSID，绝不记值。"""
+    has_osid = any(c.name in ("OSID", "__Secure-OSID") for c in items)
+    logger.info(
+        f"Account {account_id}: full cookie set applied ({len(items)} cookies, "
+        f"OSID {'present' if has_osid else 'missing'})"
+    )
 
 
 class AddAccountRequest(BaseModel):
@@ -92,14 +179,26 @@ async def reload_cookies(request: Request, req: ReloadCookiesRequest = None):
     # （显式 cookie 分支直接 500，.env 分支被误判为 "Failed to read .env"），
     # 且末尾 "No accounts available" 成为死代码。初始化 result=None 并在循环后兜底返回 503。
     mode = _push_source(request)
-    if req and (req.psid or req.psidts):
+    full = None
+    psid, psidts = (req.psid, req.psidts) if req else (None, None)
+    if req:
+        try:
+            full = _full_cookie_set(req)
+            if full is not None:
+                psid, psidts = _session_pair_of(full, req.psid or None, req.psidts or None)
+        except CookieImportError as e:
+            return _invalid_cookies(e)
+    if req and (psid or psidts):
+        extra = {"cookies": full} if full is not None else {}
         result = None
         for account in account_pool.accounts:
             if account.client:
                 result = await account.client.reload_cookies(
-                    psid=req.psid, psidts=req.psidts, keepalive_mode=mode,
+                    psid=psid, psidts=psidts, keepalive_mode=mode, **extra,
                 )
                 if result.get("success"):
+                    if full is not None:
+                        _log_full_cookie_set(account.id, full)
                     await _after_cookie_reload(account, mode)
                     return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
         if result is None:
@@ -245,21 +344,37 @@ async def check_single_account(account_id: str):
 class UpdateCookiesRequest(BaseModel):
     psid: str
     psidts: str = ""
+    # 见 ReloadCookiesRequest：整套 Cookie，二选一；带了就整套换上，且 psid / psidts 必须与其中的
+    # __Secure-1PSID / __Secure-1PSIDTS 一致（不一致 400）。完整 Cookie 只进该账号的 Cookie 罐文件
+    # （data/cookies/<hash>.json），accounts.json 照旧只存 psid / psidts。
+    cookies: Optional[list[BrowserCookie]] = None
+    cookie_header: Optional[str] = None
 
 
 @router.put("/accounts/{account_id}/cookies")
 async def update_account_cookies(account_id: str, req: UpdateCookiesRequest, request: Request):
+    try:
+        full = _full_cookie_set(req)
+        if full is not None:
+            _session_pair_of(full, req.psid, req.psidts)
+    except CookieImportError as e:
+        return _invalid_cookies(e)
+    extra = {"cookies": full} if full is not None else {}
     for account in account_pool.accounts:
         if account.id == account_id:
             if account.client:
                 mode = _push_source(request)
                 result = await account.client.reload_cookies(
-                    psid=req.psid, psidts=req.psidts, keepalive_mode=mode,
+                    psid=req.psid, psidts=req.psidts, keepalive_mode=mode, **extra,
                 )
                 if result.get("success"):
                     # 回写 accounts.json：否则面板刚救活的账号在下次重启时又拿着添加账号
                     # 那一刻的旧 cookie 起来（启动时的"配置值"就是 accounts.json 里这一份）。
-                    account_pool.persist_account_cookies(account_id, req.psid, req.psidts)
+                    persisted = account_pool.persist_account_cookies(account_id, req.psid, req.psidts)
+                    if full is not None:
+                        _log_full_cookie_set(account_id, full)
+                        if persisted:
+                            _sync_persisted_config(account, req.psid, req.psidts)
                     await _after_cookie_reload(account, mode)
                     return {"status": "ok", "message": f"Account {account_id} cookies updated"}
                 return JSONResponse(

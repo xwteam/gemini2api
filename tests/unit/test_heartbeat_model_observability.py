@@ -241,7 +241,7 @@ def _check_account_client(monkeypatch, body: str, *, models_after_heartbeat):
 
     monkeypatch.setattr(client, "_ensure_session_current", _noop)
     monkeypatch.setattr(client, "_clear_session_cookies", lambda: None)
-    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
     monkeypatch.setattr(client, "_get_headers", lambda *a, **kw: {})
     monkeypatch.setattr(client, "_send_heartbeat", _heartbeat)
     return client

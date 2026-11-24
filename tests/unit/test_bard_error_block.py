@@ -226,7 +226,7 @@ def _stream_client(monkeypatch, raw: str, *, chunk_size: int = 17):
 
     client._cookie_jar = _Jar()
     monkeypatch.setattr(client, "_ensure_session_current", _noop)
-    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
     monkeypatch.setattr(client, "_get_headers", lambda *a, **kw: {})
     return client
 

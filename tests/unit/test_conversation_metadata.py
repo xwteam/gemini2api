@@ -197,7 +197,7 @@ class _StreamHarness:
 
         client._cookie_jar = _Jar()
         monkeypatch.setattr(client, "_ensure_session_current", _noop)
-        monkeypatch.setattr(client, "_get_cookies", lambda: {})
+        monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
         monkeypatch.setattr(client, "_get_headers", lambda *a, **kw: {})
         self.client = client
 
@@ -312,7 +312,7 @@ def test_nonstream_request_puts_the_list_in_slot_2(monkeypatch):
     monkeypatch.setattr(gc, "apply_jitter", _noop)
     monkeypatch.setattr(client, "_ensure_session_current", _noop)
     monkeypatch.setattr(client, "_clear_session_cookies", lambda: None)
-    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
     monkeypatch.setattr(client, "_get_headers", lambda *a, **kw: {})
 
     for thinking in (False, 1):

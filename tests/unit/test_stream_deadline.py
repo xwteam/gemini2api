@@ -275,7 +275,7 @@ def _client(monkeypatch, up: _Upstream):
 
     client._cookie_jar = _Jar()
     monkeypatch.setattr(client, "_ensure_session_current", _noop)
-    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
     monkeypatch.setattr(client, "_get_headers", lambda *a, **kw: {})
     monkeypatch.setattr(client, "_build_image_entry", _image_entry)
     return client
@@ -619,7 +619,7 @@ def _loopback_client(monkeypatch, port: int):
 
     client._cookie_jar = _Jar()
     monkeypatch.setattr(client, "_ensure_session_current", _noop)
-    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
     monkeypatch.setattr(client, "_get_headers", lambda *a, **kw: {})
     return client
 

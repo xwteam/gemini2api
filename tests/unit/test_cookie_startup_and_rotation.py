@@ -402,7 +402,7 @@ def _rotate_client(monkeypatch, resp):
     monkeypatch.setattr(gc, "apply_jitter", _noop)
     monkeypatch.setattr(client, "_ensure_session_current", _noop)
     monkeypatch.setattr(client, "_clear_session_cookies", lambda: None)
-    monkeypatch.setattr(client, "_get_cookies", lambda: {})
+    monkeypatch.setattr(client, "_get_cookies", lambda *a, **k: {})
 
     rots = _Rotations()
     monkeypatch.setattr(gc, "live_metrics", rots)
