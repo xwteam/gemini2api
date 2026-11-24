@@ -2051,6 +2051,7 @@ def _rand_reqid() -> int:
 class GeminiWebClient:
     # 类级默认值：测试替身常用 __new__ 绕开 __init__ 造实例，刷新循环 / 状态导出照样读得到它。
     _auth_expired = False
+    _auth_error = ""
     _rotation_rejected_for: tuple | None = None
     _browser_pushes_in_flight = 0
 
@@ -2074,6 +2075,8 @@ class GeminiWebClient:
         # 会话已被谷歌打回登录页（见 auth_expired）。与 _healthy 分开记：不健康的原因很多
         # （网络抖动、5xx、页面解析失败……），只有这一种必须换 cookie 才能恢复。
         self._auth_expired = False
+        # 被打回登录页时给运维看的原因（见 auth_error）：落在谷歌登录页本身 = 缺完整 Cookie（含 OSID）。
+        self._auth_error = ""
         # 谷歌对哪一份 cookie（PSID, PSIDTS）的 RotateCookies 明确回过 401（见 _rotation_futile）。
         self._rotation_rejected_for: tuple | None = None
         # 正在进行中的「浏览器保活插件推来的」reload 个数（见 reload_cookies 的 keepalive_mode）。
@@ -2214,6 +2217,17 @@ class GeminiWebClient:
         打回登录页，而它往往一次轮换就能救回来。
         """
         return self._auth_expired
+
+    @property
+    def auth_error(self) -> str:
+        """被打回登录页的具体原因，没有就是空串。只读。
+
+        落在谷歌登录页本身（谷歌 11-20 改版后只带 PSID / PSIDTS 的常态）时是 AUTH_FULL_COOKIE_REQUIRED；
+        改版前的形态（页面里没 token、只有登录链接）不是「缺完整 Cookie」，为空。AccountPool.get_status
+        用它填 /admin/status 的 last_error —— 面板账号列表和浏览器插件读的是那里，不是 reload 的 503。
+        与 auth_expired 同进同退：只在 _detect_login_redirect 置位，拿到 token 时清掉，reload 失败时一起回滚。
+        """
+        return self._auth_error if self._auth_expired else ""
 
     @property
     def keepalive_mode(self) -> str:
@@ -2396,6 +2410,7 @@ class GeminiWebClient:
         self._session_token = token
         self._push_id = _extract_push_id(body)
         self._auth_expired = False
+        self._auth_error = ""
         self._rotation_rejected_for = None
 
     @staticmethod
@@ -2430,12 +2445,10 @@ class GeminiWebClient:
         两种形态：①最终落在谷歌登录页本身（_is_google_signin_page，谷歌 11-20 改版后的常态，页面里
         还有 SNlM0e）；②页面里没有 token、只有指向登录页的链接（改版前的形态）。
         """
-        if (
-            _is_google_signin_page(body, final_url)
-            or "accounts.google.com" in body
-            or "ServiceLogin" in body
-        ):
+        signin = _is_google_signin_page(body, final_url)
+        if signin or "accounts.google.com" in body or "ServiceLogin" in body:
             self._auth_expired = True
+            self._auth_error = AUTH_FULL_COOKIE_REQUIRED if signin else ""
             return True
         return False
 
@@ -3264,13 +3277,15 @@ class GeminiWebClient:
         await self._ensure_session_current()
         cookies = self._get_cookies(GENERATE_URL)
 
-        # 附件上传仍复用共享 session 的逻辑（与对话同账号同会话），上传完再走流式对话
+        # 附件上传仍复用共享 session 的逻辑（与对话同账号同会话），上传完再走流式对话。
+        # 附件 URL 的下载不走这个 session（它带着账号的域 Cookie），见 file_upload._new_remote_session。
         file_ids = None
         if attachments:
             from app.core.file_upload import upload_files
             base_headers = self._get_headers("POST")
             file_ids = await upload_files(
-                self._http, self._upload_cookies(), base_headers, self._push_id, attachments
+                self._http, self._upload_cookies(), base_headers, self._push_id, attachments,
+                impersonate=self._current_target,
             )
             if not file_ids:
                 logger.warning("All attachment uploads failed, streaming text-only")
@@ -3600,13 +3615,14 @@ class GeminiWebClient:
             )
         cookies = self._get_cookies(GENERATE_URL)
 
-        # 上传附件（与对话同账号同会话），拿到文件标识符
+        # 上传附件（与对话同账号同会话），拿到文件标识符；附件 URL 的下载另开不带 Cookie 的 session
         file_ids = None
         if attachments:
             from app.core.file_upload import upload_files
             base_headers = self._get_headers("POST")
             file_ids = await upload_files(
-                self._http, self._upload_cookies(), base_headers, self._push_id, attachments
+                self._http, self._upload_cookies(), base_headers, self._push_id, attachments,
+                impersonate=self._current_target,
             )
             if not file_ids:
                 logger.warning("All attachment uploads failed, falling back to text-only")
@@ -3899,7 +3915,7 @@ class GeminiWebClient:
         jar_backup：这次换上的是整套 Cookie（插件 1.4.0 / 面板粘贴的整段 Cookie）时，换之前的整罐
         副本。只把 PSID / PSIDTS 写回去不够：罐里已经是另一套 OSID / SID / HSID …，必须整罐还原。
         """
-        psid, psidts, session_token, was_healthy, auth_expired, rotation_rejected_for = prev
+        psid, psidts, session_token, was_healthy, auth_expired, rotation_rejected_for, auth_error = prev
         if not was_healthy and not cookies_changed:
             return
         self._psid = psid
@@ -3907,6 +3923,7 @@ class GeminiWebClient:
         self._session_token = session_token
         self._healthy = was_healthy
         self._auth_expired = auth_expired
+        self._auth_error = auth_error
         self._rotation_rejected_for = rotation_rejected_for
         if self._cookie_jar is not None:
             if jar_backup is not None:
@@ -3962,6 +3979,38 @@ class GeminiWebClient:
         else:
             jar.remove(_CFG_PSIDTS_SNAPSHOT)
 
+    def sync_persisted_psidts(self, psid: str, psidts: str) -> bool:
+        """旧格式 PUT（只带 psid / psidts）换上成功、并回写 accounts.json 之后调用。返回是否同步了。
+
+        PSID 没变（罐文件就挂在这个 PSID 名下）：把配置快照改成刚写进 accounts.json 的 PSIDTS。不改的话，
+        整套 Cookie 换上之后再来一次旧格式 PUT（插件 1.4.0 读不到整套时退回的两值 body、refresher 边车
+        每 8 分钟一次、面板只填两项、另一台浏览器上的 1.3.0 插件），下次启动就判成「运维改了配置」→ 清空
+        整罐 → OSID / SID / HSID … 全丢，账号又成访客，而那套 Cookie 是用户手动推来的、自动找不回来。
+        PSID 变了：什么都不做，与 v1.6.52 一致（罐文件不搬，下次启动按新 PSID 从头建罐）。
+        """
+        jar = self._cookie_jar
+        psid = clean_cookie_value(psid)
+        if jar is None or not psid or jar.account_id != psid:
+            return False
+        self.sync_persisted_config(psid, psidts)
+        return True
+
+    def owns_cookie_set(self, psid: str) -> bool:
+        """这套 Cookie（以 .google.com 的 __Secure-1PSID 认）是不是这个账号当前用的那个谷歌登录。"""
+        psid = clean_cookie_value(psid)
+        if not psid:
+            return False
+        if psid == self._psid:
+            return True
+        jar = self._cookie_jar
+        return jar is not None and jar.get("__Secure-1PSID") == psid
+
+    def has_full_cookie_set(self) -> bool:
+        """罐里装着浏览器推来的整套 Cookie（见 cookie_jar.FULL_SET_MARKERS）：它不在 accounts.json 里，
+        被另一个谷歌登录的整套覆盖掉就找不回来。"""
+        jar = self._cookie_jar
+        return jar is not None and jar.holds_full_set()
+
     async def _reload_cookies(self, psid: str | None, psidts: str | None,
                               cookies: list[StoredCookie] | None = None) -> dict:
         # F4（issue #11）：先快照重载前的会话状态。reload 的语义应是"要么换上新会话、
@@ -3970,7 +4019,7 @@ class GeminiWebClient:
         # /reload-cookies 拿同一份 cookie 挨个试）就把一个本来健康的 client 永久拉黑。
         prev_state = (
             self._psid, self._psidts, self._session_token, self._healthy, self._auth_expired,
-            self._rotation_rejected_for,
+            self._rotation_rejected_for, self._auth_error,
         )
 
         if psid:
@@ -4009,6 +4058,7 @@ class GeminiWebClient:
             if self._session_token:
                 self._healthy = True
                 self._auth_expired = False
+                self._auth_error = ""
                 self._rotation_rejected_for = None
                 self._ensure_refresh_task()
                 await self._send_heartbeat()  # 拉取账号真实可用模型
@@ -4023,6 +4073,7 @@ class GeminiWebClient:
                 if self._session_token:
                     self._healthy = True
                     self._auth_expired = False
+                    self._auth_error = ""
                     self._rotation_rejected_for = None
                     self._ensure_refresh_task()
                     logger.info("Cookies reloaded after rotation")

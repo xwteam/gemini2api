@@ -241,6 +241,15 @@ class Account:
 SESSION_EXPIRED_ERROR = "Google session expired (login redirect)"
 
 
+def _auth_error(a: Account) -> str:
+    """client 给出的「打回登录页」的具体原因（GeminiWebClient.auth_error），没有就是空串。
+
+    getattr + 类型判断兜底：池对 client 只要求 is_healthy，替身没有这个属性、或给的不是字符串都按没有处理。
+    """
+    value = getattr(a.client, "auth_error", "")
+    return value if isinstance(value, str) else ""
+
+
 def _session_expired(a: Account) -> bool:
     """client 已判定不健康、且原因是会话被谷歌打回登录页（GeminiWebClient.auth_expired）。
 
@@ -1113,8 +1122,12 @@ class AccountPool:
             if _session_expired(a):
                 if a.status == AccountStatus.ACTIVE:
                     status = AccountStatus.EXPIRED.value
-                if status == AccountStatus.EXPIRED.value and not last_error:
-                    last_error = SESSION_EXPIRED_ERROR
+                if status == AccountStatus.EXPIRED.value:
+                    # 落在谷歌登录页本身 = 缺完整 Cookie（含 OSID）：这句提示是当前会话的状态，盖过
+                    # last_error 里更早的请求错误（访客态的 400 只是症状）。上线当天三个账号都会走到
+                    # 这里（_init_account_client 标 EXPIRED、last_error 为空），面板账号列表和浏览器
+                    # 插件读的是这里，不是 reload 的 503。别的原因照旧：last_error 为空才补笼统的那句。
+                    last_error = _auth_error(a) or last_error or SESSION_EXPIRED_ERROR
             accounts_info.append({
                 "id": a.id,
                 "label": a.label,

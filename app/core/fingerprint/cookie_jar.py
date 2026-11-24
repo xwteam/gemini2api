@@ -40,6 +40,11 @@ INTERNAL_DOMAIN = "config.local"
 # `__Host-` 前缀的按规范也只能是 host-only；其余一律按 .google.com 的域 Cookie 记。
 _GEMINI_HOST_ONLY_NAMES = frozenset({"OSID", "__Secure-OSID"})
 
+# 只有浏览器（插件 1.4.0 / 面板粘贴的整段 Cookie）才给得了的 Cookie：登录时签发，我们自己的请求从响应里
+# 捕获不到（捕获到的只有 AEC / COMPASS / NID / *PSIDCC / *PSIDTS 之类）。罐里有其中任何一个，就说明这个
+# 账号装着某个谷歌登录的整套 Cookie —— 它不在 accounts.json 里，覆盖掉就找不回来。
+FULL_SET_MARKERS = frozenset({"OSID", "__Secure-OSID", "SID", "HSID", "SSID", "APISID", "SAPISID"})
+
 # 被换掉的旧值记多久（见 PersistentCookieJar._superseded）。最长的请求（pro 的非流式 / 流式）预算是
 # 300 秒，留足余量。
 _SUPERSEDED_TTL = 15 * 60
@@ -418,6 +423,16 @@ class PersistentCookieJar:
         with self._lock:
             return sorted({c.name for c in self._cookies.values()})
 
+    @property
+    def account_id(self) -> str:
+        """罐文件挂在哪个账号标识（PSID）名下（文件名是它的哈希）。"""
+        return self._account_id
+
+    def holds_full_set(self) -> bool:
+        """罐里装着浏览器推来的整套 Cookie（见 FULL_SET_MARKERS），而不只是 PSID / PSIDTS 和捕获来的那些。"""
+        with self._lock:
+            return any(c.name in FULL_SET_MARKERS and not c.internal for c in self._cookies.values())
+
     def entries(self) -> list[StoredCookie]:
         """整罐的副本（含内部记录），供 reload 失败时原样还原。"""
         with self._lock:
@@ -598,6 +613,12 @@ class PersistentCookieJar:
         # 测试替身 / 拿不到 URL 时为空，退回改动前的 .google.com。
         _, resp_host, resp_path = _url_parts(getattr(response, "url", "") or "")
         changed = False
+        # 处理这个响应之前罐里的值：下面 Set-Cookie 换掉 / 删掉的，要把这里的旧值记成「已换掉」。
+        # 不能拿写入那一刻的现值比 —— curl 的 Cookie 列表里同样是新值，第一段循环已经先写进去了，
+        # 到 Set-Cookie 这一段时看到的现值已是新值，旧值就漏记了（复审：轮换后在路上的流式请求回显
+        # 旧 PSIDTS，把罐改回谷歌已经换掉的那个）。
+        with self._lock:
+            before = dict(self._cookies)
         for item in self._iter_response_cookies(response.cookies, resp_host):
             with self._lock:
                 # 空值视为服务端删除指令：删除而非用空值覆盖有效凭据 Cookie。
@@ -647,22 +668,29 @@ class PersistentCookieJar:
                     # 绝不用空值或已过期值覆盖仍有效的认证 Cookie（VULN-010 写容错）。
                     expires = parsed.expires
                     is_deletion = (not parsed.value) or (expires is not None and expires <= time.time())
+                    prev = before.get(key)
                     if is_deletion:
                         if self._cookies.pop(key, None) is not None:
                             changed = True
+                        if prev is not None:
+                            self._supersede(prev, None)  # 在路上的旧值回显不能把它变回来
                         continue
                     ex = self._cookies.get(key)
                     new_expires = expires if expires is not None else 0
+                    cookie = StoredCookie(
+                        name=parsed.name,
+                        value=parsed.value,
+                        domain=domain,
+                        path=path,
+                        expires=new_expires,
+                        secure=parsed.secure or parsed.name.startswith(("__Secure-", "__Host-")),
+                        http_only=parsed.http_only,
+                    )
+                    if prev is not None:
+                        # 服务端用 Set-Cookie 换了值：旧值记成已换掉（值没变时 _supersede 什么都不记）
+                        self._supersede(prev, cookie)
                     if ex is None or ex.value != parsed.value or ex.expires != new_expires:
-                        self._cookies[key] = StoredCookie(
-                            name=parsed.name,
-                            value=parsed.value,
-                            domain=domain,
-                            path=path,
-                            expires=new_expires,
-                            secure=parsed.secure or parsed.name.startswith(("__Secure-", "__Host-")),
-                            http_only=parsed.http_only,
-                        )
+                        self._cookies[key] = cookie
                         changed = True
 
         if changed:

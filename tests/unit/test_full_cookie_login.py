@@ -644,3 +644,319 @@ def test_end_to_end_put_never_logs_or_returns_cookie_values(gem_client, one_acco
     assert "OSID present" in caplog.text
     jar_file = json.loads(c._cookie_jar._store_path().read_text(encoding="utf-8"))
     assert {"OSID", "__Secure-OSID", "SID"} <= {row["name"] for row in jar_file}
+
+
+# ---------------------------------------------------------------------------
+# 复审修复：/admin/status 报出完整 Cookie 的提示（规格 A3）
+# ---------------------------------------------------------------------------
+
+def _status_of(client, status=None, last_error=""):
+    from app.core.account_pool import Account, AccountPool, AccountStatus
+
+    acc = Account(id="account-1", psid="P", psidts="T", label="a1", last_error=last_error)
+    acc.client = client
+    acc.status = status or AccountStatus.EXPIRED
+    pool = AccountPool.__new__(AccountPool)
+    pool._accounts = [acc]
+    pool._cond = asyncio.Condition()
+    pool._strategy = type("S", (), {"value": "round-robin"})()
+    pool._max_concurrent = 3
+    (info,) = pool.get_status()["accounts"]
+    return info
+
+
+def test_status_tells_the_operator_the_full_cookie_set_is_required(monkeypatch, tmp_path):
+    """上线当天三个账号都会被登录页守卫判失败（_init_account_client 标 EXPIRED、last_error 为空）。
+    面板账号列表和浏览器插件读的是 /admin/status：这里也得是那句完整 Cookie 的提示，不是旧的笼统一句。"""
+    c = _client(monkeypatch, tmp_path, http=_Http(_signin_page(), SIGNIN_URL))
+    asyncio.run(c._obtain_session_token())
+
+    info = _status_of(c)
+
+    assert info["status"] == "expired"
+    assert info["last_error"] == gc.AUTH_FULL_COOKIE_REQUIRED
+
+
+def test_status_prefers_the_full_cookie_hint_over_an_older_request_error(monkeypatch, tmp_path):
+    """运行中被打回登录页之前，访客态的请求已经 400 过几次、last_error 记着「HTTP 400」：那只是症状，
+    提示才是原因。"""
+    from app.core.account_pool import AccountStatus
+
+    c = _client(monkeypatch, tmp_path, http=_Http(_signin_page(), SIGNIN_URL))
+    asyncio.run(c._obtain_session_token())
+
+    info = _status_of(c, status=AccountStatus.ACTIVE, last_error="HTTPStatusError (HTTP 400)")
+
+    assert info["status"] == "expired"
+    assert info["last_error"] == gc.AUTH_FULL_COOKIE_REQUIRED
+
+
+def test_old_style_login_redirect_keeps_the_generic_reason(monkeypatch, tmp_path):
+    """改版前的形态（页面里没 token、只有登录链接）不是「缺完整 Cookie」：照旧报笼统的那句。"""
+    from app.core import account_pool as ap
+
+    page = "<html><title>Gemini</title>" + "x" * 2000 + '<a href="https://accounts.google.com/ServiceLogin">'
+    c = _client(monkeypatch, tmp_path, http=_Http(page, gc.GEMINI_APP_EN_URL))
+    asyncio.run(c._obtain_session_token())
+
+    assert c.auth_expired is True
+    assert c.auth_error == ""
+    assert _status_of(c)["last_error"] == ap.SESSION_EXPIRED_ERROR
+
+
+def test_the_hint_clears_once_a_token_is_adopted(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path, http=_Http(_signin_page(), SIGNIN_URL))
+    asyncio.run(c._obtain_session_token())
+    assert c.auth_error == gc.AUTH_FULL_COOKIE_REQUIRED
+
+    c._http.app_page, c._http.app_url = LOGGED_IN_PAGE, gc.GEMINI_APP_EN_URL
+    asyncio.run(c._obtain_session_token())
+
+    assert c.auth_expired is False and c.auth_error == ""
+
+
+def test_check_account_on_a_signin_page_also_sets_the_hint(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path, http=_Http(_signin_page(), SIGNIN_URL))
+    asyncio.run(c.check_account())
+    assert c.auth_error == gc.AUTH_FULL_COOKIE_REQUIRED
+
+
+def test_a_failed_reload_restores_the_previous_hint(monkeypatch, tmp_path):
+    """reload 失败整组状态回滚：auth_error 跟着 auth_expired 一起回到调用前。"""
+    page = "<html><title>Gemini</title>" + "x" * 2000 + '<a href="https://accounts.google.com/ServiceLogin">'
+    c = _client(monkeypatch, tmp_path, http=_Http(page, gc.GEMINI_APP_EN_URL))
+    asyncio.run(c._obtain_session_token())
+    assert c.auth_expired is True and c.auth_error == ""
+
+    c._http.app_page, c._http.app_url = _signin_page(), SIGNIN_URL
+    result = asyncio.run(c.reload_cookies(
+        psid="psid-NEW", psidts="psidts-NEW",
+        cookies=_full_set(**{"__Secure-1PSID": "psid-NEW", "__Secure-1PSIDTS": "psidts-NEW"}),
+        keepalive_mode="browser",
+    ))
+
+    assert result["success"] is False
+    assert c.auth_expired is True and c.auth_error == ""
+
+
+# ---------------------------------------------------------------------------
+# 复审修复：轮换换掉的旧 PSIDTS，在路上的请求回来时不能写回去
+# ---------------------------------------------------------------------------
+
+class _RotatingHttp(_Http):
+    def __init__(self, new_ts):
+        super().__init__()
+        self.new_ts = new_ts
+
+    async def post(self, url, **kw):
+        self.calls.append(("POST", url, kw))
+        if url != gc.ROTATE_COOKIES_URL:
+            return _Resp(200, ")]}'\n", url)
+        resp = _Resp(200, "", url, headers={
+            "set-cookie": f"__Secure-1PSIDTS={self.new_ts}; Domain=.google.com; Path=/; Secure; HttpOnly",
+        })
+        listed = curl_cookies.Cookies(kw.get("cookies"))
+        listed.set("__Secure-1PSIDTS", self.new_ts, ".google.com", secure=True)
+        resp.cookies = listed
+        return resp
+
+
+def test_a_stream_that_left_before_a_rotation_does_not_revert_psidts(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path, http=_RotatingHttp("psidts-ROTATED"))
+    in_flight = c._get_cookies(gc.GENERATE_URL)  # 流式请求（独立 session，最长 300 秒）出发时带的那份
+
+    assert asyncio.run(c._rotate_cookies()) == gc.RotationResult.RENEWED
+    assert c._cookie_jar.get("__Secure-1PSIDTS") == "psidts-ROTATED"
+
+    c._cookie_jar.update_from_response(_Resp(200, "", gc.GENERATE_URL))
+    stale = _Resp(200, "", gc.GENERATE_URL)
+    stale.cookies = curl_cookies.Cookies(in_flight)
+    c._cookie_jar.update_from_response(stale)
+
+    assert c._cookie_jar.get("__Secure-1PSIDTS") == "psidts-ROTATED"
+    assert c._get_cookies(gc.GENERATE_URL)["__Secure-1PSIDTS"] == "psidts-ROTATED"
+
+
+# ---------------------------------------------------------------------------
+# 复审修复：整套 PUT 之后的旧格式 PUT 不能让下次启动清空整罐
+# ---------------------------------------------------------------------------
+
+def _real_client_for_admin(monkeypatch, tmp_path, psidts="TS-AT-SETUP"):
+    monkeypatch.setattr(cj_mod, "COOKIE_STORE_DIR", tmp_path / "cookies")
+    monkeypatch.setattr(gc, "apply_jitter", _noop)
+    return _restart(monkeypatch, SECRET_VALUES["__Secure-1PSID"], psidts)
+
+
+def test_a_legacy_put_after_a_full_put_keeps_the_full_set_across_a_restart(gem_client, one_account,
+                                                                         monkeypatch, tmp_path):
+    """复审用探针复现过：整套 PUT 并同步之后，再来一次旧格式 PUT（插件 1.4.0 读不到整套时的退路、
+    refresher 每 8 分钟一次、面板只填两项、另一台浏览器上的 1.3.0），新 PSIDTS 回写进 accounts.json
+    而配置快照不跟着改，下次启动判成「配置变了」→ 整罐清空 → OSID / SID / HSID 全丢，账号又成访客。"""
+    client = _real_client_for_admin(monkeypatch, tmp_path)
+    one_account(client)
+    psid = SECRET_VALUES["__Secure-1PSID"]
+
+    assert _put(gem_client, {"psid": psid, "psidts": SECRET_VALUES["__Secure-1PSIDTS"],
+                             "cookies": _chrome_list()}).status_code == 200
+    assert _put(gem_client, {"psid": psid, "psidts": "TS-LEGACY"}).status_code == 200
+    assert one_account.persisted[-1] == ("account-1", psid, "TS-LEGACY")
+
+    again = _restart(monkeypatch, psid, "TS-LEGACY")  # accounts.json 里此时是 TS-LEGACY
+    sent = again._cookie_jar.cookies_for_url(gc.GEMINI_APP_URL)
+    assert sent.get("OSID") == SECRET_VALUES["OSID"], "整套 Cookie 被重启清掉了"
+    assert sent.get("SID") == SECRET_VALUES["SID"]
+    assert again._psidts == "TS-LEGACY"
+
+
+def test_a_legacy_put_with_another_psid_keeps_the_v1652_behaviour(gem_client, one_account,
+                                                                 monkeypatch, tmp_path):
+    """换了 PSID 的旧格式 PUT：和 v1.6.52 一样，罐文件不搬、快照不动（重启后按新 PSID 从头建罐）。"""
+    client = _real_client_for_admin(monkeypatch, tmp_path)
+    one_account(client)
+    assert _put(gem_client, {"psid": SECRET_VALUES["__Secure-1PSID"],
+                             "psidts": SECRET_VALUES["__Secure-1PSIDTS"],
+                             "cookies": _chrome_list()}).status_code == 200
+    path_before = client._cookie_jar._store_path()
+
+    assert _put(gem_client, {"psid": "PSID-OTHER", "psidts": "TS-OTHER"}).status_code == 200
+
+    assert client._cookie_jar._store_path() == path_before
+    assert client._cookie_jar.get(gc._CFG_PSIDTS_SNAPSHOT) == SECRET_VALUES["__Secure-1PSIDTS"]
+
+
+def test_a_legacy_put_whose_writeback_failed_syncs_nothing(gem_client, one_account, monkeypatch, tmp_path):
+    import app.routers.admin as admin
+
+    client = _real_client_for_admin(monkeypatch, tmp_path)
+    one_account(client)
+    monkeypatch.setattr(admin.account_pool, "persist_account_cookies", lambda *a: False)
+
+    assert _put(gem_client, {"psid": SECRET_VALUES["__Secure-1PSID"], "psidts": "TS-LEGACY"}).status_code == 200
+    assert client._cookie_jar.get(gc._CFG_PSIDTS_SNAPSHOT) == "TS-AT-SETUP"
+
+
+# ---------------------------------------------------------------------------
+# 复审修复：POST /admin/reload-cookies 带整套时只换给这套 Cookie 所属的账号
+# ---------------------------------------------------------------------------
+
+class _PoolClient(_RecordingClient):
+    def __init__(self, psid, *, full=False, success=True):
+        super().__init__(success=success)
+        self.psid = psid
+        self.full = full
+
+    def owns_cookie_set(self, psid):
+        return psid == self.psid
+
+    def has_full_cookie_set(self):
+        return self.full
+
+
+@pytest.fixture
+def pool_of(monkeypatch):
+    import app.routers.admin as admin
+    from app.core.account_pool import Account
+
+    def install(*clients):
+        accounts = []
+        for i, client in enumerate(clients):
+            acc = Account(id=f"account-{i}", psid=f"P{i}", psidts=f"T{i}", label=f"a{i}")
+            acc.client = client
+            accounts.append(acc)
+        monkeypatch.setattr(type(admin.account_pool), "accounts",
+                            property(lambda self: accounts), raising=False)
+
+        async def _mark(account):
+            return None
+
+        monkeypatch.setattr(admin.account_pool, "mark_cookies_reloaded", _mark)
+        return accounts
+
+    return install
+
+
+def _post_full(gem_client, **override):
+    return gem_client.post("/admin/reload-cookies", json={"cookies": _chrome_list(**override)}, headers=AUTH)
+
+
+def test_post_full_set_goes_only_to_the_account_that_owns_it(gem_client, pool_of):
+    first = _PoolClient("psid-OTHER-ACCOUNT", full=True)
+    owner = _PoolClient(SECRET_VALUES["__Secure-1PSID"], full=True)
+    pool_of(first, owner)
+
+    r = _post_full(gem_client)
+
+    assert r.status_code == 200, r.text
+    assert first.calls == [], "别的账号的整套 Cookie 被这套覆盖了"
+    assert len(owner.calls) == 1
+
+
+def test_post_full_set_does_not_fall_through_when_the_owner_fails(gem_client, pool_of):
+    other = _PoolClient("psid-OTHER-ACCOUNT", full=True)
+    owner = _PoolClient(SECRET_VALUES["__Secure-1PSID"], full=True, success=False)
+    pool_of(owner, other)
+
+    r = _post_full(gem_client)
+
+    assert r.status_code == 503
+    assert other.calls == []
+
+
+def test_post_full_set_without_an_owner_skips_accounts_holding_their_own_full_set(gem_client, pool_of):
+    """新 PSID（浏览器重新登录过）：不覆盖已经有自己整套 Cookie 的账号，落到还只有 PSID / PSIDTS 的那个。"""
+    holder = _PoolClient("psid-A", full=True)
+    legacy = _PoolClient("psid-B", full=False)
+    pool_of(holder, legacy)
+
+    r = _post_full(gem_client)
+
+    assert r.status_code == 200, r.text
+    assert holder.calls == []
+    assert len(legacy.calls) == 1
+
+
+def test_post_full_set_without_an_owner_is_409_when_every_account_holds_a_full_set(gem_client, pool_of):
+    a, b = _PoolClient("psid-A", full=True), _PoolClient("psid-B", full=True)
+    pool_of(a, b)
+
+    r = _post_full(gem_client)
+
+    assert r.status_code == 409
+    assert r.json()["error"]["type"] == "no_matching_account"
+    assert a.calls == [] and b.calls == []
+    for v in SECRET_VALUES.values():
+        assert v not in r.text
+
+
+def test_post_full_set_on_a_single_account_pool_still_lands(gem_client, pool_of):
+    """单账号池（插件没填账号 ID 的常见部署）：浏览器重新登录换了 PSID，照样换给这唯一的账号。"""
+    only = _PoolClient("psid-OLD", full=True)
+    pool_of(only)
+    r = _post_full(gem_client)
+    assert r.status_code == 200, r.text
+    assert len(only.calls) == 1
+
+
+def test_post_without_a_full_set_still_tries_every_account(gem_client, pool_of):
+    """旧格式（不带整套）行为不变：逐个试。"""
+    a = _PoolClient("psid-A", full=True, success=False)
+    b = _PoolClient("psid-B", full=True)
+    pool_of(a, b)
+    r = gem_client.post("/admin/reload-cookies", json={"psid": "P", "psidts": "T"}, headers=AUTH)
+    assert r.status_code == 200
+    assert len(a.calls) == 1 and len(b.calls) == 1
+
+
+def test_client_owns_and_full_set_helpers(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path)
+    assert c.owns_cookie_set(SECRET_VALUES["__Secure-1PSID"]) is True
+    assert c.owns_cookie_set("psid-SOMEONE-ELSE") is False
+    assert c.owns_cookie_set("") is False
+    assert c.has_full_cookie_set() is True
+
+    legacy = _client(monkeypatch, tmp_path / "b", cookies=[
+        StoredCookie("__Secure-1PSID", "psid-L"), StoredCookie("__Secure-1PSIDTS", "ts-L"),
+        StoredCookie("NID", "captured"),
+    ], psid="psid-L", psidts="ts-L")
+    assert legacy.has_full_cookie_set() is False
+    assert legacy.owns_cookie_set("psid-L") is True

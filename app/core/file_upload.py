@@ -6,6 +6,9 @@ Gemini Web 文件/图片上传模块。
 
 上传与对话必须用同一账号的同一会话（同 cookies），因此本模块的函数
 都由 GeminiWebClient._send_request 在选定账号后调用，不在路由层单独上传。
+
+附件 URL（OpenAI image_url / Claude source.type=url）的下载则**绝不**走账号的会话：URL 是调用方任填的，
+而账号会话里有带域名的谷歌 Cookie（见 _new_remote_session）。
 """
 import asyncio
 import logging
@@ -20,10 +23,27 @@ MAX_REMOTE_SIZE = 20 * 1024 * 1024  # 远程 URL 下载上限 20MB
 MAX_REMOTE_REDIRECTS = 5  # 手动跟随重定向的最大跳数，防 SSRF 重定向链绕过
 
 
-async def _resolve_bytes(http, att: dict) -> tuple[bytes, str, str] | None:
+def _new_remote_session(impersonate: str | None = None):
+    """附件 URL 专用的 session：新建、不带任何 Cookie，一个附件一个，用完即关。
+
+    绝不能用账号的 self._http：交给 curl 的是带域名的谷歌 Cookie（.google.com，含所有子域），
+    curl_cffi 0.7.4 每个响应之后又把 curl 的整份 Cookie 列表抄进 session.cookies，之后同一个
+    session 上的每个请求都按域带上它们。附件 URL 由调用方任填：填 accounts.google.com/Logout 能把
+    池里的账号登出，填 mail.google.com / 私有 Drive 地址就带着账号的登录态把内容拉回来、再经模型
+    读出来（is_safe_url 只拦内网，谷歌的主机照样放行）。先清 self._http.cookies 也不行：同一账号
+    的并发请求随时会把它再填满。
+    """
+    from curl_cffi.requests import AsyncSession
+
+    if impersonate:
+        return AsyncSession(impersonate=impersonate, timeout=30)
+    return AsyncSession(timeout=30)
+
+
+async def _resolve_bytes(att: dict, impersonate: str | None = None) -> tuple[bytes, str, str] | None:
     """把 attachment 描述解析为 (data, filename, mime)。
     data URI 已在 prompt.extract_attachments 解码为 bytes；
-    http(s) URL 在这里下载（限制大小，防 SSRF）。
+    http(s) URL 在这里下载（限制大小，防 SSRF），走一个不带 Cookie 的独立 session（见 _new_remote_session）。
     """
     filename = att.get("filename", "upload.bin")
     mime = att.get("mime", "") or "application/octet-stream"
@@ -34,8 +54,10 @@ async def _resolve_bytes(http, att: dict) -> tuple[bytes, str, str] | None:
     url = att.get("url")
     if not url:
         return None
+    remote = None
     try:
-        resp = await _safe_remote_get(http, url)
+        remote = _new_remote_session(impersonate=impersonate)
+        resp = await _safe_remote_get(remote, url)
         if resp is None:
             return None
         if resp.status_code != 200:
@@ -59,6 +81,12 @@ async def _resolve_bytes(http, att: dict) -> tuple[bytes, str, str] | None:
     except Exception as e:
         logger.warning(f"[upload] remote fetch failed: {e}")
         return None
+    finally:
+        if remote is not None:
+            try:
+                await remote.close()
+            except Exception:
+                pass
 
 
 async def _safe_remote_get(http, url: str):
@@ -69,6 +97,8 @@ async def _safe_remote_get(http, url: str):
     http://169.254.169.254/... 等内网/元数据地址绕过单次预检；
     因此这里 allow_redirects=False，把每一跳的目标重新校验后才手动跟随，
     并限制最大跳数。返回最终响应；任一跳不安全则返回 None。
+
+    http 必须是 _new_remote_session() 给的那种不带 Cookie 的 session，不能是账号的会话。
     """
     current = url
     for _ in range(MAX_REMOTE_REDIRECTS + 1):
@@ -154,15 +184,18 @@ async def _upload_once(http, cookies: dict, push_id: str, data: bytes, filename:
 
 
 async def upload_files(http, cookies: dict, base_headers: dict, push_id: str,
-                       attachments: list[dict]) -> list[tuple[str, str]]:
+                       attachments: list[dict], impersonate: str | None = None) -> list[tuple[str, str]]:
     """并发上传多个附件，返回 [(file_id, filename), ...]，顺序与输入一致。
     任一失败则跳过该文件（不中断其它）。
+
+    http（账号的会话）只用来上传；附件 URL 的下载每个另开一个不带 Cookie 的 session，
+    impersonate 是它用的 TLS 指纹（与账号会话同一个）。
     """
     if not attachments:
         return []
 
     async def _one(att):
-        resolved = await _resolve_bytes(http, att)
+        resolved = await _resolve_bytes(att, impersonate)
         if not resolved:
             return None
         data, filename, mime = resolved

@@ -466,3 +466,58 @@ def test_restoring_an_old_set_accepts_its_values_again(jar):
     jar.set("__Secure-1PSIDTS", "rotated")
     assert jar.get("__Secure-1PSIDTS") == "rotated"
     assert jar.cookies_for_url(GEMINI)["OSID"] == "osid-v"
+
+
+def _rotation_response(jar, new_ts):
+    """RotateCookies 的 200：Set-Cookie 下发新 PSIDTS，curl 的 Cookie 列表里同时也是新值。"""
+    listed = curl_cookies.Cookies(jar.request_cookies(ACCOUNTS))
+    listed.set("__Secure-1PSIDTS", new_ts, ".google.com", secure=True)
+    return _Resp(ACCOUNTS, [
+        f"__Secure-1PSIDTS={new_ts}; Domain=.google.com; Path=/; Secure; HttpOnly; Max-Age=31536000",
+    ], cookies=listed)
+
+
+def test_stale_echo_after_a_set_cookie_rotation_is_ignored(jar):
+    """复审发现（v1.6.52 起就有）：_rotate_cookies 里 update_from_response 先把 Set-Cookie 的新 PSIDTS
+    写进罐，随后的 set() 看到的已是同一个值，旧值从没被记成「已换掉」。一个拿旧 PSIDTS 出发的流式请求
+    （独立 session，最长 300 秒）回来时回显旧值，就把罐改回谷歌已经换掉的那个。"""
+    jar.set("__Secure-1PSIDTS", "ts-old")
+    in_flight = jar.request_cookies(GEMINI)  # 轮换之前发出去的那份
+
+    jar.update_from_response(_rotation_response(jar, "ts-new"))
+    jar.set("__Secure-1PSIDTS", "ts-new")  # _rotate_cookies 随后的 set()，值相同
+    assert jar.get("__Secure-1PSIDTS") == "ts-new"
+
+    jar.update_from_response(_Resp(GEMINI, cookies=curl_cookies.Cookies(in_flight)))
+
+    assert jar.get("__Secure-1PSIDTS") == "ts-new"
+
+
+def test_stale_echo_after_a_set_cookie_change_on_any_response_is_ignored(jar):
+    """不只轮换：任何响应用 Set-Cookie 换掉的值（如 /app 下发新的 __Secure-OSID）同理。"""
+    _fill(jar, _full_set())
+    in_flight = jar.request_cookies(GEMINI)
+
+    jar.update_from_response(_Resp(GEMINI, ["__Secure-OSID=sosid-NEW; Path=/; Secure; HttpOnly"]))
+    jar.update_from_response(_Resp(GEMINI, cookies=curl_cookies.Cookies(in_flight)))
+
+    assert jar.cookies_for_url(GEMINI)["__Secure-OSID"] == "sosid-NEW"
+
+
+def test_stale_echo_does_not_bring_back_a_cookie_the_server_deleted(jar):
+    jar.set("NID", "nid-old")
+    in_flight = jar.request_cookies(GEMINI)
+
+    jar.update_from_response(_Resp(GEMINI, ["NID=; Domain=.google.com; Path=/; Max-Age=0"]))
+    jar.update_from_response(_Resp(GEMINI, cookies=curl_cookies.Cookies(in_flight)))
+
+    assert "NID" not in jar.cookie_names()
+
+
+def test_after_a_set_cookie_change_the_new_value_still_updates_normally(jar):
+    """记下旧值不影响之后的正常更新：新值的回显不算变化，下一次真正的轮换照常写进去。"""
+    jar.set("__Secure-1PSIDTS", "ts-1")
+    jar.update_from_response(_rotation_response(jar, "ts-2"))
+    jar.update_from_response(_Resp(GEMINI, cookies=jar.request_cookies(GEMINI)))
+    jar.update_from_response(_rotation_response(jar, "ts-3"))
+    assert jar.get("__Secure-1PSIDTS") == "ts-3"

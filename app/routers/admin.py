@@ -79,6 +79,57 @@ def _sync_persisted_config(account, psid: str, psidts: str) -> None:
         logger.warning(f"Account {account.id}: could not sync the cookie cache with accounts.json: {e}")
 
 
+def _sync_legacy_writeback(account, psid: str, psidts: str) -> None:
+    """旧格式 PUT（只带 psid / psidts）回写 accounts.json 之后：PSID 没变就把配置快照跟上（见
+    GeminiWebClient.sync_persisted_psidts），否则整套 Cookie 换上之后的一次旧格式 PUT 会让下次启动清空
+    整罐。PSID 变了照 v1.6.52 什么都不做。reload_cookies 的调用方式不变。同步、绝不抛：cookie 已经换上了。"""
+    sync = getattr(account.client, "sync_persisted_psidts", None)
+    if sync is None:
+        return
+    try:
+        sync(psid, psidts)
+    except Exception as e:
+        logger.warning(f"Account {account.id}: could not sync the cookie cache with accounts.json: {e}")
+
+
+def _client_says(client, method: str, *args) -> bool:
+    """问 client 一个是 / 否；没有这个方法（旧替身）或出错都按「否」。"""
+    fn = getattr(client, method, None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn(*args))
+    except Exception:
+        return False
+
+
+def _accounts_for_full_set(psid: str) -> list:
+    """POST /admin/reload-cookies 带整套 Cookie（插件没填账号 ID 时走这条）该依次试哪些账号。
+
+    v1.6.52 拿同一份 Cookie 在池里逐个试、第一个成功的就换上；那时被覆盖的只有 PSID / PSIDTS，重启后
+    还能从 accounts.json 找回来。整套 Cookie 不在 accounts.json 里，重启时又因 PSID 对不上被清掉，覆盖
+    了就找不回来。所以：
+    ①当前用的就是这套 Cookie 的谷歌登录（__Secure-1PSID 一致）的账号：只换给它，失败也不往下试；
+    ②没有：单账号池照旧换给那唯一的账号（浏览器重新登录、PSID 变了的常见情况）；多账号池只试还没有
+      自己整套 Cookie 的账号。全都有的话返回空列表，由调用方报 409。
+    """
+    candidates = [a for a in account_pool.accounts if a.client]
+    owners = [a for a in candidates if _client_says(a.client, "owns_cookie_set", psid)]
+    if owners:
+        return owners
+    if len(candidates) <= 1:
+        return candidates
+    return [a for a in candidates if not _client_says(a.client, "has_full_cookie_set")]
+
+
+NO_MATCHING_ACCOUNT = (
+    "This cookie set's __Secure-1PSID belongs to no account, and every account already holds its own "
+    "full cookie set: set the account ID in the browser plugin (PUT /admin/accounts/{id}/cookies)"
+    " / 这套 Cookie 的 __Secure-1PSID 不属于池里任何账号，而每个账号都已有自己的整套 Cookie："
+    "请在浏览器插件里填账号 ID（走 PUT /admin/accounts/{id}/cookies）"
+)
+
+
 async def _after_cookie_reload(account, mode: str) -> None:
     """换 cookie 成功之后的收尾（PUT /accounts/{id}/cookies 与 POST /reload-cookies 共用）。
 
@@ -190,17 +241,26 @@ async def reload_cookies(request: Request, req: ReloadCookiesRequest = None):
             return _invalid_cookies(e)
     if req and (psid or psidts):
         extra = {"cookies": full} if full is not None else {}
-        result = None
-        for account in account_pool.accounts:
-            if account.client:
-                result = await account.client.reload_cookies(
-                    psid=psid, psidts=psidts, keepalive_mode=mode, **extra,
+        if full is not None:
+            # 整套 Cookie 只换给它所属的账号（见 _accounts_for_full_set）
+            targets = _accounts_for_full_set(psid)
+            if not targets and any(a.client for a in account_pool.accounts):
+                return JSONResponse(
+                    status_code=409,
+                    content={"error": {"message": NO_MATCHING_ACCOUNT, "type": "no_matching_account"}},
                 )
-                if result.get("success"):
-                    if full is not None:
-                        _log_full_cookie_set(account.id, full)
-                    await _after_cookie_reload(account, mode)
-                    return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
+        else:
+            targets = [a for a in account_pool.accounts if a.client]  # 旧格式：照旧逐个试
+        result = None
+        for account in targets:
+            result = await account.client.reload_cookies(
+                psid=psid, psidts=psidts, keepalive_mode=mode, **extra,
+            )
+            if result.get("success"):
+                if full is not None:
+                    _log_full_cookie_set(account.id, full)
+                await _after_cookie_reload(account, mode)
+                return {"status": "ok", "message": "Cookies reloaded successfully", "healthy": True}
         if result is None:
             return JSONResponse(
                 status_code=503,
@@ -375,6 +435,9 @@ async def update_account_cookies(account_id: str, req: UpdateCookiesRequest, req
                         _log_full_cookie_set(account_id, full)
                         if persisted:
                             _sync_persisted_config(account, req.psid, req.psidts)
+                    elif persisted:
+                        # 旧格式也要让配置快照跟上，否则下次启动会清掉之前换上的整套 Cookie
+                        _sync_legacy_writeback(account, req.psid, req.psidts)
                     await _after_cookie_reload(account, mode)
                     return {"status": "ok", "message": f"Account {account_id} cookies updated"}
                 return JSONResponse(
