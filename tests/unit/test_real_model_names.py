@@ -878,3 +878,34 @@ def test_a_flood_of_ever_changing_names_cannot_blow_up_the_history():
     assert len(model_names.history.items()) == model_names.MAX_NAMES
     assert json.loads(model_names.NAMES_PATH.read_text(encoding="utf-8"))["names"].__len__() \
         == model_names.MAX_NAMES
+
+
+# ---------------------------------------------------------------------------
+# 复审 Minor（合并前补修）：同一个族里谷歌再上一个新 id（"4.5 Carbon"）时，认识的那条不能被挤掉
+# ---------------------------------------------------------------------------
+
+def test_a_new_same_family_model_is_listed_without_dropping_the_known_one():
+    new_carbon = live_entry("0123456789abcdef", "4.5 Carbon", "Code & complex work", "4.5 Carbon", 8)
+    c = client_with(AUTO(), HYDROGEN(), NEON(), new_carbon, CARBON())
+    names = c._public_model_names()
+    assert "gemini-4-carbon" in names and "gemini-4.5-carbon" in names, names
+    assert sent_id(c, "gemini-4-carbon") == CARBON_ID
+    assert sent_id(c, "gemini-4.5-carbon") == "0123456789abcdef"
+    for alias in ("gemini-carbon", "gemini-argon", "gemini-4-argon"):
+        assert sent_id(c, alias) == CARBON_ID, alias
+    fam2 = c._model_table()["gemini-4.5-carbon"]["family"]
+    assert fam2 == "carbon-2"
+    assert gc.generate_timeout_for_family(fam2, "hi") == 300, "同族新版本沿用本族超时档位"
+
+
+def test_history_keeps_other_entries_when_one_seen_value_overflows(tmp_path):
+    import json as _json
+    from app.core.model_names import ModelNameHistory
+
+    path = tmp_path / "model-names.json"
+    path.write_text('{"names": {"gemini-4-neon": {"ids": ["%s"], "family": "pro", "seen": 1}, '
+                    '"gemini-auto": {"ids": ["%s"], "family": "flash-lite", "seen": 1%s}}}'
+                    % (NEON_ID, AUTO_ID, "0" * 400))
+    h = ModelNameHistory(path)
+    assert h.lookup("gemini-4-neon") is not None
+    _json.loads(path.read_text())   # 文件本身没被改坏

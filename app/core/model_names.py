@@ -82,8 +82,12 @@ def _parse(data) -> dict:
             continue
         seen = rec.get("seen")
         # json 把 1e999 / Infinity 读成 inf、NaN 读成 nan，int() 会抛：不是有限数就当 0（最先被淘汰）
-        seen = (int(seen) if isinstance(seen, (int, float)) and not isinstance(seen, bool)
-                and math.isfinite(seen) else 0)
+        try:
+            seen = (int(seen) if isinstance(seen, (int, float)) and not isinstance(seen, bool)
+                    and math.isfinite(seen) else 0)
+        except (OverflowError, ValueError):
+            # 超大整数（1 后面 400 个 0）让 isfinite 抛 OverflowError：只丢这一条的时间戳，不丢整张表
+            seen = 0
         out[name] = {"ids": list(dict.fromkeys(ids)), "family": family, "seen": seen}
     if len(out) > MAX_NAMES:
         keep = sorted(out, key=lambda n: out[n]["seen"], reverse=True)[:MAX_NAMES]

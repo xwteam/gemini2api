@@ -120,6 +120,10 @@ def generate_timeout_for_family(family: str, prompt: str) -> float:
     family = canonical_family(family)
     overrides = _parse_generate_timeouts(getattr(settings, "generate_timeouts", "") or "")
     value = overrides.get(family) or _GENERATE_TIMEOUT_BY_FAMILY.get(family)
+    if value is None and re.fullmatch(r".+-\d+", family or ""):
+        # 同族的第二个模型（carbon-2，见 _adopt_discovered_models）沿用本族的档位
+        base = canonical_family(family.rsplit("-", 1)[0])
+        value = overrides.get(base) or _GENERATE_TIMEOUT_BY_FAMILY.get(base)
     timeout = float(value or _GENERATE_TIMEOUT_DEFAULT)
     if maybe_image_generation_intent(prompt):
         image_timeout = float(
@@ -3150,15 +3154,30 @@ class GeminiWebClient:
         # 上限按"**通过校验的**条数"计，不是对原始列表切片：切片的话，Google 在 Carbon
         # 前面排进 8 个我们不认识的条目（实验性模型、缺字段的占位条目都算）就能把 Carbon
         # 的发现彻底饿死 —— 日志里还看得到它被丢，功能却静默失效。
-        for entry in entries:
+        # 写死表里认识的 id（95a4… = Carbon）先占自己的族：谷歌哪天在它旁边再上一个同类别的新 id
+        # （例如 "4.5 Carbon"），不能因为心跳顺序把认识的那条挤掉 —— 那样上一轮还列着的
+        # gemini-4-carbon 立刻 400、gemini-carbon / gemini-argon 也被悄悄改发到新 id。
+        known_ids = {info["id"] for info in GEMINI_MODELS.values()}
+        ordered = sorted(entries, key=lambda e: 0 if _entry_field(e, 0) in known_ids else 1)
+        for entry in ordered:
             if len(out) >= _DISCOVER_MAX_PER_ROUND:
                 break
             desc = _describe_discovered_model(entry, capacity)
             if desc is None:
                 continue
             name, family = desc["name"], desc["family"]
-            if family in families or name in out:
+            if name in out:
                 continue
+            if family in families:
+                # 同一个族里的第二个模型（新版本）照样采纳、照样按真实名字列出，只是族键加序号
+                # （carbon-2 …）；族别名 gemini-carbon 仍指向先占族的那个认识的 id。
+                n = 2
+                while f"{family}-{n}" in families:
+                    n += 1
+                family = f"{family}-{n}"
+                if not _DISCOVER_FAMILY_RE.match(family):
+                    continue
+                desc = {**desc, "family": family, "info": {**desc["info"], "family": family}}
             families.add(family)
             out[name] = desc
             if previous.get(name) != desc["info"]:
