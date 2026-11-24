@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-v1.6.52-success?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.6.53-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -62,6 +62,7 @@
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2026-11-24 20:30:00 | v1.6.53 - 🔑 **谷歌改版后恢复登录**：11 月 20 日起谷歌要求整套 Cookie（含 gemini.google.com 的 OSID），只给 __Secure-1PSID/1PSIDTS 会被跳到登录页，旧版却把登录页当成登录成功，一直以访客身份运行（只剩一个 Auto 模型，其他模型报 400）。现在接收整套 Cookie 并按各自域名发送，被跳到登录页会如实报过期并提示处理方法；浏览器插件需升级到 1.4.0，或在面板粘贴整段 Cookie。GHCR 镜像新增 arm64 |
 | 2026-10-27 11:41:00 | v1.6.52 - 🎚️ **模型名后缀选思考档位**：只能填模型名、填不了推理参数的客户端，写 gemini-pro@think=high 就能选档（none / low / medium / high），OpenAI chat、Responses、Anthropic 三个接口通用，后缀优先于请求体里的思考参数 |
 | 2026-10-27 11:17:00 | v1.6.51 - 🧹 **回答里不再夹着引用标记**：带附件或联网检索的回答里，谷歌会插入 [cite_start]、[cite: 1] 这类引用标记（网页里显示成引用小标），过去原样传给客户端（实测带图问颜色回「红色[cite: 1]」）；现在流式、非流式都剥掉，流式还会扣住只到一半的标记，[cite: 附录] 这类正文原样保留 |
 | 2026-10-27 01:08:00 | v1.6.50 - 🧷 **对标补齐一批小加固**：混合账号池里请求落到没有该模型（如 Argon）的账号时，改为换号而不是直接报 400；附件上传遇到网络错误或 5xx 自动重试一次，不再静默丢附件；一次生成多张图时并发下载；新增 GET /v1/models/{model}（OpenAI SDK 的 models.retrieve）；部署文档的多账号说明改为 data/accounts.json |
@@ -71,7 +72,6 @@
 | 2026-10-26 20:26:00 | v1.6.46 - 🩺 **谷歌模型出故障时少等**：谷歌某个模型卡住时，流式请求过去会被每 60 秒一个的空心跳帧一直吊着（实测干等 4 分钟），现在和非流式一样按预算超时、并当场断开连接释放账号；谷歌 1～2 秒就回的失败套话（I seem to be encountering an error…）不再当成回答返回，改为换号或兜底，也不再写进会话；新增模型级熔断：同一模型接连出故障时，开了兜底的请求直接走兜底，不再每次先白等一两分钟，之后自动试探谷歌是否恢复 |
 | 2026-10-26 16:41:00 | v1.6.45 - ⏱️ **生成超时不再回纯文本 500**：谷歌卡住、超过生成预算时，客户端过去拿到纯文本 500（SDK 解析不了，也不转兜底）；现在各协议统一回 504 + `timeout_error`，`/v1/chat/completions` 开了兜底先转第三方兜底，超时不再重试、也不会把账号标成过期。💬 **多轮对话真正续上同一个会话**：带 `conversation_id` 的对话过去每一轮其实都新开了会话、只发最后一句，长对话会悄悄丢上下文；现在按 `[cid, rid, rcid]` 续接并钉回同一个账号，流式也续接，接不上就自动改发完整历史 |
 | 2026-10-26 14:01:00 | v1.6.44 - 🔄 **浏览器保活插件重新生效**：会话被谷歌打回登录页的账号过去仍报 active（只把 is_healthy 置 false），插件只认 expired、一直不救，线上两个账号因此掉线约 37 小时；现在如实报 expired，换 cookie 成功后当场恢复。🔁 **不再和浏览器互相顶掉会话**：插件推送 cookie 的账号自动改为「浏览器保活」，服务端不再轮换它（此前两边各自换 PSIDTS，后换的一方被踢下线，保活越来越短）；面板手动更新的账号仍由服务端轮换。配套插件 v1.3.0：浏览器 cookie 一变就主动推送 |
-| 2026-10-21 15:29:00 | v1.6.43 - 🧠 **思考改为低 / 中 / 高三档，对齐网页**：四个协议都能选同样的三档，**默认 `low`**（面板「设置 → 思考」保存即时生效；实测平均每个请求多约 5 秒，最看重速度就设成「关闭」）；客户端没提思考时按默认档开的思考只用于生成、绝不回传。⚡ **Claude Code 不再每个请求都跑最深的一档**（它每次都发 `adaptive` + `effort: high`，上一版写死成 high），现在跟随默认档，`/effort low|medium|xhigh|max` 也生效了；`reasoning_effort: none` = 不思考。🤖 **对外模型收口为四个**：`gemini-pro` / `gemini-flash` / `gemini-flash-lite` / `gemini-argon` 自动映射网页的 3.1 Pro / 3.8 Flash / 3.5 Flash-Lite / 4 Argon，`gemini-flash-thinking` 下线（旧名仍可调用）。🔌 修好「API 管理」第三方转发（书生端砚的 deepseek / glm / kimi 等此前全部 400，被误报成额度不足）。🧪 模型测试页改为档位选择 |
 
 ---
 

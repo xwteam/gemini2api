@@ -4,6 +4,26 @@
 
 ---
 
+## [1.6.53] - 2026-11-24
+
+### Fixed
+
+- 🔑 **恢复谷歌 11-20 改版后的登录态**：谷歌 11-20 改版后，仅携带 `__Secure-1PSID` / `__Secure-1PSIDTS` 请求 `https://gemini.google.com/app` 会被 302 重定向到登录页（`accounts.google.com/ServiceLogin` → `/v3/signin/identifier`，页面 `cfb2h` 为 `boq_identityfrontendauthuiserver_…`、`title` 为「Sign in - Google Accounts」；11-24 东京线上只读探针实测复现）。该登录页 HTML 中依然包含 `SNlM0e`，旧版因此误判为登录成功并将账号标为 `active` / `healthy`，实际一直以未登录访客身份运行——`otAQ7b` 只返回一个 `Auto` 模型（`cf41b0e0dd7d53e5`），用访客无权限的模型发请求会直接报错 HTTP 400 `INVALID_ARGUMENT`（`flash-lite` 访客可用，因此表现为「有时能答」）。现改用完整的谷歌 Cookie（`SID`、`HSID`、`SSID`、`APISID`、`SAPISID`、`__Secure-1PAPISID`、`__Secure-3PSID`、各 `*PSIDCC` 等）加上 `gemini.google.com` 自身的 host-only Cookie `OSID` / `__Secure-OSID` 恢复正常登录态。
+- 🍪 **按 RFC 6265 真实域名存储与发送整套 Cookie**：`PersistentCookieJar` 由原先按单一 Cookie 名称覆盖改为按 `(name, domain, path)` 存储（兼容读取旧版文件，无 `domain` 的旧条目默认按 `.google.com` 处理；完整 Cookie 仍只保存在 `data/cookies/<hash>.json`，`accounts.json` 照旧只存 `psid` / `psidts`，日志与 `/admin` 接口继续脱敏、绝不输出 Cookie 值）。发请求时按目标 URL 执行 RFC 6265 域匹配、host-only 限制、过期过滤与最长 `path` 优先（捕获 `Set-Cookie` 时保留真实 `domain`，无 `Domain` 属性时记为响应主机的 host-only；内部快照 `_CFG_PSIDTS_SNAPSHOT` 绝不发出）。由此确保 `gemini.google.com` 的 host-only `OSID` / `__Secure-OSID` 不会发给 `lh3.googleusercontent.com` / `lh3.google.com`，避免生成图下载链路第二跳变成匿名、最后一跳触发 403。
+- 🚪 **拦截伪装成成功的 Google 登录页并标为过期**：在获取会话 token、初始化、`check_account` 与重载阶段，只要响应最终落地主机为 `accounts.google.com`、`cfb2h` 含 `identityfrontend`、或页面 `<title>` 为 Google 登录页，一律判为认证失败（不采纳页面里的 `SNlM0e`），将账号标为 `expired` / 不健康，并给出明确处置提示：谷歌要求完整 Cookie（含 `gemini.google.com` 的 `OSID`），请将浏览器插件升级到 `1.4.0` 或在面板粘贴整段 Cookie。
+- 📡 **`otAQ7b` 状态探测 payload 从 `[]` 改为 `[1]`**：`otAQ7b`（`GetUserStatus`）在真实登录态下传 `[]` 会返回 HTTP 400，改传 `[1]` 才返回 200 并带上完整可用模型列表；现将心跳等处的 `otAQ7b` 请求统一改为 `[1]`。
+
+- 🛡️ **附件 URL 不再带着账号 Cookie 去下载**：客户端传来的图片 / 文件链接（OpenAI `image_url`、Claude `source.type=url`）改用一个不带任何 Cookie 的独立会话下载。按域存放 Cookie 之后，若仍用账号会话下载，任何持有 API Key 的人都能让服务端带着账号的谷歌登录态去访问任意 `*.google.com` 地址（复审发现，上线前已修）。
+- 🧷 **整套 Cookie 只换给所属账号**：`POST /admin/reload-cookies` 带整套 Cookie 时只换给 `__Secure-1PSID` 一致的账号，找不到时多账号池回 409 `no_matching_account`，不会再把一个账号的整套 Cookie 换到别的账号上；旧插件再推一次只含两个值的旧格式，也不会让下次重启清空之前换上的整套 Cookie。
+- 📋 被跳到登录页的账号，`/admin/status` 的 `last_error` 直接显示「需要整套 Cookie（含 OSID）」的处置提示。
+
+### Added
+
+- 🧩 **接收整套 Cookie（插件 `1.4.0` 与面板整段粘贴）**：
+  - `PUT /admin/accounts/{id}/cookies` 的 `UpdateCookiesRequest` 新增可选 `cookies` 字段（字段格式沿用 `chrome.cookies.Cookie`：`name`、`value`、`domain`、`path`、`expirationDate`、`secure`、`httpOnly`、`hostOnly`）。携带 `cookies` 时整套替换该账号 Cookie 罐里的谷歌相关条目，并校验其中 `__Secure-1PSID` / `__Secure-1PSIDTS` 与请求体 `psid` / `psidts` 一致（不一致返回 400）；不带时行为与之前一致，兼容旧版插件。
+  - 配套浏览器插件 [**gemini2api-plugin**](https://github.com/xwteam/gemini2api-plugin) 需升级至 **1.4.0** 才会抓取并推送整套 Cookie；`POST /admin/reload-cookies` 与 Web 面板「更新 Cookie」同样支持直接粘贴整段 `Cookie:` 请求头（无域信息时自动将 `OSID` / `__Secure-OSID` / `__Host-*` 按 `gemini.google.com` host-only 存储，其余按 `.google.com` 存储）。
+- 🏗️ **GHCR 容器镜像支持 `linux/amd64` + `linux/arm64` 双架构**：GitHub Actions 构建流程加入 `docker/setup-qemu-action@v3` 与 `docker/setup-buildx-action@v3`，自本版起发布的 GHCR 镜像同时提供 `linux/amd64` 与 `linux/arm64`，`arm64` 主机可直接拉取运行。
+
 ## [1.6.52] - 2026-10-27
 
 ### Added
