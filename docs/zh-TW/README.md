@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-v1.6.54-success?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.6.55-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -62,6 +62,7 @@
 
 | 日期 | 更新內容 |
 |------|----------|
+| 2026-11-24 23:17:00 | v1.6.55 - 👤 **貼整段 Cookie、改標籤與小記憶體**：新增帳號可直接貼上完整瀏覽器 Cookie，免先加再補更新，並阻擋重複帳號或空白輸入；面板卡片可直接編輯標籤（限長度）；README 新增小記憶體指南（3 帳號約 85–105 MB 記憶體、閒置 CPU <1%、請求約 2 ms；推算 256 MB 可跑、建議 512 MB+，附精簡/停用統計建議）；感謝 @lianjiexu08-ui（PR #12/#13/#14）。 |
 | 2026-11-24 22:02:00 | v1.6.54 - 🏷️ **模型列表改用網頁實名並按帳號即時同步**：谷歌更名後，各介面與面板模型列表現直接列出真實名稱 gemini-auto、gemini-4-hydrogen、gemini-4-neon 與 gemini-4-carbon（原 4 Argon），日後隨網站自動更新。各帳號獨立維護自身即時模型，列表取可用或金鑰綁定帳號聯集，請求僅派發給持有該模型的帳號。舊名、無版本別名與歷史真名皆維持相容，白名單、熔斷與計費互通，並修復 4 Carbon 錯名與 300 秒逾時。 |
 | 2026-11-24 20:30:00 | v1.6.53 - 🔑 **谷歌改版後恢復登入**：11 月 20 日起谷歌要求整套 Cookie（含 gemini.google.com 的 OSID），只給 __Secure-1PSID/1PSIDTS 會被跳到登入頁，舊版卻把登入頁當成登入成功，一直以訪客身分執行（只剩一個 Auto 模型，其他模型報 400）。現在接收整套 Cookie 並按各自網域傳送，被跳到登入頁會如實報過期並提示處理方式；瀏覽器擴充功能需升級到 1.4.0，或在面板貼上整段 Cookie。GHCR 映像新增 arm64 |
 | 2026-10-27 11:41:00 | v1.6.52 - 🎚️ **模型名後綴選思考檔位**：只能填模型名、填不了推理參數的客戶端，寫 gemini-pro@think=high 就能選檔（none / low / medium / high），OpenAI chat、Responses、Anthropic 三個介面通用，後綴優先於請求體裡的思考參數 |
@@ -71,7 +72,6 @@
 | 2026-10-26 22:04:00 | v1.6.48 - 🛠️ **Codex 等走 /v1/responses 用第三方模型時，工具呼叫能跑通了**：串流（Codex 恆串流）過去只轉發文字，第三方模型發起的工具呼叫被整個丟掉，工具迴圈跑不起來；現在串流、非串流都會把工具呼叫變成 function_call 輸出項。歷史裡的工具呼叫和結果也改按 OpenAI 原生格式（tool_calls + tool_call_id）發給第三方，Codex 帶的 web_search 等內建工具會自動略過；Gemini 路徑不受影響 |
 | 2026-10-26 21:14:00 | v1.6.47 - 🙅 **谷歌的「語言模型」拒答套話不再當成回答**：谷歌有時整段只回一句「我只是一个语言模型，无法提供这方面的帮助。」「由于程序代码的局限，我没法办到。」這類話（問的明明是「17 是質數嗎」這種好答的問題，模型故障時也會出現），過去原樣回傳給客戶端；現在和失敗套話一樣換號重試、可走兜底，但不計入模型熔斷 |
 | 2026-10-26 20:26:00 | v1.6.46 - 🩺 **谷歌模型出故障時少等**：谷歌某個模型卡住時，串流請求過去會被每 60 秒一個的空心跳幀一直吊著（實測乾等 4 分鐘），現在和非串流一樣按預算逾時、並當場斷開連線釋放帳號；谷歌 1～2 秒就回的失敗套話（I seem to be encountering an error…）不再當成回答返回，改為換號或兜底，也不再寫進會話；新增模型級熔斷：同一模型接連出故障時，開了兜底的請求直接走兜底，不再每次先白等一兩分鐘，之後自動試探谷歌是否恢復 |
-| 2026-10-26 16:41:00 | v1.6.45 - ⏱️ **生成逾時不再回純文字 500**：谷歌卡住、超過生成預算時，用戶端過去拿到純文字 500（SDK 解析不了，也不轉兜底）；現在各協定統一回 504 + `timeout_error`，`/v1/chat/completions` 開了兜底會先轉第三方兜底，逾時不再重試、也不會把帳號標成過期。💬 **多輪對話真正續上同一個會話**：帶 `conversation_id` 的對話過去每一輪其實都新開了會話、只發最後一句，長對話會悄悄遺失上下文；現在按 `[cid, rid, rcid]` 續接並釘回同一個帳號，串流也續接，接不上就自動改發完整歷史 |
 
 ---
 

@@ -4,6 +4,23 @@
 
 ---
 
+## [1.6.55] - 2026-11-24
+
+### Added
+
+- 🍪 **添加账号支持直接粘贴整段 Cookie**：`POST /admin/accounts` 新增可选 `cookies` 与 `cookie_header` 字段（二选一，与 `PUT /admin/accounts/{id}/cookies` 同口径），支持在创建账号时直接提交包含 `gemini.google.com` `OSID` 在内的完整浏览器 Cookie；系统自动提取其中的 `__Secure-1PSID` 与 `__Secure-1PSIDTS`，并在新账号首次初始化（首次 `GET /app`）之前就将整套 Cookie 装入 Cookie 罐（装罐、落盘与配置快照复用既有更新 Cookie 路径，保活方式记录照旧），避免新添账号首次初始化即被判过期或需再等插件推送与二次点击「更新 Cookie」，成功响应同步新增 `"full_cookie_set"` 布尔标记。Web 面板 `#addAccountModal` 同步新增「整段 Cookie（推荐）」多行输入框，填写整段 Cookie 时 `psid` 与 `psidts` 自动变为可选。思路来自 [@lianjiexu08-ui](https://github.com/lianjiexu08-ui) 的 [PR #14](https://github.com/xwteam/gemini2api/pull/14)。
+- ✏️ **支持面板内在线编辑账号标签**：Web 面板账号卡片新增「编辑标签」按钮，支持直接修改已有账号的标签并刷新列表显示；后端新增 `PATCH /admin/accounts/{id}` 接口，接收 `{label}` 请求体，经去除首尾空白后校验长度为 1～64 个字符且不含控制字符（格式不合法返回 HTTP `400` `invalid_request_error`，账号不存在返回 HTTP `404` `not_found`），随后将新标签原子写回 `accounts.json` 并返回 `{"status":"ok","account":{"id","label"}}`，`/admin/status` 与 `/admin/accounts` 立即反映更新，且整个过程仅修改标签、不触碰凭据、状态或保活方式。思路来自 [@lianjiexu08-ui](https://github.com/lianjiexu08-ui) 的 [PR #13](https://github.com/xwteam/gemini2api/pull/13)。
+
+### Changed
+
+- 🛡️ **收紧 `POST /admin/accounts` 参数校验与重复账号保护**：若待添加账号的 PSID 与已有账号重复，直接返回 HTTP `409` `duplicate_account` 拒绝创建（不再出现两个账号共用同一份 Cookie 文件的情况）；未提供整段 Cookie 时若 PSID 为空，返回 HTTP `400` `invalid_request_error`；同时传入 `psid` / `psidts` 与整段 Cookie 但值不一致时，返回 HTTP `400` `invalid_cookies`。所有错误信息与日志中绝不泄露任何 Cookie 值，面板端遇到 `400` / `409` 错误时直接展示服务端返回的提示信息。思路来自 [@lianjiexu08-ui](https://github.com/lianjiexu08-ui) 的 [PR #14](https://github.com/xwteam/gemini2api/pull/14)。
+- 🌐 **统一添加账号标签校验并补齐五语言面板国际化**：`POST /admin/accounts` 对 `label` 启用与 `PATCH /admin/accounts/{id}` 一致的校验规则（去除首尾空白后限制为 1～64 个字符且不含控制字符）；Web 面板同步为新增的账号管理界面与交互提示补齐 `zh-CN`、`zh-TW`、`en-US`、`ja-JP`、`ko-KR` 五种语言的 i18n 词条。思路来自 [@lianjiexu08-ui](https://github.com/lianjiexu08-ui) 的 [PR #13](https://github.com/xwteam/gemini2api/pull/13)。
+
+### Docs
+
+- 💾 **README 新增「小内存机器」运行指南**：给出实测资源占用参考——3 个账号约占用 85～105 MB 内存、空闲 CPU 不到 1%、服务自身每次请求开销约 2 毫秒；按此估算 256 MB 内存即可运行，推荐使用 512 MB 及以上配置；同时说明内存紧张时的调优选项（缩短用量统计保留天数、拉长采集间隔或直接关闭用量统计）。
+- 📚 **同步更新多语言 API 文档、账号说明及致谢名单**：更新五语言 `docs/*/API.md`（补充 `POST /admin/accounts` 新字段与 `409` 响应说明及 `PATCH /admin/accounts/{id}` 接口文档）与六语言 `README` 中的账号管理说明（注明添加账号可直接粘贴整段 Cookie、账号标签可在线修改）；并在六语言 `README` 致谢章节感谢 [@lianjiexu08-ui](https://github.com/lianjiexu08-ui) 贡献的 [PR #12](https://github.com/xwteam/gemini2api/pull/12)（指出面板添加的账号在容器重建后会丢失，该问题已自 v1.6.49 起通过账号默认存进 `data/` 目录解决）、[PR #13](https://github.com/xwteam/gemini2api/pull/13) 与 [PR #14](https://github.com/xwteam/gemini2api/pull/14)。
+
 ## [1.6.54] - 2026-11-24
 
 ### Changed
