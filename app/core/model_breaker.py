@@ -6,7 +6,7 @@
 第 3 条），所以不能提前掐断单个请求 —— 但同一族上不同请求接连「疑似故障」地失败，就足以说明这个
 族此刻整体不行了。这时带第三方兜底的请求不该每次先白等一个预算。
 
-每个模型族（flash / flash-lite / pro / argon / 心跳发现的其它族）一个状态机，进程内全局、不持久化：
+每个模型族（flash / flash-lite / pro / carbon / 心跳发现的其它族）一个状态机，进程内全局、不持久化：
 
   closed     计数：窗口内「疑似故障」失败的**不同请求**个数（I.3：同一请求的换号、思考重试、续接失败后
              改发完整历史、客户端重发都只 +1，指纹见 request_fingerprint / same_request_as）。距上一次
@@ -105,7 +105,7 @@ def attempt_fingerprint(prompt: str, conversation_id: str = "") -> str:
 
 
 def family_label(family: str) -> str:
-    """日志里给人看的族名：gemini-flash / gemini-flash-lite / gemini-argon……"""
+    """日志里给人看的族名：gemini-flash / gemini-flash-lite / gemini-carbon……"""
     return family if family.startswith("gemini-") else f"gemini-{family}"
 
 

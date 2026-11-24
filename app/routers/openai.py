@@ -21,7 +21,7 @@ from app.core.access_context import (
 from app.core.api_forwarder import empty_upstream_error, forward_to_provider, open_stream, run_failover
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
-from app.core.gemini_client import (GEMINI_MODELS, GENERATION_ERRORS, MODEL_ALIASES,
+from app.core.gemini_client import (GENERATION_ERRORS,
                                     PinnedAccountUnavailable, _resolve_model,
                                     classify_error, encode_conversation_metadata,
                                     generate_timeout_for_family,
@@ -48,14 +48,15 @@ router = APIRouter(tags=["OpenAI"])
 
 def _apply_model_whitelist(models: list[str]) -> list[str]:
     """按 MODEL_WHITELIST（逗号分隔）过滤模型列表；为空表示不过滤（放行全部）。
-    让文档化的 MODEL_WHITELIST 真正生效——只暴露白名单内的模型。"""
+    让文档化的 MODEL_WHITELIST 真正生效——只暴露白名单内的模型。
+    按 family 归一比较：白名单写 gemini-pro，列表里的真实名字 gemini-4-neon 照样留下（见 model_in）。"""
     raw = (settings.model_whitelist or "").strip()
     if not raw:
         return models
     allowed = {m.strip() for m in raw.split(",") if m.strip()}
     if not allowed:
         return models
-    return [m for m in models if m in allowed]
+    return [m for m in models if gemini_client.model_in(m, allowed)]
 
 
 def _image_base(request) -> str:
@@ -546,7 +547,7 @@ async def chat_completions(req: ChatRequest, request: Request):
     # 访问密钥限定模型时在此闸断（原名/解析后名任一命中即放行）；未限定则零开销返回。
     ensure_model_allowed(req.model, resolved_model)
 
-    if resolved_model not in gemini_client.models and _resolve_model(resolved_model) not in GEMINI_MODELS:
+    if not gemini_client.is_gemini_model(resolved_model):
         tp = await _dispatch_thirdparty(request, req, resolved_model)
         if tp is not None:
             return tp

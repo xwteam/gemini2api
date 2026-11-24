@@ -147,8 +147,12 @@ def _state(family="flash"):
     ("gemini-2.0-flash-lite", "flash-lite"),
     ("gemini-3-flash-lite-advanced", "flash-lite"),
     ("gemini-pro", "pro"),
-    ("gemini-argon", "argon"),
-    ("gemini-4-argon", "argon"),
+    # v1.6.54：网页 11-24 起把 4 Argon 改叫 4 Carbon（同一个 id），族名按 id 认作 carbon，
+    # 新旧名字落到同一个族上（熔断按族计数，不能拆成两个族各算各的）
+    ("gemini-argon", "carbon"),
+    ("gemini-4-argon", "carbon"),
+    ("gemini-carbon", "carbon"),
+    ("gemini-neon", "pro"),
     ("gemini-5-nova", "nova"),                # 心跳发现的族：只在某个账号的 _model_table() 里
     ("gemini-flash-lite-preview-x", None),    # 不做子串匹配
     ("my-gemini-flash", None),

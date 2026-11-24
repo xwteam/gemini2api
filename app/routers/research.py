@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# 没指定模型时用的模型。过去取的是列表第一项（那时恒为 gemini-pro）；v1.6.54 起列表是按心跳顺序的
+# 网页真实名字，第一项是 Auto（flash-lite 族），深度研究不该悄悄落到最轻的模型上，所以写明 pro 族的契约名。
+DEFAULT_RESEARCH_MODEL = "gemini-pro"
+
 
 async def _plan_research(query: str, model: str, language: str) -> dict:
     """Generate sub-questions and outline for the research query."""
@@ -147,7 +151,7 @@ async def deep_research(request: DeepResearchRequest):
     if not model:
         if not gemini_client.models:
             raise HTTPException(status_code=503, detail="No models available")
-        model = gemini_client.models[0]
+        model = DEFAULT_RESEARCH_MODEL
     ensure_model_allowed(model)
 
     try:
@@ -186,7 +190,7 @@ async def deep_research_stream(request: DeepResearchRequest):
     if not model:
         if not gemini_client.models:
             raise HTTPException(status_code=503, detail="No models available")
-        model = gemini_client.models[0]
+        model = DEFAULT_RESEARCH_MODEL
     ensure_model_allowed(model)
 
     async def event_generator():
@@ -316,7 +320,7 @@ async def deep_research_interact(request: InteractionRequest):
     if not gemini_client.models:
         raise HTTPException(status_code=503, detail="No models available")
 
-    model = gemini_client.models[0]
+    model = DEFAULT_RESEARCH_MODEL
     ensure_model_allowed(model)
 
     # For interactive mode, treat input as a direct research query

@@ -9,6 +9,13 @@
   1. 真实形态的条目被采纳，并且采纳结果真的进了发给 Google 的模型头（不是只进了某个字典）；
   2. 畸形/被污染的条目被拒绝，且**既有 4 个公开名的映射一个字都没被动过**；
   3. 心跳没跑时回落写死表，4 个老公开名逐字节不变。
+
+v1.6.54（规格 SPEC2）改了两条口径，本文件的断言随之调整：
+  - 对外列表是各账号心跳报的**网页真实名字**（这里的旧形状条目就是 3.1 Pro / 3.8 Flash /
+    3.5 Flash-Lite / 4 Argon → gemini-3.1-pro … gemini-4-argon），gemini-argon 这类旧名字照样能调、
+    但不再列出；
+  - 这个 id（95a4…）的族名是 carbon（网页 11-24 起改叫 4 Carbon，同一个模型）：族名按 id 认，
+    类别名从 Argon 换成 Carbon 族名不跟着变（熔断、超时、计价都按族）。
 """
 
 import json
@@ -23,8 +30,9 @@ from app.core.gemini_client import (
 )
 
 ARGON_ID = "95a4c0abcba24364"
-ARGON_INTERNAL = "gemini-4-argon"
-ARGON_PUBLIC = "gemini-argon"
+ARGON_INTERNAL = "gemini-4-argon"      # 旧形状条目的真实名字，也是本账号的内部名
+ARGON_PUBLIC = "gemini-argon"          # 旧名字：照样能调，不再列出
+ARGON_FAMILY = "carbon"                # 同一个 id 现在叫 4 Carbon，族名按 id 认
 
 # 真实账号的另外三个模型（id 取自真机心跳；都落在写死表的 capacity 2 变体上）
 PRO_ID = "e6fa609c3fa255c0"
@@ -57,6 +65,8 @@ THREE_BASE = [
     base_entry(FLASH_ID, "3.8 Flash", 1),
     base_entry(FLASH_LITE_ID, "3.5 Flash-Lite", 6),
 ]
+# 上面 3 条的网页真实名字（v1.6.54 起对外列的就是它们）
+THREE_BASE_NAMES = ["gemini-3.1-pro", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
 
 
 def status_raw(*entries: list) -> str:
@@ -70,6 +80,7 @@ def fresh_client() -> gc.GeminiWebClient:
     c._family_model = {}
     c._available_models = []
     c._discovered_models = {}
+    c._healthy = True        # 池按账号状态取列表时要读它（会话被打回登录页的账号不算）
     return c
 
 
@@ -86,13 +97,13 @@ def adopted(*extra_entries: list) -> gc.GeminiWebClient:
 def test_real_argon_entry_is_adopted_from_the_heartbeat():
     c = adopted(argon_entry())
 
-    assert c._family_model["argon"] == ARGON_INTERNAL
+    assert c._family_model[ARGON_FAMILY] == ARGON_INTERNAL
     info = c._discovered_models[ARGON_INTERNAL]
     assert info["id"] == ARGON_ID
     assert info["model_number"] == 8, "model_number 必须取 [17]=8，不是 [9]=4"
     # capacity 取账号级信号（同一次心跳里已认出的模型的 capacity），不取条目级 [4]
     assert info["capacity"] == GEMINI_MODELS["gemini-3-pro-advanced"]["capacity"]
-    assert info["family"] == "argon"
+    assert info["family"] == ARGON_FAMILY
 
 
 def test_adoption_is_logged(caplog):
@@ -104,7 +115,8 @@ def test_adoption_is_logged(caplog):
     assert len(msgs) == 1, msgs
     assert ARGON_ID in msgs[0]
     assert "4 Argon" in msgs[0]
-    assert ARGON_PUBLIC in msgs[0]
+    # v1.6.54：日志里的 public 是对外列出的真实名字（旧名 gemini-argon 不再列出）
+    assert f"public={ARGON_INTERNAL}" in msgs[0]
 
 
 def test_public_argon_name_resolves_to_the_adopted_model():
@@ -135,31 +147,31 @@ def test_adopted_argon_lands_in_the_model_header():
 
 
 def test_argon_is_listed_as_a_public_model():
+    """v1.6.54：列的是心跳里的网页真实名字、按心跳顺序（过去是 3 个契约名 + gemini-argon，
+    契约名恒在最前）。旧名字 gemini-argon 照样能调（见 test_public_argon_name_resolves_…），不再列出。"""
     c = adopted(argon_entry())
 
     names = c._public_model_names()
-    assert names[:len(PUBLIC_MODELS)] == PUBLIC_MODELS, "契约名必须恒在最前、顺序不变"
-    # 用户实测的真实账号：恰好 4 个对外 Gemini 模型，按这个顺序
-    assert names == ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"]
-    assert ARGON_PUBLIC in names
+    assert names == THREE_BASE_NAMES + [ARGON_INTERNAL]
+    assert ARGON_PUBLIC not in names
     assert c._available_models == names
 
 
 def test_account_pool_lists_argon_only_when_an_account_has_it():
-    from app.core.account_pool import AccountPool
+    # v1.6.54：池按账号状态取列表（只算 ACTIVE 账号），所以这里用真的 Account，不再用只有 client 的替身
+    from app.core.account_pool import Account, AccountPool
 
     pool = AccountPool.__new__(AccountPool)
 
-    class _Acct:
-        def __init__(self, c):
-            self.client = c
+    pool._accounts = [Account(id="a0", psid="p0", psidts="", client=fresh_client())]
+    assert pool.models == PUBLIC_MODELS, "还没心跳成功时列契约名（不能列空）"
 
-    pool._accounts = [_Acct(fresh_client())]
-    assert pool.models == PUBLIC_MODELS, "没有 Argon 的部署不该看到一个调不通的选项"
+    pool._accounts = [Account(id="a0", psid="p0", psidts="", client=adopted()),
+                      Account(id="a1", psid="p1", psidts="", client=adopted(argon_entry()))]
+    assert pool.models == THREE_BASE_NAMES + [ARGON_INTERNAL]
 
-    pool._accounts = [_Acct(fresh_client()), _Acct(adopted(argon_entry()))]
-    assert pool.models[:len(PUBLIC_MODELS)] == PUBLIC_MODELS
-    assert ARGON_PUBLIC in pool.models
+    pool._accounts = pool._accounts[:1]
+    assert ARGON_INTERNAL not in pool.models, "没有 Argon 的部署不该看到一个调不通的选项"
 
 
 # ---------------------------------------------------------------------------
@@ -204,9 +216,9 @@ def test_malformed_entries_are_rejected_and_logged(label, caplog):
     caplog.set_level(logging.WARNING, logger=gc.logger.name)
     c = adopted(BAD_ENTRIES_LOGGED[label])
 
-    assert "argon" not in c._family_model, f"{label} 不该被采纳"
+    assert ARGON_FAMILY not in c._family_model, f"{label} 不该被采纳"
     assert c._discovered_models == {}
-    assert ARGON_PUBLIC not in c._public_model_names()
+    assert ARGON_INTERNAL not in c._public_model_names()
     # 被丢弃的条目必须留一条带原因/字段的 WARNING（可观测性契约，S5 定下的）
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("dropped" in m for m in warnings), warnings
@@ -249,7 +261,7 @@ def test_nothing_is_adopted_when_the_account_tier_is_ambiguous():
     c = fresh_client()
     c._parse_models_from_status(status_raw(*mixed, argon_entry()))
 
-    assert "argon" not in c._family_model
+    assert ARGON_FAMILY not in c._family_model
     assert c._discovered_models == {}
 
 
@@ -263,9 +275,9 @@ def test_capacity_backfill_never_invents_argon():
     Argon 的 id 发给一个根本没有 Argon 的账号。"""
     c = adopted()   # 只有 pro/flash/flash-lite，没有 Argon 条目
 
-    assert "argon" not in c._family_model
-    assert ARGON_PUBLIC not in c._public_model_names()
-    assert c._available_models == PUBLIC_MODELS
+    assert ARGON_FAMILY not in c._family_model
+    assert ARGON_INTERNAL not in c._public_model_names()
+    assert c._available_models == THREE_BASE_NAMES
     assert set(c._family_model) == set(_BASE_FAMILIES), \
         "基础 family 的映射必须照旧，且不再补出 flash-thinking"
 
@@ -343,7 +355,7 @@ def test_discovered_models_are_per_account():
 
     assert ARGON_INTERNAL in a._discovered_models
     assert b._discovered_models == {}
-    assert "argon" not in b._family_model
+    assert ARGON_FAMILY not in b._family_model
 
 
 # ---------------------------------------------------------------------------
@@ -406,38 +418,43 @@ def test_an_account_without_argon_refuses_the_request_instead_of_sending_argons_
 # ---------------------------------------------------------------------------
 
 def test_a_family_the_heartbeat_stopped_reporting_is_dropped():
-    """只增不减的话：上一轮发现了 Argon、这一轮 Google 收回，gemini-argon 仍列在
+    """只增不减的话：上一轮发现了 Argon、这一轮 Google 收回，它仍列在
     /v1/models 里、仍解析得到内部名 —— 用户看到一个"列表里有、调起来坏"的模型。"""
     c = adopted(argon_entry())
-    assert ARGON_PUBLIC in c._public_model_names()
+    assert ARGON_INTERNAL in c._public_model_names()
 
     c._parse_models_from_status(status_raw(*THREE_BASE))   # 第二轮：没有 Argon 了
 
-    assert "argon" not in c._family_model
-    assert ARGON_PUBLIC not in c._public_model_names()
-    assert c._available_models == PUBLIC_MODELS
+    assert ARGON_FAMILY not in c._family_model
+    assert ARGON_INTERNAL not in c._public_model_names()
+    assert c._available_models == THREE_BASE_NAMES
     assert gc._resolve_model(ARGON_PUBLIC, c._family_model) == ARGON_PUBLIC
-    # 4 个契约 family 一个都不许被这轮清理碰到
+    # v1.6.54 R7：整体替换，本账号的可路由表里也不留它（新旧名字都调不到这个账号上）
+    assert ARGON_INTERNAL not in c._model_table()
+    assert c._route_model(ARGON_INTERNAL) is None and c._route_model(ARGON_PUBLIC) is None
+    # 契约 family 一个都不许被这轮清理碰到
     assert c._family_model["pro"] == "gemini-3-pro-advanced"
-    assert set(PUBLIC_MODELS) <= set(c._available_models)
 
 
-def test_discovered_models_cannot_grow_without_bound(caplog):
-    """每轮上限只约束单轮。心跳一轮一轮地跑，只要每轮都给新的合法条目，
-    _discovered_models 和 /v1/models 就会一直长。"""
-    caplog.set_level(logging.WARNING, logger=gc.logger.name)
+def test_discovered_models_cannot_grow_without_bound():
+    """心跳一轮一轮地跑，只要每轮都给新的合法条目，累加的话 _discovered_models 和
+    /v1/models 就会一直长。
+
+    v1.6.54 R7 起每轮整体替换（过去是累加 + 一个累计上限 _DISCOVER_MAX_TOTAL，那条上限和它的
+    "discovery capped" 日志随之删掉）：40 轮之后表里只剩最后一轮的，且不超过单轮上限。"""
     c = fresh_client()
     for rnd in range(40):
         entries = [argon_entry(f0=f"{rnd:02d}{idx:014d}", f11=f"R{rnd}X{idx} Zz",
+                               f19=f"R{rnd}X{idx} Zz",
                                f1=f"Zz{rnd}x{idx}", f10=f"Zz{rnd}x{idx}")
                    for idx in range(8)]
         c._parse_models_from_status(status_raw(*THREE_BASE, *entries))
 
-    assert len(c._discovered_models) <= gc._DISCOVER_MAX_TOTAL
-    assert len(c._available_models) <= len(PUBLIC_MODELS) + gc._DISCOVER_MAX_PER_ROUND
-    assert any("discovery capped" in r.message for r in caplog.records)
-    # 契约名仍在最前、顺序不变
-    assert c._available_models[:len(PUBLIC_MODELS)] == PUBLIC_MODELS
+    assert len(c._discovered_models) <= gc._DISCOVER_MAX_PER_ROUND
+    assert all(info["id"].startswith("39") for info in c._discovered_models.values()), \
+        "只剩最后一轮报的"
+    assert len(c._available_models) <= len(THREE_BASE_NAMES) + gc._DISCOVER_MAX_PER_ROUND
+    assert c._available_models[:len(THREE_BASE_NAMES)] == THREE_BASE_NAMES
 
 
 def test_the_per_round_cap_counts_validated_candidates_not_raw_entries():
@@ -452,9 +469,9 @@ def test_the_per_round_cap_counts_validated_candidates_not_raw_entries():
 
     c = adopted(*junk, argon_entry())
 
-    assert c._family_model.get("argon") == ARGON_INTERNAL
+    assert c._family_model.get(ARGON_FAMILY) == ARGON_INTERNAL
     assert c._discovered_models[ARGON_INTERNAL]["id"] == ARGON_ID
-    assert ARGON_PUBLIC in c._available_models
+    assert ARGON_INTERNAL in c._available_models
 
 
 def test_the_per_round_cap_still_holds_for_valid_entries():
@@ -479,13 +496,17 @@ def test_a_minted_public_name_may_not_borrow_a_contract_word(display):
     c = adopted(argon_entry(f11=display, f19=display))
 
     assert c._discovered_models == {}
-    assert c._available_models == PUBLIC_MODELS
+    assert c._available_models == THREE_BASE_NAMES
     assert c._family_model["pro"] == "gemini-3-pro-advanced"
 
 
 def test_a_brand_new_family_keeps_working():
-    """零回归：不含契约词的新 family 照旧采纳。"""
-    c = adopted(argon_entry(f1="Xenon", f10="Xenon", f11="5 Xenon", f19="5 Xenon"))
+    """零回归：不含契约词的新 family 照旧采纳。
+
+    用一个新 id：v1.6.54 起写死表里有的 id（Argon 的 95a4…）按 id 认族，类别名改了族名也不变
+    （Argon → Carbon 正是这样），所以拿 Argon 的 id 改类别名测不出"新 family"。"""
+    c = adopted(argon_entry(f0="a1b2c3d4e5f60789", f1="Xenon", f10="Xenon", f11="5 Xenon",
+                            f19="5 Xenon"))
 
     assert c._family_model["xenon"] == "gemini-5-xenon"
     assert "gemini-5-xenon" in c._available_models
@@ -498,7 +519,7 @@ def test_the_category_falls_back_to_field_10():
     assert gc._entry_category(e) == "Argon"
 
     c = adopted(e)
-    assert c._family_model["argon"] == ARGON_INTERNAL
+    assert c._family_model[ARGON_FAMILY] == ARGON_INTERNAL
 
 
 def test_v1beta_models_keeps_a_description_on_every_entry():

@@ -105,14 +105,15 @@ def _thinking_blocks(result: dict, show_thinking) -> list[ContentBlock]:
 
 def _apply_model_whitelist(models: list[str]) -> list[str]:
     """按 MODEL_WHITELIST（逗号分隔）过滤模型列表；为空表示不过滤（放行全部）。
-    让文档化的 MODEL_WHITELIST 真正生效——只暴露白名单内的模型。"""
+    让文档化的 MODEL_WHITELIST 真正生效——只暴露白名单内的模型。
+    按 family 归一比较：白名单写 gemini-pro，列表里的真实名字 gemini-4-neon 照样留下（见 model_in）。"""
     raw = (settings.model_whitelist or "").strip()
     if not raw:
         return models
     allowed = {m.strip() for m in raw.split(",") if m.strip()}
     if not allowed:
         return models
-    return [m for m in models if m in allowed]
+    return [m for m in models if gemini_client.model_in(m, allowed)]
 
 
 # router：对话主入口（messages），同时挂在 /claude/v1 和裸 /v1（开箱即用）

@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 
 from app.core.gemini_client import (
     GeminiFailureReply, GeminiRefusalReply, GeminiWebClient, GenerationStalled, GenerationTimedOut,
-    HTTPStatusError, ModelUnavailable, NO_HEALTHY_ACCOUNT_MSG, _resolve_model, BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable,
-    is_timeout_error, model_family,
+    HTTPStatusError, ModelUnavailable, NO_HEALTHY_ACCOUNT_MSG, BOUND_ACCOUNT_UNAVAILABLE_MSG, PinnedAccountUnavailable,
+    PUBLIC_MODELS, is_timeout_error, model_family, route_model,
 )
 from app.core import keepalive_modes
 from app.core.model_breaker import attempt_fingerprint, model_breaker
@@ -261,6 +261,17 @@ def _session_expired(a: Account) -> bool:
         and not client.is_healthy
         and bool(getattr(client, "auth_expired", False))
     )
+
+
+def _account_models(client) -> list[str] | None:
+    """这个账号自己心跳报的对外模型名（按心跳顺序）；还没有一次成功的心跳 → None。
+
+    getattr 兜底：池对 client 只要求 is_healthy，测试替身没有这些属性时按"还没心跳"处理。
+    """
+    if getattr(client, "_real_names", None) is None:
+        return None
+    models = getattr(client, "_available_models", None)
+    return list(models) if isinstance(models, list) else None
 
 
 def _keepalive_mode(a: Account) -> str:
@@ -868,8 +879,8 @@ class AccountPool:
             if a.status != AccountStatus.ACTIVE or a.client is None or not a.client.is_healthy:
                 continue
             try:
-                has_model = _resolve_model(model, getattr(a.client, "_family_model", None)) \
-                    in a.client._model_table()
+                # 与账号自己 generate 入口的闸门同一个判断（按账号自己的列表、按 model id 认）
+                has_model = route_model(a.client, model) is not None
             except Exception:  # noqa: BLE001 — 判不出来就当有，宁可报忙也不误报 400
                 has_model = True
             if has_model:
@@ -1111,6 +1122,10 @@ class AccountPool:
             loop_now = asyncio.get_running_loop().time()
         except RuntimeError:
             loop_now = 0.0
+        own_models = {
+            a.id: ((_account_models(a.client) or list(PUBLIC_MODELS)) if a.client else [])
+            for a in self._accounts
+        }
         for a in self._accounts:
             # 对外的 status 是**派生口径**，不改池内部状态机（_find_available / 自愈 /
             # _try_recover_expired 仍按 a.status 走）：池里还标着 ACTIVE、但会话已被谷歌打回
@@ -1149,8 +1164,9 @@ class AccountPool:
                 # 安全摘要，不含上游原文（见 _error_summary）；会话失效时补上原因（见上）
                 "last_error": last_error,
                 "last_error_at": a.last_error_at.isoformat() if a.last_error_at else None,
-                "models": self.models if a.client else [],
-                "models_count": len(self.models) if a.client else 0,
+                # 这个账号**自己**的列表（R7：看得出哪个号是 pro、哪个不是）；还没心跳成功时是契约名
+                "models": own_models[a.id],
+                "models_count": len(own_models[a.id]),
                 # browser = cookie 由浏览器保活插件推送、服务端不轮换；server = 服务端轮换（默认）
                 "keepalive_mode": _keepalive_mode(a),
             })
@@ -1160,12 +1176,43 @@ class AccountPool:
             "active": sum(1 for info in accounts_info if info["status"] == AccountStatus.ACTIVE.value),
             "strategy": self._strategy.value,
             "max_concurrent_per_account": self._max_concurrent,
+            # 与 GET /v1/models 同口径的池级列表（面板仪表盘与模型测试页的下拉框用它）
+            "models": self.models_for(None),
             "accounts": accounts_info,
         }
 
+    def _clients(self) -> list:
+        return [a.client for a in self._accounts if a.client is not None]
+
     def family_of(self, model: str) -> str | None:
-        """模型名 → 模型族（gemini_client.model_family；心跳发现的族要看各账号自己的模型表）。"""
-        return model_family(model, (a.client for a in self._accounts if a.client is not None))
+        """模型名 → 模型族（gemini_client.model_family；真实名字与心跳发现的族要看各账号自己的表）。"""
+        return model_family(model, self._clients())
+
+    def is_gemini_model(self, model: str) -> bool:
+        """路由层「是不是 Gemini 模型」的闸门：在当前列表里、或认得出模型族（新名字、老名字、
+        别名、改名历史、任一账号报的名字都算）。认不出的才交给第三方。"""
+        return model in self.models or self.family_of(model) is not None
+
+    def model_in(self, model: str, allowed) -> bool:
+        """model 是否命中 allowed（MODEL_WHITELIST、访问密钥的 allowed_models）。
+
+        按 family 归一比较（R3）：白名单里写旧名 gemini-pro，新名 gemini-4-neon 也放行，反之亦然。
+        认不出族的名字（第三方模型、Gem 名）只做精确匹配。
+        """
+        if model in allowed:
+            return True
+        family = self.family_of(model)
+        if family is None:
+            return False
+        return any(self.family_of(name) == family for name in allowed)
+
+    def describe_model(self, model: str) -> tuple | None:
+        """真实名字 → (网页名字, 心跳里的定位说明)，取第一个报了这个名字的账号；没人报 → None。"""
+        for client in self._clients():
+            notes = getattr(client, "_model_notes", None)
+            if isinstance(notes, dict) and model in notes:
+                return notes[model]
+        return None
 
     # 模型熔断的记录点放在池里（规格 C.5 / I.3）：一次上游尝试的结果（成功 / 换号 / 不换号的失败）
     # 都在这里落地，池手里也正好有 model、prompt 与 conversation_id。client 层的同号快速重试不单独
@@ -1368,21 +1415,30 @@ class AccountPool:
 
     @property
     def models(self) -> list[str]:
-        # 3 个固定公开模型名（pro / flash / flash-lite，API 稳定契约）恒在最前、顺序不变，
-        # 内部由 _resolve_model 按账号真实可用模型动态映射。
-        # 之后追加「池里至少一个账号真的拿到了」的新 family 的公开名（如 Argon）：
-        # 心跳没发现它的部署看不到这个名字，不给用户一个调不通的选项。
-        from app.core.gemini_client import PUBLIC_MODELS, _BASE_FAMILIES, _FAMILY_PUBLIC
-        names = list(PUBLIC_MODELS)
+        """对外列出的模型名（v1.6.54 R1 / R7）：本次请求能用到的账号各自心跳报的真实名字的并集。
+
+        请求带的访问密钥绑定了账号时只算绑定的那些，否则是全部 ACTIVE 账号。
+        """
+        return self.models_for(current_bound_account_ids())
+
+    def models_for(self, only: set | None) -> list[str]:
+        """only 里（None = 不限）ACTIVE 账号的真实名字并集，按账号顺序、各自的心跳顺序，同名只列一次。
+
+        已过期 / 禁用的账号、会话已被打回登录页的账号不算（它们的列表是过期的，请求也到不了它们）。
+        一个账号都还没心跳成功时列 3 个契约名 —— 不能列空，契约名此刻也确实能调。
+        """
+        names: list[str] = []
         for account in self._accounts:
-            family_model = getattr(account.client, "_family_model", None) or {}
-            for family, internal in family_model.items():
-                if family in _BASE_FAMILIES:
-                    continue
-                public = _FAMILY_PUBLIC.get(family) or internal
-                if public not in names:
-                    names.append(public)
-        return names
+            if account.client is None or account.status != AccountStatus.ACTIVE:
+                continue
+            if only is not None and account.id not in only:
+                continue
+            if _session_expired(account):
+                continue
+            for name in _account_models(account.client) or []:
+                if name not in names:
+                    names.append(name)
+        return names or list(PUBLIC_MODELS)
 
     @property
     def is_healthy(self) -> bool:

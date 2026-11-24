@@ -14,11 +14,14 @@ token 与美元只统计、不拦人。
 刻意做了三处简化，改价时要连带想到：
   - 官方对 pro 有 >200k 的长上下文阶梯（$4.00/$18.00），这里按 ≤200k 档拍平；
   - 官方有**按日期跳价**，这里不实现时间轴、取当前档：
-      gemini-4-argon   2026-12-01 起 输入 $2.00→$4.00、输出 $10.00→$20.00
+      gemini-4-argon   2026-12-01 起 输入 $2.00→$4.00、输出 $10.00→$20.00（网页 11-24 起改叫 4 Carbon）
       gemini-3.8-flash 2027-01-01 起 输入 $0.75→$1.50、输出 $3.75→$7.50
     这两个日期一到，内置默认值就会静默偏低，届时要么改这里、要么用 TOKEN_PRICES 覆盖。
   - 已下线的 gemini-flash-thinking（及 gemini-3-flash-thinking* 内部名）是隐藏别名，
     经 MODEL_ALIASES 归一到 gemini-flash 计价（过去它本来就借用 flash 的价，金额不变）。
+  - v1.6.54 起对外名字是网页真实名字（gemini-4-neon、gemini-4-carbon……），随谷歌改名而变；
+    价格表仍按**族**的稳定名字配（gemini-pro / gemini-flash / gemini-flash-lite / gemini-carbon），
+    真实名字、旧名字都按族归一过来（见 price_table_name）。
 """
 
 import logging
@@ -32,7 +35,9 @@ DEFAULT_TOKEN_PRICES: dict[str, tuple[float, float]] = {
     "gemini-pro": (2.00, 12.00),            # 官方 SKU: gemini-3.1-pro-preview（≤200k 档）
     "gemini-flash": (0.75, 3.75),           # 官方 SKU: gemini-3.8-flash
     "gemini-flash-lite": (0.30, 2.50),      # 官方 SKU: gemini-3.5-flash-lite
-    "gemini-argon": (2.00, 10.00),          # 官方 SKU: gemini-4-argon
+    # 网页 4 Carbon（11-24 前叫 4 Argon，同一个模型），用原 gemini-argon 的价。旧名 gemini-argon 的
+    # 用量与 TOKEN_PRICES 里写的 gemini-argon=… 都归一到这一行。
+    "gemini-carbon": (2.00, 10.00),         # 官方 SKU: gemini-4-argon
 }
 
 _PER_MILLION = 1_000_000.0
@@ -76,32 +81,38 @@ def current_token_prices() -> dict[str, tuple[float, float]]:
 
 
 def price_table_name(model: str) -> str:
-    """把一个落账用的模型名归一到**价格表的键**（公开名）。
+    """把一个落账用的模型名归一到**价格表的键**（族的稳定名字）。
 
-    价格表只按那几个稳定公开名配，但内部模型名是可以直接调的（`gemini-3-pro` 在
-    GEMINI_MODELS 里，请求会正常成功），旧别名也还在。不做这层归一的话，一把密钥
-    用 gemini-pro 调一次、再用 gemini-3-pro 跑 1 亿 token，面板会显示一个精确得
+    价格表只按那几个族名配，但能调的名字远不止这几个：网页真实名字（gemini-4-neon，随谷歌改名而变）、
+    旧名字（gemini-argon）、老别名（gemini-2.5-pro）、内部名（gemini-3-pro 也能直接调）。不做这层归一
+    的话，一把密钥用 gemini-pro 调一次、再用 gemini-3-pro 跑 1 亿 token，面板会显示一个精确得
     不得了的 "≈ $14.00" —— 那 1 亿 token 贡献了 0 —— 正是 M2 红线要防的
     "看着精确其实不准"。
 
-    归一链：原名命中价格表 → 旧别名 → 内部模型名的 family → 找不到就原样返回
-    （第三方中转的模型名就该原样留着、显示为未计价）。
+    归一链：模型名 → 模型族（gemini_client.model_family：别名、真实名字、改名历史都认）→ 族的稳定
+    名字；认不出族的原样返回（第三方中转的模型名就该原样留着、显示为未计价）。
     """
     name = str(model or "").strip()
     if not name:
         return name
     # 延迟导入：这个模块只依赖 app.config，不该在导入期把 gemini_client 整条链拉进来。
     try:
-        from app.core.gemini_client import GEMINI_MODELS, MODEL_ALIASES, _FAMILY_PUBLIC
+        from app.core.gemini_client import _FAMILY_PUBLIC, model_family
     except Exception:          # pragma: no cover - 只在导入环境异常时
         return name
-    if name in MODEL_ALIASES:
-        return MODEL_ALIASES[name]
-    info = GEMINI_MODELS.get(name)
-    if info:
-        # _FAMILY_PUBLIC 已经是 family -> 公开名
-        return _FAMILY_PUBLIC.get(info.get("family")) or name
-    return name
+    family = model_family(name)
+    if family is None:
+        return name
+    return _FAMILY_PUBLIC.get(family) or name
+
+
+def _priced(table: dict) -> dict:
+    """价格表 + 按族归一后的键：运维在 TOKEN_PRICES 里写的是旧名（gemini-argon=…）时，
+    用量里的 gemini-carbon 也查得到这个价。表里本来就有的键优先。"""
+    out = dict(table)
+    for name, price in table.items():
+        out.setdefault(price_table_name(name), price)
+    return out
 
 
 def estimate_cost_breakdown(tokens_by_model: dict | None,
@@ -116,7 +127,7 @@ def estimate_cost_breakdown(tokens_by_model: dict | None,
     """
     if not isinstance(tokens_by_model, dict) or not tokens_by_model:
         return None, []
-    table = prices if prices is not None else current_token_prices()
+    table = _priced(prices if prices is not None else current_token_prices())
     total = 0.0
     priced = False
     unpriced: list[str] = []

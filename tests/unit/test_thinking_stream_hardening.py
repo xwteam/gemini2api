@@ -341,11 +341,14 @@ def _ids(gem_client, key):
 
 
 def test_a_key_restricted_to_the_retired_name_still_lists_it(gem_client, _key_store):
+    """v1.6.54：allowed_models 按 family 归一比较（R3），gemini-flash-thinking 是 flash 族的别名，
+    所以这把密钥还能看到池里 flash 族此刻的名字（这里没有账号心跳过，是契约名 gemini-flash）。
+    已下线名本身照旧列给它。"""
     key = _key_store.create("old", allowed_models=["gemini-flash-thinking"]).key
     oai, claude, native, detail = _ids(gem_client, key)
-    assert oai == ["gemini-flash-thinking"]
-    assert claude == ["gemini-flash-thinking"]
-    assert native == ["models/gemini-flash-thinking"]
+    assert oai == ["gemini-flash", "gemini-flash-thinking"]
+    assert claude == ["gemini-flash", "gemini-flash-thinking"]
+    assert native == ["models/gemini-flash", "models/gemini-flash-thinking"]
     assert detail == 200
 
 

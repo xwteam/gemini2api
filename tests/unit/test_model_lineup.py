@@ -7,6 +7,12 @@
   2. gemini-flash-thinking 及其旧别名、内部名**不在任何列表里**，但**照样能调通**
      （隐藏别名 → gemini-flash），绝不能让现有客户端突然 400；
   3. 心跳铸名的保留词里仍有 "thinking"，不会铸出一个"看着像官方思考模型"的新名字。
+
+v1.6.54（规格 SPEC2 R1/R2）：列表改成各账号心跳报的**网页真实名字**。这个文件里的账号是
+11-24 前的网页形态（3.1 Pro / 3.8 Flash / 3.5 Flash-Lite / 4 Argon），所以四个列表现在恰好是
+gemini-3.1-pro / gemini-3.8-flash / gemini-3.5-flash-lite / gemini-4-argon；gemini-pro 等
+4 个旧名字照样能调（见 test_each_public_name_maps_…），只是不再列出。11-24 之后的真实形态
+（Auto / 4 Hydrogen / 4 Neon / 4 Carbon）见 test_real_model_names.py。
 """
 
 import json
@@ -24,7 +30,10 @@ _AUTH = {"Authorization": "Bearer sk-test-key"}
 _ROOT = Path(__file__).resolve().parents[2]
 _NODE = shutil.which("node")
 
-EXPECTED = ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"]
+# 列出的是这个账号心跳里的网页名字（v1.6.54 起）
+EXPECTED = ["gemini-3.1-pro", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"]
+# 旧的 4 个对外名：不再列出，但都能调
+OLD_PUBLIC = ["gemini-pro", "gemini-flash", "gemini-flash-lite", "gemini-argon"]
 HIDDEN = [
     "gemini-flash-thinking", "gemini-2.5-flash-thinking", "gemini-2.0-flash-thinking",
     "gemini-3-flash-thinking", "gemini-3-flash-thinking-plus", "gemini-3-flash-thinking-advanced",
@@ -84,6 +93,7 @@ def test_the_pool_lists_exactly_the_four_models(real_pool):
     from app.core.account_pool import account_pool
 
     assert account_pool.models == EXPECTED
+    assert not set(OLD_PUBLIC) & set(account_pool.models), "旧名字只解析、不列出"
 
 
 @pytest.mark.parametrize("public,model_id", [
@@ -269,5 +279,6 @@ def test_thinking_stays_a_reserved_word():
 ])
 def test_heartbeat_cannot_mint_a_thinking_model(category, display):
     c = _real_account_client(_entry("0123456789abcdef", display, 9, category=category))
-    assert set(c._family_model) == {"pro", "flash", "flash-lite", "argon"}
+    # 95a4…（4 Argon）的族名按 id 认作 carbon（v1.6.54：网页改叫 4 Carbon，同一个模型）
+    assert set(c._family_model) == {"pro", "flash", "flash-lite", "carbon"}
     assert not any("thinking" in n for n in c._public_model_names())

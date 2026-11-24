@@ -84,7 +84,9 @@ def test_known_entries_still_resolve(caplog):
     client._parse_models_from_status(_status_raw(_entry(_KNOWN_ID, "Gemini 3 Flash", 1, 1)))
 
     assert client._family_model["flash"] == _KNOWN_NAME
-    assert client._available_models == list(PUBLIC_MODELS)
+    # v1.6.54：对外列的是心跳里的网页名字（"Gemini 3 Flash" → gemini-3-flash，恰好与这个 id 的
+    # 内部名同名、同一个 id，所以采纳），不再是固定的契约名
+    assert client._available_models == ["gemini-3-flash"]
     assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
@@ -115,9 +117,13 @@ def test_display_name_falls_back_through_11_19_1(caplog, idx):
     assert "display_name=None" not in msgs[0]
 
 
-def test_display_name_prefers_field_11():
-    assert gc._entry_display_name(_entry_at("x", f11="ELEVEN", f19="NINETEEN", f1="ONE")) == "ELEVEN"
-    assert gc._entry_display_name(_entry_at("x", f19="NINETEEN", f1="ONE")) == "NINETEEN"
+def test_display_name_prefers_field_19():
+    """v1.6.54 起 [19] 优先（过去 [11] 优先）：谷歌 11-24 改版后 [11] 成了定位说明
+    （"Code & complex work"），先读它会把 4 Carbon 铸成 gemini-code-complex-work。"""
+    assert gc._entry_display_name(_entry_at("x", f11="ELEVEN", f19="NINETEEN", f1="ONE")) == "NINETEEN"
+    assert gc._entry_display_name(_entry_at("x", f11="ELEVEN", f1="ONE")) == "ELEVEN"
+    assert gc._entry_display_name(_entry_at("x", f11="Code & complex work", f1="ONE")) == "ONE", \
+        "说明句不算名字"
     assert gc._entry_display_name(_entry_at("x", f1="ONE")) == "ONE"
     assert gc._entry_display_name(_entry_at("x")) is None
     assert gc._entry_display_name(_entry_at("x", f11="   ")) is None, "空白不算名字"

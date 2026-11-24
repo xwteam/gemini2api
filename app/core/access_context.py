@@ -112,6 +112,15 @@ def _strip_models_prefix(name: str) -> str:
     return name[7:] if name.startswith("models/") else name
 
 
+def _model_allowed(name: str, allowed: set) -> bool:
+    """按 family 归一比较（v1.6.54 R3）：密钥里勾的是旧名 gemini-pro，新名 gemini-4-neon 的请求与列表
+    也放行，反之亦然。认不出族的名字（第三方模型、Gem 名）只做精确匹配。"""
+    if name in allowed:
+        return True
+    from app.core.account_pool import account_pool   # 延迟导入，避免循环依赖
+    return account_pool.model_in(name, allowed)
+
+
 def ensure_model_allowed(*names: str) -> None:
     """访问密钥限定了模型时，本次请求的模型必须命中其中之一，否则 403。
 
@@ -122,7 +131,7 @@ def ensure_model_allowed(*names: str) -> None:
     if allowed is None:
         return
     candidates = {_strip_models_prefix(str(n)) for n in names if n}
-    if candidates & allowed:
+    if any(_model_allowed(c, allowed) for c in candidates):
         return
     requested = next((str(n) for n in names if n), "")
     raise HTTPException(
@@ -141,7 +150,7 @@ def filter_models_for_access_key(models) -> list:
     allowed = current_allowed_models()
     if allowed is None:
         return list(models)
-    return [m for m in models if _strip_models_prefix(str(m)) in allowed]
+    return [m for m in models if _model_allowed(_strip_models_prefix(str(m)), allowed)]
 
 
 def with_retired_models_for_access_key(models) -> list:

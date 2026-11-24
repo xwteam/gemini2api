@@ -272,12 +272,16 @@ def test_a_priced_model_still_counts_when_another_one_is_unpriced():
 
 
 def test_the_builtin_defaults_cover_every_public_model():
-    """新加公开模型名（如 M1 的 gemini-argon）必须同步补内置价，不然面板上恒是 "—"。"""
+    """新加公开模型名（如 M1 的 gemini-argon）必须同步补内置价，不然面板上恒是 "—"。
+
+    v1.6.54：_PUBLIC_FAMILY 里多了不带版本号的别名（gemini-neon / gemini-carbon …），价格表按**族**
+    的稳定名字配，别名经 price_table_name 归一过去，所以这里断言"归一后的键有价"，不要求每个别名一行。"""
     from app.core.gemini_client import PUBLIC_MODELS, _PUBLIC_FAMILY
 
     for name in list(PUBLIC_MODELS) + list(_PUBLIC_FAMILY):
-        assert name in DEFAULT_TOKEN_PRICES, name
-        assert DEFAULT_TOKEN_PRICES[name][0] > 0 and DEFAULT_TOKEN_PRICES[name][1] > 0
+        key = price_table_name(name)
+        assert key in DEFAULT_TOKEN_PRICES, (name, key)
+        assert DEFAULT_TOKEN_PRICES[key][0] > 0 and DEFAULT_TOKEN_PRICES[key][1] > 0
 
 
 def test_negative_token_totals_on_disk_are_clamped(tmp_path):
@@ -360,7 +364,9 @@ def test_a_zero_usage_row_is_not_reported_as_unpriced():
     # 已下线的 flash-thinking：历史用量里的公开名与内部名都归一到 gemini-flash（同价）
     ("gemini-3-flash-thinking-advanced", "gemini-flash"),
     ("gemini-flash-thinking", "gemini-flash"),
-    ("gemini-4-argon", "gemini-argon"),                 # 非契约 family 也要归一
+    # 非契约 family 也要归一。v1.6.54：网页改叫 4 Carbon（同一个 id），价格表的键是族名 gemini-carbon
+    ("gemini-4-argon", "gemini-carbon"),
+    ("gemini-argon", "gemini-carbon"),
     ("vendor-x", "vendor-x"),                           # 认不出的原样留着
     ("", ""),
 ])

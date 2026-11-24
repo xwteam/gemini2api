@@ -54,6 +54,25 @@ def _fresh_keepalive_modes(monkeypatch):
     monkeypatch.setattr(_keepalive_modes, "MODES_PATH", _KEEPALIVE_DIR / f"{uuid.uuid4().hex}.json")
 
 
+import app.core.model_names as _model_names  # noqa: E402
+
+_MODEL_NAMES_DIR = Path(tempfile.mkdtemp(prefix="g2a-model-names-"))
+_model_names.NAMES_PATH = _MODEL_NAMES_DIR / "model-names.json"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_model_name_history(monkeypatch):
+    """每个测试一份空的改名历史（data/model-names.json，v1.6.54 规格 R2）。
+
+    心跳解析会把真实名字记进这张进程全局的表；不隔离的话，前一个测试的心跳记下的 gemini-4-neon
+    会让后一个测试里的同名请求按「历史名」路由，结果取决于执行顺序。"""
+    path = _MODEL_NAMES_DIR / f"{uuid.uuid4().hex}.json"
+    monkeypatch.setattr(_model_names, "NAMES_PATH", path)
+    _model_names.history.reset()
+    yield
+    _model_names.history.reset()
+
+
 @pytest.fixture(autouse=True)
 def _fresh_model_breaker():
     """每个测试一个空的全局模型熔断器（v1.6.46 规格 I.13）。

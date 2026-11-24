@@ -173,7 +173,8 @@ class Settings(BaseSettings):
     # 运维在别的语言 / 别的措辞上抓到样本时往这里加。见 gemini_client.is_generic_failure_reply。
     gemini_failure_replies: str = ""
     # 对话的生成超时，按模型族分层（秒）。形如 "flash-lite=60,flash=120,pro=300"。
-    # 留空=用代码里的默认分层（flash-lite 60 / flash 120 / pro 300 / argon 300）。
+    # 留空=用代码里的默认分层（flash-lite 60 / flash 120 / pro 300 / carbon 300）。
+    # carbon 是网页 4 Carbon（11-24 前叫 4 Argon，同一个模型）；旧配置写的 argon=… 等同 carbon=…。
     # 非流式按它掐断整个 POST；真流式（v1.6.46 起）按它约束「第一次进展」与「相邻两次进展的间隔」，
     # 谷歌的心跳帧不算进展（见 gemini_client.generate_stream）。
     # 旧配置里的 flash-thinking=... 已无对应模型族（该模型已下线为 gemini-flash 的别名），被忽略、无害。
