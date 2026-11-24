@@ -726,7 +726,7 @@ async function submitEditLabel() {
         showToast(t('accounts.labelRequired'), 'warning');
         return;
     }
-    if (trimmed.length > 64) {
+    if ([...trimmed].length > 64) {
         showToast(t('accounts.labelTooLong'), 'warning');
         return;
     }
