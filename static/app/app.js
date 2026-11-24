@@ -500,6 +500,9 @@ async function loadAccounts() {
                     <button class="btn btn-sm btn-outline acc-cookie-btn" data-account-id="${idEsc}" data-account-label="${labelEsc}">
                         <i class="fas fa-cookie-bite"></i> ${t('accounts.updateCookie')}
                     </button>
+                    <button class="btn btn-sm btn-outline acc-edit-label-btn" data-account-id="${idEsc}" data-account-label="${labelEsc}">
+                        <i class="fas fa-pen"></i> ${escapeHtml(t('accounts.editLabel'))}
+                    </button>
                     <button class="btn btn-sm btn-danger acc-remove-btn" data-account-id="${idEsc}">
                         <i class="fas fa-trash"></i> ${t('accounts.delete')}
                     </button>
@@ -514,6 +517,9 @@ async function loadAccounts() {
         });
         container.querySelectorAll('.acc-cookie-btn').forEach(btn => {
             btn.addEventListener('click', () => openUpdateCookieModal(btn.dataset.accountId, btn.dataset.accountLabel || ''));
+        });
+        container.querySelectorAll('.acc-edit-label-btn').forEach(btn => {
+            btn.addEventListener('click', () => openEditLabelModal(btn.dataset.accountId, btn.dataset.accountLabel || ''));
         });
         container.querySelectorAll('.acc-remove-btn').forEach(btn => {
             btn.addEventListener('click', () => removeAccount(btn.dataset.accountId));
@@ -566,24 +572,37 @@ function closeAddAccountModal() {
     const modal = document.getElementById('addAccountModal');
     if (modal) {
         modal.classList.remove('active');
-        const inputs = modal.querySelectorAll('input');
+        const inputs = modal.querySelectorAll('input, textarea');
         inputs.forEach(input => { input.value = ''; });
     }
 }
 
 async function submitAddAccount() {
-    const psid = document.getElementById('add-psid')?.value.trim();
+    const header = document.getElementById('add-cookie-header')?.value.trim() || '';
+    const psid = document.getElementById('add-psid')?.value.trim() || '';
     const psidts = document.getElementById('add-psidts')?.value.trim() || '';
     const label = document.getElementById('add-label')?.value.trim() || '';
 
-    if (!psid) {
-        showToast('请填写 __Secure-1PSID', 'warning');
-        return;
+    let payload;
+    if (header) {
+        if (!_cookieFromHeader(header, '__Secure-1PSID')) {
+            showToast(t('accounts.fullCookieNoPsid'), 'warning');
+            return;
+        }
+        payload = { cookie_header: header, label };
+        if (psid) payload.psid = psid;
+        if (psidts) payload.psidts = psidts;
+    } else {
+        if (!psid) {
+            showToast(t('accounts.needPsid'), 'warning');
+            return;
+        }
+        payload = { psid, psidts, label };
     }
 
     try {
         showToast(t('accounts.adding'), 'info');
-        await apiCall('POST', '/admin/accounts', { psid, psidts, label });
+        await apiCall('POST', '/admin/accounts', payload);
         showToast(t('accounts.added'), 'success');
         closeAddAccountModal();
         await loadAccounts();
@@ -665,6 +684,66 @@ async function submitUpdateCookie() {
         await loadDashboard();
     } catch (error) {
         showToast(`更新失败: ${error.message}`, 'error');
+    }
+}
+
+// ============================================================================
+// Edit Label Modal
+// ============================================================================
+
+let editLabelAccountId = null;
+
+function openEditLabelModal(accountId, label) {
+    editLabelAccountId = accountId;
+    const modal = document.getElementById('editLabelModal');
+    const title = document.getElementById('editLabelTitle');
+    const input = document.getElementById('edit-label-input');
+    if (title) title.textContent = `${t('accounts.editLabel')} - ${label || accountId}`;
+    if (input) input.value = label || '';
+    if (modal) modal.classList.add('active');
+    if (input) {
+        input.focus();
+        input.select();
+    }
+}
+
+function closeEditLabelModal() {
+    const modal = document.getElementById('editLabelModal');
+    if (modal) {
+        modal.classList.remove('active');
+        const inputs = modal.querySelectorAll('input');
+        inputs.forEach(input => { input.value = ''; });
+    }
+    editLabelAccountId = null;
+}
+
+async function submitEditLabel() {
+    if (!editLabelAccountId) return;
+    const raw = document.getElementById('edit-label-input')?.value ?? '';
+    const trimmed = raw.trim();
+
+    if (trimmed.length < 1) {
+        showToast(t('accounts.labelRequired'), 'warning');
+        return;
+    }
+    if (trimmed.length > 64) {
+        showToast(t('accounts.labelTooLong'), 'warning');
+        return;
+    }
+    if (/[\x00-\x1f\x7f]/.test(trimmed)) {
+        showToast(t('accounts.labelInvalidChars'), 'warning');
+        return;
+    }
+
+    try {
+        showToast(t('accounts.updatingLabel'), 'info');
+        await apiCall('PATCH', `/admin/accounts/${editLabelAccountId}`, { label: trimmed });
+        showToast(t('accounts.labelUpdated'), 'success');
+        closeEditLabelModal();
+        await loadAccounts();
+        await loadDashboard();
+    } catch (error) {
+        showToast(`${t('accounts.labelUpdateFailed')}: ${error.message}`, 'error');
     }
 }
 
@@ -1296,6 +1375,33 @@ function initEventListeners() {
         }
     }
 
+    // Edit label modal
+    const editLabelModal = document.getElementById('editLabelModal');
+    if (editLabelModal) {
+        editLabelModal.querySelectorAll('.modal-close, .modal-cancel').forEach(btn => {
+            btn.addEventListener('click', closeEditLabelModal);
+        });
+        editLabelModal.addEventListener('click', (e) => {
+            if (e.target === editLabelModal) closeEditLabelModal();
+        });
+        const confirmEditLabelBtn = document.getElementById('confirmEditLabel');
+        if (confirmEditLabelBtn) {
+            confirmEditLabelBtn.addEventListener('click', submitEditLabel);
+        }
+        const editLabelInput = document.getElementById('edit-label-input');
+        if (editLabelInput) {
+            editLabelInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submitEditLabel();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    closeEditLabelModal();
+                }
+            });
+        }
+    }
+
     // Playground send
     const pgSend = document.getElementById('pg-send');
     if (pgSend) {
@@ -1435,6 +1541,8 @@ window.app = {
     closeAddAccountModal,
     openUpdateCookieModal,
     closeUpdateCookieModal,
+    openEditLabelModal,
+    closeEditLabelModal,
     sendPlaygroundRequest,
     clearPlayground,
     copyModel,

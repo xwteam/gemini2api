@@ -73,6 +73,10 @@
     margin: 0;
 }
 
+.account-actions {
+    flex-wrap: wrap;
+}
+
 .account-card-actions {
     display: flex;
     gap: 0.5rem;

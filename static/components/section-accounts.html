@@ -1,4 +1,4 @@
-<link rel="stylesheet" href="components/section-accounts.css?v=4">
+<link rel="stylesheet" href="components/section-accounts.css?v=5">
 <!-- Accounts Section -->
 <section id="accounts" class="section" aria-labelledby="accounts-title">
     <div class="section-header">
@@ -31,13 +31,20 @@
                 <label for="add-label" data-i18n="accounts.labelName">标签名称</label>
                 <input type="text" id="add-label" class="form-control" data-i18n-placeholder="accounts.labelPlaceholder" placeholder="例如: 主账号">
             </div>
+            <!-- 谷歌 11-20 改版：只有 PSID / PSIDTS 只能以访客身份打开 Gemini，要整段 Cookie（含 OSID） -->
             <div class="form-group">
-                <label for="add-psid">__Secure-1PSID <span class="required">*</span></label>
-                <input type="text" id="add-psid" class="form-control" data-i18n-placeholder="accounts.psidPlaceholder" placeholder="输入 __Secure-1PSID" required>
+                <label for="add-cookie-header" data-i18n="accounts.fullCookieLabel">整段 Cookie（推荐）</label>
+                <textarea id="add-cookie-header" class="form-control" rows="4" spellcheck="false" autocomplete="off" data-i18n-placeholder="accounts.fullCookiePlaceholder" placeholder="SID=…; HSID=…; OSID=…; __Secure-1PSID=…; __Secure-1PSIDTS=…"></textarea>
+                <span class="form-hint" data-i18n="accounts.fullCookieHint">谷歌现在需要整段 Cookie（含 gemini.google.com 的 OSID），只填下面两项会被当成未登录访客。在浏览器打开 gemini.google.com → 开发者工具 → 网络 → 任选一个发往 gemini.google.com 的请求，把请求头里整段 Cookie 复制到这里；或用浏览器插件 1.4.0 及以上自动同步。</span>
             </div>
             <div class="form-group">
-                <label for="add-psidts">__Secure-1PSIDTS <span class="required">*</span></label>
-                <input type="text" id="add-psidts" class="form-control" data-i18n-placeholder="accounts.psidtsPlaceholder" placeholder="输入 __Secure-1PSIDTS" required>
+                <label for="add-psid">__Secure-1PSID</label>
+                <input type="text" id="add-psid" class="form-control" data-i18n-placeholder="accounts.psidPlaceholder" placeholder="输入 __Secure-1PSID">
+            </div>
+            <div class="form-group">
+                <label for="add-psidts">__Secure-1PSIDTS</label>
+                <input type="text" id="add-psidts" class="form-control" data-i18n-placeholder="accounts.psidtsPlaceholder" placeholder="输入 __Secure-1PSIDTS">
+                <span class="form-hint" data-i18n="accounts.singleValueHint">粘贴了整段 Cookie 时这两项留空即可（从整段里读取）；只填这两项是旧用法。</span>
             </div>
         </div>
         <div class="modal-footer">
@@ -76,6 +83,29 @@
         <div class="modal-footer">
             <button class="btn btn-secondary modal-cancel" data-i18n="confirm.cancel">取消</button>
             <button class="btn btn-primary" id="confirmUpdateCookie" data-i18n="accounts.confirmUpdate">确认更新</button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Label Modal -->
+<div id="editLabelModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="editLabelTitle">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="editLabelTitle" data-i18n="accounts.editLabel">编辑标签</h3>
+            <button class="modal-close" aria-label="Close">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label for="edit-label-input" data-i18n="accounts.labelName">标签名称</label>
+                <input type="text" id="edit-label-input" class="form-control" maxlength="64" data-i18n-placeholder="accounts.labelPlaceholder" placeholder="例如: 主账号">
+                <span class="form-hint" data-i18n="accounts.editLabelHint">1～64 个字符，不能包含控制字符</span>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary modal-cancel" data-i18n="confirm.cancel">取消</button>
+            <button class="btn btn-primary" id="confirmEditLabel" data-i18n="accounts.confirmSave">保存</button>
         </div>
     </div>
 </div>
