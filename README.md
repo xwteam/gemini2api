@@ -924,6 +924,8 @@ Gemini2API 主要由个人维护，欢迎通过代码、文档、修复或 PR �
 
 感谢所有在 [Issues](https://github.com/xwteam/gemini2api/issues) 里提交 bug 复现、日志、兼容性反馈和功能建议的用户。这些反馈直接推动了 Cookie 保活、多账号轮换、模型选择、多语言支持、Web 面板等核心能力的迭代。
 
+特别感谢 [@Cznorth](https://github.com/Cznorth) 在 [PR #16](https://github.com/xwteam/gemini2api/pull/16) 里第一时间指出：谷歌 2026-11-20 改版后，Google 登录页里也带着 `SNlM0e`，服务会把它误当成有效会话、实际以未登录访客身份运行。这个判断已经合入 [v1.6.53](https://github.com/xwteam/gemini2api/releases/tag/v1.6.53)，同一版还补上了整套 Cookie 登录与浏览器插件 1.4.0。
+
 ---
 
 ## ⭐ Star History

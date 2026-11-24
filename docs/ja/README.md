@@ -741,6 +741,8 @@ PR と Issue を歓迎します。
 
 [Issues](https://github.com/xwteam/gemini2api/issues) でバグ報告、ログ、互換性フィードバック、機能提案を提出してくださったすべてのユーザーに感謝します。これらのフィードバックが Cookie 保持、マルチアカウントローテーション、モデル選択、多言語サポート、Web パネルなどのコア機能の改善を直接推進しました。
 
+[@Cznorth](https://github.com/Cznorth) さんに特に感謝します。[PR #16](https://github.com/xwteam/gemini2api/pull/16) で、Google の 2026-11-20 の変更後はログイン画面にも `SNlM0e` が含まれ、サービスがそれを有効なセッションと誤認して実際には未ログインのゲストとして動いていたことを、いち早く指摘してくれました。この判定は [v1.6.53](https://github.com/xwteam/gemini2api/releases/tag/v1.6.53) に取り込み、同じ版で Cookie 一式によるログインとブラウザ拡張 1.4.0 も追加しています。
+
 ---
 
 ## 📄 ライセンス

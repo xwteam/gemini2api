@@ -744,6 +744,8 @@ PRs and Issues welcome.
 
 Thanks to everyone who submitted bug reports, logs, compatibility feedback, and feature suggestions through [Issues](https://github.com/xwteam/gemini2api/issues). Your feedback directly drove the development of Cookie persistence, multi-account rotation, model selection, multi-language support, and the Web panel.
 
+Special thanks to [@Cznorth](https://github.com/Cznorth) for [PR #16](https://github.com/xwteam/gemini2api/pull/16), which was the first to point out that after Google's 2026-11-20 change the Google sign-in page also carries an `SNlM0e`, so the service mistook it for a valid session and actually ran as a logged-out guest. This check is part of [v1.6.53](https://github.com/xwteam/gemini2api/releases/tag/v1.6.53), which also adds full-cookie sign-in and browser plugin 1.4.0.
+
 ---
 
 ## 📄 License

@@ -742,6 +742,8 @@ curl -X POST http://localhost:5918/admin/access-keys/3/reset-usage \
 
 感謝所有在 [Issues](https://github.com/xwteam/gemini2api/issues) 裡提交 bug 復現、日誌、相容性回饋和功能建議的使用者。這些回饋直接推動了 Cookie 保活、多帳號輪換、模型選擇、多語言支援、Web 面板等核心能力的迭代。
 
+特別感謝 [@Cznorth](https://github.com/Cznorth) 在 [PR #16](https://github.com/xwteam/gemini2api/pull/16) 裡第一時間指出：谷歌 2026-11-20 改版後，Google 登入頁裡也帶著 `SNlM0e`，服務會把它誤當成有效工作階段、實際以未登入訪客身分執行。這個判斷已經併入 [v1.6.53](https://github.com/xwteam/gemini2api/releases/tag/v1.6.53)，同一版還補上了整套 Cookie 登入與瀏覽器擴充功能 1.4.0。
+
 ---
 
 ## 📄 授權協議

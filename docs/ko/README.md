@@ -627,6 +627,8 @@ PR과 Issue를 환영합니다.
 
 [Issues](https://github.com/xwteam/gemini2api/issues)에서 버그 재현, 로그, 호환성 피드백, 기능 제안을 제출해 주신 모든 사용자에게 감사드립니다. 이러한 피드백이 Cookie 유지, 다중 계정 순환, 모델 선택, 다국어 지원, Web 패널 등 핵심 기능의 발전을 직접적으로 이끌었습니다.
 
+[@Cznorth](https://github.com/Cznorth) 님께 특별히 감사드립니다. [PR #16](https://github.com/xwteam/gemini2api/pull/16)에서 Google의 2026-11-20 변경 이후 로그인 페이지에도 `SNlM0e`가 들어 있어, 서비스가 이를 유효한 세션으로 오인하고 실제로는 로그인하지 않은 게스트로 동작하고 있었다는 점을 가장 먼저 짚어 주셨습니다. 이 판정은 [v1.6.53](https://github.com/xwteam/gemini2api/releases/tag/v1.6.53)에 반영했고, 같은 버전에서 전체 쿠키 로그인과 브라우저 확장 1.4.0도 추가했습니다.
+
 ---
 
 ## 📄 라이선스
