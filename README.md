@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Docker-20.10+-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Chrome%20%7C%20Edge-Latest-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-v1.6.55-success?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.6.56-success?style=flat-square" alt="Version">
 </p>
 
 <p>
@@ -62,6 +62,7 @@
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2026-11-25 10:39:00 | v1.6.56 - ⏱️ **真实耗时与测试指标**：修复流式日志只记开始（2–5ms）错误，改记至流结束并加 ttft_ms，日志页同步显示；模型测试页显示思考、首字、字/秒与总耗时、实时等待计时及「不思考（最快）」。实测 gemini-4-neon 不思考约 8 秒、low 4～110 秒，正文输出约 1 秒，网关为毫秒级。 |
 | 2026-11-24 23:17:00 | v1.6.55 - 👤 **直贴整段 Cookie、改标签与小内存**：添加账号可直接粘贴完整浏览器 Cookie，无需先加再补更新，并拦截重复账号或空输入；面板卡片可直接改标签（限长度）；README 新增小内存指南（3 账号约 85–105 MB 内存、空闲 CPU <1%、请求约 2 ms；推算 256 MB 可跑、推荐 512 MB+，附精简/停用用量统计建议）；感谢 @lianjiexu08-ui（PR #12/#13/#14）。 |
 | 2026-11-24 22:02:00 | v1.6.54 - 🏷️ **模型列表直出网页真名并按账号实时同步**：谷歌改名后，各接口与面板模型列表现直接列出真实名称 gemini-auto、gemini-4-hydrogen、gemini-4-neon 与 gemini-4-carbon（原 4 Argon），后续随网站自动更新。各账号独立维护自己的实时模型，列表取可用或密钥绑定账号的并集，请求只发往持有该模型的账号。旧名、无版本别名与历史真名继续可用，白名单、熔断与计费互通，并修复 4 Carbon 错名且超时调为 300 秒。 |
 | 2026-11-24 20:30:00 | v1.6.53 - 🔑 **谷歌改版后恢复登录**：11 月 20 日起谷歌要求整套 Cookie（含 gemini.google.com 的 OSID），只给 __Secure-1PSID/1PSIDTS 会被跳到登录页，旧版却把登录页当成登录成功，一直以访客身份运行（只剩一个 Auto 模型，其他模型报 400）。现在接收整套 Cookie 并按各自域名发送，被跳到登录页会如实报过期并提示处理方法；浏览器插件需升级到 1.4.0，或在面板粘贴整段 Cookie。GHCR 镜像新增 arm64 |
@@ -71,7 +72,6 @@
 | 2026-10-26 23:36:00 | v1.6.49 - 🧩 **客户端兼容性一起补齐**：Codex / OpenAI 新版 SDK 发的 developer 消息（权限、沙箱说明就在里面）过去在 Gemini 路径被整段丢掉，现在按 system 拼进提示词；top_p、stop、response_format、seed 等参数过去被直接丢弃，现在转给第三方模型和兜底；面板里加的账号、面板的兜底开关都存进挂载卷 data/，升级重建容器不再丢；拒答套话再收一句「身为一个语言模型，我没办法提供这方面的帮助。」 |
 | 2026-10-26 22:04:00 | v1.6.48 - 🛠️ **Codex 等走 /v1/responses 用第三方模型时，工具调用能跑通了**：流式（Codex 恒流式）过去只转发文字，第三方模型发起的工具调用被整个丢掉，工具循环跑不起来；现在流式、非流式都会把工具调用变成 function_call 输出项。历史里的工具调用和结果也改按 OpenAI 原生格式（tool_calls + tool_call_id）发给第三方，Codex 带的 web_search 等内置工具会自动略过；Gemini 路径不受影响 |
 | 2026-10-26 21:14:00 | v1.6.47 - 🙅 **谷歌的「语言模型」拒答套话不再当成回答**：谷歌有时整段只回一句「我只是一个语言模型，无法提供这方面的帮助。」「由于程序代码的局限，我没法办到。」这类话（问的明明是「17 是质数吗」这种好答的问题，模型故障时也会出现），过去原样返回给客户端；现在和失败套话一样换号重试、可走兜底，但不计入模型熔断 |
-| 2026-10-26 20:26:00 | v1.6.46 - 🩺 **谷歌模型出故障时少等**：谷歌某个模型卡住时，流式请求过去会被每 60 秒一个的空心跳帧一直吊着（实测干等 4 分钟），现在和非流式一样按预算超时、并当场断开连接释放账号；谷歌 1～2 秒就回的失败套话（I seem to be encountering an error…）不再当成回答返回，改为换号或兜底，也不再写进会话；新增模型级熔断：同一模型接连出故障时，开了兜底的请求直接走兜底，不再每次先白等一两分钟，之后自动试探谷歌是否恢复 |
 
 ---
 
