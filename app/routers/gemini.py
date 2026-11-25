@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
+from app.core.request_timing import gemini_has_content, track_first_content
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import (
     ensure_model_allowed, filter_models_for_access_key, record_token_usage,
@@ -610,4 +611,5 @@ async def stream_generate_content(model: str, req: GeminiRequest, request: Reque
         }
         yield json.dumps(final_chunk) + "\n"
 
-    return StreamingResponse(stream_generator(), media_type="application/json")
+    return StreamingResponse(track_first_content(stream_generator(), gemini_has_content),
+                             media_type="application/json")

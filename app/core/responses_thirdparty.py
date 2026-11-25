@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.config import settings
 from app.core.api_forwarder import empty_upstream_error, forward_to_provider, open_stream, run_failover
 from app.core.fallback import openai_data_is_empty
+from app.core.request_timing import responses_has_content, track_first_content
 from app.models.openai import ChatRequest, ChatMessage, ToolDef, ToolFunction
 from app.core.responses_protocol import build_responses_object, new_response_id, ResponsesStreamEncoder
 from app.core.stream import SSE_KEEPALIVE_FRAME, SSE_KEEPALIVE_INTERVAL
@@ -149,8 +150,10 @@ async def dispatch_thirdparty_responses(request, resolved_model, messages_raw, t
         return None
     if stream:
         return StreamingResponse(
-            _dispatch_stream(request, resolved_model, messages_raw, tools_raw,
-                             tool_choice, request_params, entries, pool),
+            track_first_content(
+                _dispatch_stream(request, resolved_model, messages_raw, tools_raw,
+                                 tool_choice, request_params, entries, pool),
+                responses_has_content),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

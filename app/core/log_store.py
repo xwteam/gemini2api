@@ -3,7 +3,7 @@
 import json
 import uuid
 from collections import deque
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -22,6 +22,9 @@ class LogRecord:
     provider: Optional[str] = None
     status: Optional[int] = None
     latency_ms: Optional[float] = None
+    # 流式请求：从请求进入到第一个内容帧（正文或思考）发出的毫秒数；非流式 / 没有内容恒为 None。
+    # 字段名是与面板「日志」页的约定，别改。旧记录没有这个字段，读进来就是 None。
+    ttft_ms: Optional[float] = None
     stream: Optional[bool] = None
     error: Optional[str] = None
     tags: list = field(default_factory=list)
@@ -64,8 +67,11 @@ class LogStore:
             return
         try:
             raw = json.loads(self._persist_path.read_text(encoding="utf-8"))
+            # 只取认得的字段：旧记录缺字段走默认值；更新版本写下的、本版不认识的字段直接丢掉，
+            # 不能让一个未知 kwarg 把整份日志文件读挂（外层 except 会把所有记录一起吞掉）。
+            known = {f.name for f in fields(LogRecord)}
             for item in raw:
-                record = LogRecord(**item)
+                record = LogRecord(**{k: v for k, v in item.items() if k in known})
                 self._buffer.append(record)
                 self._id_index[record.id] = record
         except Exception:
@@ -169,6 +175,7 @@ def create_log_record(
     latency_ms: Optional[float] = None,
     stream: Optional[bool] = None,
     error: Optional[str] = None,
+    ttft_ms: Optional[float] = None,
     request_body: Optional[dict] = None,
     response_body: Optional[dict] = None,
 ) -> LogRecord:
@@ -184,6 +191,7 @@ def create_log_record(
         provider="gemini",
         status=status,
         latency_ms=round(latency_ms, 1) if latency_ms is not None else None,
+        ttft_ms=round(ttft_ms, 1) if ttft_ms is not None else None,
         stream=stream,
         error=error,
         request=request_body,

@@ -19,6 +19,7 @@ from app.core.access_context import (
     scoped_conversation_id,
 )
 from app.core.api_forwarder import empty_upstream_error, forward_to_provider, open_stream, run_failover
+from app.core.request_timing import openai_chat_has_content, track_first_content
 from app.core.fallback import fallback_enabled, is_empty_result, get_fallback_entries, openai_data_is_empty
 from app.core.conversation_store import conversation_store
 from app.core.gemini_client import (GENERATION_ERRORS,
@@ -632,10 +633,10 @@ async def chat_completions(req: ChatRequest, request: Request):
     if req.stream:
         # 两条流式路径在各自的 SSE 生成器里判断（role 首帧之后、调谷歌之前，规格 I.8）
         return StreamingResponse(
-            _released_after(
+            track_first_content(_released_after(
                 _stream_response(prompt, resolved_model, has_tools, gemini_conv_id, conv, messages_raw, req.model, attachments, _image_base(request), request, req, gem_id, account_id, extended_thinking=extended_thinking, show_thinking=show_thinking, gem_account_id=gem_account_id, breaker=breaker),
                 breaker,
-            ),
+            ), openai_chat_has_content),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

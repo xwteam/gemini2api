@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
+from app.core.request_timing import responses_has_content, track_first_content
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import ensure_model_allowed, record_token_usage
 from app.core.gemini_client import (classify_error,
@@ -172,9 +173,11 @@ async def create_response(request: Request):
 
     if stream:
         return StreamingResponse(
-            _stream_gemini_response(request, prompt, resolved_model, has_tools, attachments,
-                                    gem_id, gem_account_id, request_params, extended_thinking,
-                                    show_thinking),
+            track_first_content(
+                _stream_gemini_response(request, prompt, resolved_model, has_tools, attachments,
+                                        gem_id, gem_account_id, request_params, extended_thinking,
+                                        show_thinking),
+                responses_has_content),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.api_key_store import ApiKeyEntry
+from app.core.request_timing import openai_chat_has_content, track_first_content
 from app.models.openai import ChatRequest, ChatResponse, Choice, ChoiceMessage, UsageInfo, StreamChunk, StreamChoice, StreamDelta
 from app.utils.net_guard import assert_safe_url, UnsafeURLError
 
@@ -191,7 +192,8 @@ async def _forward_openai_compatible(
         # 关键修复：client 生命周期交给流生成器内部（async with），
         # 避免「函数返回即关闭 client，生成器迭代时连接已关」导致流式转发失效。
         return StreamingResponse(
-            _proxy_openai_stream(url, headers, payload, entry.provider),
+            track_first_content(_proxy_openai_stream(url, headers, payload, entry.provider),
+                                openai_chat_has_content),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         )
@@ -322,7 +324,7 @@ async def open_openai_stream(
             await client.aclose()
 
     return StreamingResponse(
-        _drain(),
+        track_first_content(_drain(), openai_chat_has_content),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     ), None
@@ -539,7 +541,9 @@ async def _forward_anthropic(
     if req.stream:
         # 关键修复：同 openai 流式，client 生命周期交给流生成器内部，保证流式期间连接存活
         return StreamingResponse(
-            _convert_anthropic_stream(url, headers, payload, entry.model),
+            # 已转成 OpenAI chat 帧，按 OpenAI 判定首字
+            track_first_content(_convert_anthropic_stream(url, headers, payload, entry.model),
+                                openai_chat_has_content),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         )

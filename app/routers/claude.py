@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
+from app.core.request_timing import claude_has_content, track_first_content
 from app.core.account_pool import account_pool as gemini_client
 from app.core.access_context import (
     ensure_model_allowed, filter_models_for_access_key, record_token_usage,
@@ -215,9 +216,11 @@ async def create_message(req: ClaudeRequest, request: Request):
 
     if req.stream:
         return StreamingResponse(
-            _stream_claude(prompt, resolved_model, has_tools, attachments, req.model, gem_id, gem_account_id,
-                          request=request, extended_thinking=extended_thinking,
-                          show_thinking=show_thinking),
+            track_first_content(
+                _stream_claude(prompt, resolved_model, has_tools, attachments, req.model, gem_id,
+                               gem_account_id, request=request, extended_thinking=extended_thinking,
+                               show_thinking=show_thinking),
+                claude_has_content),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

@@ -23,6 +23,7 @@ from app.core.fingerprint.version_sync import version_sync_loop
 from app.core.usage_stats import UsageStatsStore
 from app.core.usage_timer import snapshot_loop
 from app.core.log_store import LogStore, create_log_record
+from app.core.request_timing import begin_request_timing
 from app.routers import openai, claude, gemini, research
 from app.routers import responses as responses_router
 from app.routers import admin
@@ -353,6 +354,29 @@ async def _capture_response_body(response):
     return rebuilt, body_dict
 
 
+class _LogWhenStreamEnds(Response):
+    """包住流式响应：整条流发完（正常结束、异常、客户端断开都算）才执行 on_end 写日志。
+
+    钩在 __call__ 的 finally 上而不是 body_iterator 的生成器里：客户端断开时 Starlette 不会
+    显式关闭 body_iterator（只是不再迭代，要等 GC 才收尾），生成器的 finally 什么时候跑没准；
+    __call__ 的 finally 在发完 / 抛出 / 被取消时一定当场执行。
+    """
+
+    def __init__(self, inner: Response, on_end) -> None:
+        # 不调 super().__init__：状态码 / 原始响应头原样沿用 inner，响应体由 inner 自己发
+        self._inner = inner
+        self._on_end = on_end
+        self.status_code = inner.status_code
+        self.raw_headers = inner.raw_headers
+        self.background = None
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await self._inner(scope, receive, send)
+        finally:
+            self._on_end()
+
+
 @app.middleware("http")
 async def log_capture_middleware(request: Request, call_next):
     path = request.url.path
@@ -378,6 +402,8 @@ async def log_capture_middleware(request: Request, call_next):
 
     import time
     start = time.perf_counter()
+    # 流式请求的首字时间：各协议的流在第一个内容帧发出时往这个对象上打点（app/core/request_timing.py）
+    timing = begin_request_timing(start)
     response = await call_next(request)
     latency_ms = (time.perf_counter() - start) * 1000
 
@@ -405,13 +431,17 @@ async def log_capture_middleware(request: Request, call_next):
     if status >= 400:
         error_msg = f"HTTP {status}"
 
+    # 流式响应：call_next 返回时只是拿到了 StreamingResponse，生成还没开始（东京实测 neon 流式
+    # 一律记成 2～5ms）。所以流式的日志改到整条流结束时才写，见下方 _LogWhenStreamEnds。
+    streaming = _looks_like_streaming(response, path, stream)
+
     # 完整 body 记录（默认关；关闭时下面两个变量恒为 None，记录与开关引入前完全一致）
     request_body = None
     response_body = None
     if settings.log_bodies_enabled and is_api:
         try:
             request_body = _body_for_log(getattr(request.state, "_body_cache", None))
-            if _looks_like_streaming(response, path, stream):
+            if streaming:
                 response_body = dict(_STREAMING_NOT_CAPTURED)
             else:
                 response, response_body = await _capture_response_body(response)
@@ -420,21 +450,36 @@ async def log_capture_middleware(request: Request, call_next):
             logger.warning(f"[log_bodies] 记录请求/响应体失败，已跳过: {e}")
 
     log_store = request.app.state.log_store
-    record = create_log_record(
+    fields = dict(
         method=method,
         path=_scrub_sensitive(path),
         direction=direction,
         model=model,
         status=status,
-        latency_ms=latency_ms,
         stream=stream,
         error=error_msg,
         request_body=request_body,
         response_body=response_body,
     )
-    log_store.add(record)
 
-    return response
+    if not streaming:
+        # 非流式：与改动前一致，当场记（ttft_ms 恒为 None）
+        log_store.add(create_log_record(latency_ms=latency_ms, **fields))
+        return response
+
+    def _record_stream_end() -> None:
+        # latency_ms = 请求进入 → 最后一个字节发出（或断开 / 出错）；ttft_ms = 请求进入 → 第一个
+        # 内容帧（正文或思考）发出，一个内容都没有就是 None。日志写失败绝不影响已经发完的响应。
+        try:
+            log_store.add(create_log_record(
+                latency_ms=(time.perf_counter() - start) * 1000,
+                ttft_ms=timing.ttft_ms(),
+                **fields,
+            ))
+        except Exception as e:
+            logger.warning(f"[log] 流式请求日志写入失败，已跳过: {e}")
+
+    return _LogWhenStreamEnds(response, _record_stream_end)
 
 app.include_router(openai.router, prefix="/openai/v1")
 app.include_router(openai.router, prefix="/v1")  # 标准 OpenAI 路径，兼容 OpenClaw 等客户端
