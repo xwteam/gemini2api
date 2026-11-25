@@ -9,8 +9,13 @@ Claude 的 message_start / ping、Responses 的 created / in_progress、Gemini N
 在构造 StreamingResponse 时套一层 track_first_content(agen, <本协议的判定函数>)，第一个内容帧
 发出时调 mark_first_token()（幂等）；中间件在流结束时只读这个点。
 
-为什么用 ContextVar 装一个可变计时对象，而不是 request.state：research / api_forwarder 等处
-拿不到 Request。中间件在 call_next 之前 set；BaseHTTPMiddleware 起的 app 任务、StreamingResponse
+只套在「原样发给客户端」的那一层：中间还要再转一道的流（第三方 key 的上游 chat 流被
+/v1/responses 转成 Responses 事件，思考不转发、工具调用攒到流尾）不能在里层打点，否则里层先
+触发，记成了上游开始思考的时刻。所以 api_forwarder 返回的流不套，由 openai / responses 两个
+分发入口各自套。
+
+为什么用 ContextVar 装一个可变计时对象，而不是 request.state：产出流的生成器很多拿不到
+Request。中间件在 call_next 之前 set；BaseHTTPMiddleware 起的 app 任务、StreamingResponse
 的迭代都在建任务时复制上下文 —— 复制的是引用，拿到的是同一个计时对象，打点中间件看得见。
 （与 app/core/access_context.py 同一座桥。）每个请求在自己的任务里 set 一个新对象，互不串。
 

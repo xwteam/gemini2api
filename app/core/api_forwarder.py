@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.core.api_key_store import ApiKeyEntry
-from app.core.request_timing import openai_chat_has_content, track_first_content
 from app.models.openai import ChatRequest, ChatResponse, Choice, ChoiceMessage, UsageInfo, StreamChunk, StreamChoice, StreamDelta
 from app.utils.net_guard import assert_safe_url, UnsafeURLError
 
@@ -192,8 +191,7 @@ async def _forward_openai_compatible(
         # 关键修复：client 生命周期交给流生成器内部（async with），
         # 避免「函数返回即关闭 client，生成器迭代时连接已关」导致流式转发失效。
         return StreamingResponse(
-            track_first_content(_proxy_openai_stream(url, headers, payload, entry.provider),
-                                openai_chat_has_content),
+            _proxy_openai_stream(url, headers, payload, entry.provider),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         )
@@ -324,7 +322,7 @@ async def open_openai_stream(
             await client.aclose()
 
     return StreamingResponse(
-        track_first_content(_drain(), openai_chat_has_content),
+        _drain(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     ), None
@@ -333,7 +331,12 @@ async def open_openai_stream(
 async def open_stream(
     entry: ApiKeyEntry, messages: list[dict], req
 ) -> tuple[StreamingResponse | None, JSONResponse | None]:
-    """供分发器使用的统一流式入口：openai 兼容走 pre-flight 故障切换；其余 provider 直接提交。"""
+    """供分发器使用的统一流式入口：openai 兼容走 pre-flight 故障切换；其余 provider 直接提交。
+
+    这里返回的流不套首字计时（track_first_content）：它不一定原样发给客户端 —— /v1/responses
+    会自己读它再转成 Responses 事件（思考不转发、工具调用攒到流尾），在这一层打点会把「上游开始
+    思考」误记成首字。由真正把流交给客户端的那一层套（openai._dispatch_thirdparty /
+    responses_thirdparty.dispatch_thirdparty_responses）。"""
     if entry.provider.lower() in ("openai", "openrouter", "custom"):
         return await open_openai_stream(entry, messages, req)
     resp = await forward_to_provider(entry, messages, req)
@@ -541,9 +544,7 @@ async def _forward_anthropic(
     if req.stream:
         # 关键修复：同 openai 流式，client 生命周期交给流生成器内部，保证流式期间连接存活
         return StreamingResponse(
-            # 已转成 OpenAI chat 帧，按 OpenAI 判定首字
-            track_first_content(_convert_anthropic_stream(url, headers, payload, entry.model),
-                                openai_chat_has_content),
+            _convert_anthropic_stream(url, headers, payload, entry.model),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         )

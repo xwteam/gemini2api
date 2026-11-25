@@ -399,7 +399,11 @@ async def _dispatch_thirdparty(request, req: ChatRequest, resolved_model: str):
 
     async def attempt(entry):
         if req.stream:
-            return await open_stream(entry, messages_raw, req)
+            resp, err = await open_stream(entry, messages_raw, req)
+            if resp is not None:
+                # 第三方 chat 流原样透传给客户端，首字在这里按 OpenAI chat 帧判定（思考帧也算）
+                resp.body_iterator = track_first_content(resp.body_iterator, openai_chat_has_content)
+            return resp, err
         resp = await forward_to_provider(entry, messages_raw, req)
         if _thirdparty_ok(resp):
             return resp, None

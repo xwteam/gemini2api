@@ -10,6 +10,10 @@ call_next 返回时就记了 latency_ms，而流式请求那一刻只是拿到�
 2. 只有 role 帧 + 保活帧客户端就断开：照样有一条记录，ttft_ms 为 None。
 3. 非流式请求行为不变：latency_ms 照旧，ttft_ms 为 None。
 4. 旧记录（没有 ttft_ms 字段）照常读、照常返回。
+5. 第三方 key 的流：/v1/responses 上游先思考 / 只有工具调用时，首字按客户端真正收到的第一个
+   内容帧算（不按上游原始帧）；/v1/chat/completions 原样透传，思考帧就算首字。
+6. 流中途出错：正好一条记录，ttft_ms / latency_ms 按实际。
+7. Claude（thinking 开）与 Gemini 原生（includeThoughts）的思考帧端到端算首字。
 """
 
 import asyncio
@@ -430,3 +434,213 @@ def test_usage_metrics_stream_latency_covers_whole_generation(monkeypatch):
     m = metrics.peek()
     assert m["latency_count"] == 1
     assert m["latency_sum_ms"] >= (D_FIRST + D_TAIL) * 1000
+
+
+# ---------------------------------------------------------------------------
+# 6. 第三方 key 的流：首字按「客户端收到的第一个内容帧」算，不按上游原始帧算
+# ---------------------------------------------------------------------------
+# /v1/responses 走第三方时，_dispatch_stream 自己读上游 chat 流、再转成 Responses 事件：上游的
+# reasoning_content 不转发、tool_calls 攒到流尾才发。过去 api_forwarder 在上游流上也套了一层
+# 首字计时，这层先触发 —— 上游刚开始思考 / 刚开始吐工具调用就记成了首字，客户端其实还什么都
+# 没看到。
+
+_TP_MODEL = "deepseek-r1"   # 不是 Gemini 模型名，必走第三方分发
+
+
+def _install_thirdparty(monkeypatch, app, tmp_path, frames):
+    """给 app 装一个只有一条 openai 兼容 key 的池，上游用 MockTransport 按 frames 慢慢吐。
+
+    frames：[(先等多少秒, 这一帧的 chunk dict 或 "[DONE]"), ...]"""
+    import httpx
+
+    import app.core.api_forwarder as fwd
+    from app.core.api_key_store import ApiKeyPool
+
+    pool = ApiKeyPool(file_path=str(tmp_path / "api-keys.json"))
+    pool.add(provider="openai", model=_TP_MODEL, api_key="sk-x", base_url="https://up.example/v1")
+    monkeypatch.setattr(app.state, "api_key_pool", pool, raising=False)
+
+    class _Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for delay, chunk in frames:
+                if delay:
+                    await asyncio.sleep(delay)
+                payload = chunk if isinstance(chunk, str) else json.dumps(chunk)
+                yield f"data: {payload}\n\n".encode()
+
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=_Body())
+
+    monkeypatch.setattr(fwd, "_make_async_client",
+                        lambda timeout=300.0: httpx.AsyncClient(
+                            transport=httpx.MockTransport(handler), timeout=timeout))
+    monkeypatch.setattr(fwd, "_build_safe_target_url",
+                        lambda entry, suffix: f"{entry.base_url.rstrip('/')}{suffix}")
+
+
+def _role_frame():
+    return {"choices": [{"delta": {"role": "assistant", "content": ""}}]}
+
+
+_REASONING_THEN_TEXT = [
+    (0, _role_frame()),
+    (0.05, {"choices": [{"delta": {"reasoning_content": "thinking..."}}]}),
+    (D_FIRST, {"choices": [{"delta": {"content": "HELLO"}}]}),
+    (D_TAIL, {"choices": [{"delta": {"content": "WORLD"}}]}),
+    (0, {"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+    (0, "[DONE]"),
+]
+
+
+def test_thirdparty_responses_stream_ttft_skips_unforwarded_reasoning(log_app, monkeypatch, tmp_path):
+    """上游先思考 50ms 再出正文：Responses 客户端看不到思考，首字必须落在正文那一刻。"""
+    from fastapi.testclient import TestClient
+
+    app, store = log_app
+    _install_thirdparty(monkeypatch, app, tmp_path, _REASONING_THEN_TEXT)
+
+    with TestClient(app).stream("POST", "/v1/responses",
+                                json={"model": _TP_MODEL, "input": "hi", "stream": True},
+                                headers=_AUTH) as r:
+        assert r.status_code == 200
+        text = "".join(r.iter_text())
+    assert "response.output_text.delta" in text and "HELLO" in text and "WORLD" in text
+    assert "thinking..." not in text            # 思考确实没转给客户端
+
+    recs = _api_records(store)
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.ttft_ms is not None
+    assert rec.ttft_ms >= (0.05 + D_FIRST) * 1000, rec.ttft_ms
+    assert rec.latency_ms >= (0.05 + D_FIRST + D_TAIL) * 1000, rec.latency_ms
+    assert rec.latency_ms - rec.ttft_ms >= D_TAIL * 1000 * 0.8
+
+
+def test_thirdparty_responses_stream_ttft_waits_for_held_tool_calls(log_app, monkeypatch, tmp_path):
+    """只有工具调用的上游：工具调用攒到流尾才发给客户端，首字应贴着总耗时。"""
+    from fastapi.testclient import TestClient
+
+    app, store = log_app
+    frames = [
+        (0, _role_frame()),
+        (0.05, {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_1", "type": "function",
+             "function": {"name": "shell", "arguments": ""}}]}}]}),
+        (D_FIRST, {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": "{\"cmd\": \"ls\"}"}}]}}]}),
+        (0, {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        (0, "[DONE]"),
+    ]
+    _install_thirdparty(monkeypatch, app, tmp_path, frames)
+    body = {"model": _TP_MODEL, "input": "list files", "stream": True,
+            "tools": [{"type": "function", "name": "shell",
+                       "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}}}]}
+
+    with TestClient(app).stream("POST", "/v1/responses", json=body, headers=_AUTH) as r:
+        assert r.status_code == 200
+        text = "".join(r.iter_text())
+    assert "function_call" in text and "call_1" in text
+
+    rec = _api_records(store)[0]
+    assert rec.ttft_ms is not None
+    assert rec.ttft_ms >= (0.05 + D_FIRST) * 1000, rec.ttft_ms
+    assert rec.latency_ms - rec.ttft_ms < 100, (rec.latency_ms, rec.ttft_ms)
+
+
+def test_thirdparty_chat_stream_ttft_counts_forwarded_reasoning(log_app, monkeypatch, tmp_path):
+    """/v1/chat/completions 走第三方是原样透传：思考帧客户端看得到，首字就落在思考那一刻。"""
+    from fastapi.testclient import TestClient
+
+    app, store = log_app
+    _install_thirdparty(monkeypatch, app, tmp_path, _REASONING_THEN_TEXT)
+
+    with TestClient(app).stream("POST", "/v1/chat/completions",
+                                json={**_CHAT, "model": _TP_MODEL}, headers=_AUTH) as r:
+        assert r.status_code == 200
+        text = "".join(r.iter_text())
+    assert "thinking..." in text and "HELLO" in text
+
+    recs = _api_records(store)
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.ttft_ms is not None
+    assert 50 <= rec.ttft_ms < (0.05 + D_FIRST) * 1000, rec.ttft_ms
+    assert rec.latency_ms >= (0.05 + D_FIRST + D_TAIL) * 1000, rec.latency_ms
+
+
+# ---------------------------------------------------------------------------
+# 7. 流中途出错：照样正好一条记录，首字 / 总耗时都按实际
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("case", sorted(STREAMS))
+def test_stream_error_after_content_logs_once_with_ttft(log_app, monkeypatch, case):
+    from fastapi.testclient import TestClient
+
+    app, store = log_app
+
+    async def answers_then_breaks(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                                  account_id=None, extended_thinking=False):
+        await asyncio.sleep(D_FIRST)
+        yield {"type": "delta", "text": "HELLO"}
+        await asyncio.sleep(D_TAIL)
+        raise RuntimeError("upstream broke mid-stream")
+
+    _install_stream(monkeypatch, answers_then_breaks)
+    path, body = STREAMS[case]
+
+    # 有的协议把异常转成错误帧收尾，有的让它冒出去（服务器断流）；两种都要只记一条
+    try:
+        with TestClient(app, raise_server_exceptions=False).stream(
+                "POST", path, json=body, headers=_AUTH) as r:
+            assert r.status_code == 200
+            "".join(r.iter_text())
+    except Exception:   # noqa: BLE001 断流在客户端这边表现为读出错，不是本测试关心的
+        pass
+
+    recs = _api_records(store)
+    assert len(recs) == 1, [r.path for r in recs]
+    rec = recs[0]
+    assert rec.ttft_ms is not None
+    assert rec.ttft_ms >= D_FIRST * 1000, rec.ttft_ms
+    assert rec.latency_ms >= (D_FIRST + D_TAIL) * 1000, rec.latency_ms
+    assert rec.ttft_ms <= rec.latency_ms
+
+
+# ---------------------------------------------------------------------------
+# 8. 思考帧算首字：Claude messages（thinking 开）与 Gemini 原生（includeThoughts）端到端
+# ---------------------------------------------------------------------------
+
+async def _thinks_then_answers(prompt, model, conversation_id="", attachments=None, gem_id=None,
+                               account_id=None, extended_thinking=False):
+    await asyncio.sleep(D_FIRST)
+    yield {"type": "thoughts", "text": "THINKING"}
+    await asyncio.sleep(D_TAIL * 2)
+    yield {"type": "delta", "text": "ANSWER"}
+    yield {"type": "final", "text": "ANSWER", "conversation_id": "", "images": [],
+           "thoughts": "THINKING"}
+
+
+@pytest.mark.parametrize("case", ["anthropic", "gemini"])
+def test_stream_ttft_counts_thinking_frames_claude_and_gemini(log_app, monkeypatch, case):
+    from fastapi.testclient import TestClient
+
+    app, store = log_app
+    monkeypatch.setattr(settings, "extended_thinking_enabled", True)
+    _install_stream(monkeypatch, _thinks_then_answers)
+    path, body = STREAMS[case]
+    if case == "anthropic":
+        body = {**body, "max_tokens": 4096,
+                "thinking": {"type": "enabled", "budget_tokens": 2048}}
+    else:
+        body = {**body, "generationConfig": {
+            "thinkingConfig": {"includeThoughts": True, "thinkingBudget": 2048}}}
+
+    with TestClient(app).stream("POST", path, json=body, headers=_AUTH) as r:
+        assert r.status_code == 200
+        text = "".join(r.iter_text())
+    assert "THINKING" in text and "ANSWER" in text
+
+    rec = _api_records(store)[0]
+    assert rec.ttft_ms is not None
+    assert D_FIRST * 1000 <= rec.ttft_ms < (D_FIRST + D_TAIL * 2) * 1000, rec.ttft_ms
+    assert rec.latency_ms >= (D_FIRST + D_TAIL * 2) * 1000
