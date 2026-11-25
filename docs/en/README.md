@@ -161,8 +161,8 @@ Level parameters per protocol (**no level specified → default level**; a reque
 - **Model mapping**: map request model names to actual models (e.g., gpt-4o → gemini-2.5-pro)
 - **Access keys**: issue / edit / disable / revoke distributable inbound keys, with state, usage and scope shown right in the list (unrelated to "API Key management" below, which manages third-party **outbound** keys)
 - **API Key management**: centralized third-party model API Key management (OpenAI/Anthropic/Gemini/OpenRouter/custom), import/export support
-- Playground: online API testing
-- Real-time logs: structured table display, direction filter, text search, pagination (15 per page), JSON detail panel, disk persistence (survives restart)
+- Playground: online API testing. Under each reply, it displays thinking time, time to first token (TTFT), output speed (chars/s), and total duration, shows a live elapsed timer while waiting, and adds a "No thinking (fastest)" thinking level option.
+- Real-time logs: structured table display, direction filter, text search, pagination (15 per page), JSON detail panel, disk persistence (survives restart). The logs page displays the true total duration and time to first token (TTFT) for streaming requests.
 - Dark/light theme toggle, responsive mobile adaptation
 
 ### 🔀 Unified Forwarding Engine

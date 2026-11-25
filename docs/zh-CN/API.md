@@ -1411,6 +1411,13 @@ curl "http://localhost:5918/admin/logs?limit=15&offset=0&search=error" \
   -H "Authorization: Bearer sk-你的API密钥"
 ```
 
+**返回记录耗时字段**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `latency_ms` | number \| null | 请求耗时（毫秒）。流式请求现已统计从请求进入直到流结束（正常完成、出错或客户端断开连接）的总耗时；v1.6.55 及更早版本中流式请求误只记录到响应开始时（约 2–5ms），属于统计 bug。 |
+| `ttft_ms` | number \| null | 首字／首条内容耗时（TTFT，毫秒，v1.6.56 新增）：从请求进入直到发出首条正文文本或思考内容帧的时间；非流式请求或未输出任何内容时为 `null`，旧日志记录不包含该字段。 |
+
 ### GET /admin/logs/state
 
 获取日志记录状态。

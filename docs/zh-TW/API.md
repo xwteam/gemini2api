@@ -1164,6 +1164,13 @@ curl "http://localhost:5918/admin/logs?limit=15&offset=0" \
   -H "Authorization: Bearer sk-your-api-key"
 ```
 
+**回傳記錄耗時欄位：**
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| `latency_ms` | number \| null | 請求耗時（毫秒）。串流請求現已量測從請求進入直到串流結束（正常完成、發生錯誤或用戶端中斷連線）的總耗時；v1.6.55 及更早版本中串流請求誤只記錄到回應開始時（約 2–5ms），屬於統計 bug。 |
+| `ttft_ms` | number \| null | 首字／首條內容耗時（TTFT，毫秒，v1.6.56 新增）：從請求進入直到發出首條內文文字或思考內容幀的時間；非串流請求或未輸出任何內容時為 `null`，舊日誌記錄不含此欄位。 |
+
 ### POST /logs/clear
 
 清空所有日誌。

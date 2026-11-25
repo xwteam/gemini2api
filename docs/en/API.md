@@ -1108,6 +1108,13 @@ curl "http://localhost:5918/admin/logs?limit=15&offset=0&direction=all&search=" 
 }
 ```
 
+**Response Record Timing Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `latency_ms` | number \| null | Request duration in milliseconds. For streaming requests, now measures the total duration from request entry until the stream ends (normal completion, error, or client disconnect). In v1.6.55 and earlier, streaming requests mistakenly recorded only until response start (around 2–5ms), which was a measurement bug. |
+| `ttft_ms` | number \| null | Time to first token/content in milliseconds (added in v1.6.56), measured from request entry until the first body text or thinking content frame is emitted. `null` for non-streaming requests or when no content is emitted; older log records do not have this field. |
+
 ### POST /admin/logs/clear
 
 Clear all logs.
