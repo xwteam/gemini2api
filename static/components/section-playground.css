@@ -326,3 +326,24 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+.pg-wait-timer {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.pg-metrics {
+    margin-top: 0.35rem;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: var(--text-tertiary);
+    cursor: help;
+    font-variant-numeric: tabular-nums;
+    max-width: 75%;
+}
+
+@media (max-width: 768px) {
+    .pg-metrics {
+        max-width: 85%;
+    }
+}

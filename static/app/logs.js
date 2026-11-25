@@ -3,6 +3,7 @@
  */
 
 import { apiCall } from './auth.js';
+import { t } from './i18n.js';
 import { escapeHtml } from './utils.js';
 
 let pollTimer = null;
@@ -147,12 +148,12 @@ function renderTable(records) {
     if (empty) empty.style.display = 'none';
 
     tbody.innerHTML = records.map(r => {
-        const t = new Date(r.ts);
-        const time = t.toLocaleTimeString();
-        const dirLabel = r.direction === 'ingress' ? '入站' : '出站';
-        const dirClass = 'badge-' + r.direction;
+        const ts = new Date(r.ts);
+        const time = ts.toLocaleTimeString();
+        const dirLabel = t(r.direction === 'ingress' ? 'logs.ingress' : 'logs.egress');
+        const dirClass = r.direction === 'ingress' ? 'badge-ingress' : 'badge-egress';
         const statusClass = getStatusClass(r.status);
-        const latency = r.latency_ms ? Math.round(r.latency_ms) + 'ms' : '-';
+        const latency = formatLatency(r.latency_ms, r.ttft_ms);
         const selected = r.id === selectedRecordId ? ' selected' : '';
 
         // 安全：r.path/r.method/r.model 等字段来自真实 HTTP 请求（攻击者可控），
@@ -174,6 +175,21 @@ function renderTable(records) {
             selectRecord(id);
         });
     });
+}
+
+function formatDurationMs(ms) {
+    if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
+    if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
+    return Math.round(ms) + 'ms';
+}
+
+function formatLatency(latencyMs, ttftMs) {
+    const totalStr = latencyMs ? (formatDurationMs(latencyMs) ?? '-') : '-';
+    const ttftStr = formatDurationMs(ttftMs);
+    if (ttftStr === null) return totalStr;
+    return t('logs.latencyWithTtft')
+        .replace('{total}', () => totalStr)
+        .replace('{ttft}', () => ttftStr);
 }
 
 function getStatusClass(status) {

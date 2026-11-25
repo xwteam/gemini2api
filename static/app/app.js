@@ -902,10 +902,10 @@ function _pgSetSendBusy(busy) {
     else pgSend.removeAttribute('aria-busy');
 }
 
-// 模型测试页的思考档位：low / medium / high 原样发出；'default' = 不传档位参数（返回 null），
+// 模型测试页的思考档位：none / low / medium / high 原样发出；'default' = 不传档位参数（返回 null），
 // 其余（含空值）回出厂默认档 low。
 function _pgThinkingEffort(value) {
-    const levels = ['low', 'medium', 'high'];
+    const levels = ['none', 'low', 'medium', 'high'];
     const v = String(value ?? '').trim().toLowerCase();
     if (v === 'default') return null;
     return levels.includes(v) ? v : 'low';
@@ -992,10 +992,104 @@ async function sendPlaygroundRequest() {
     _pgSetSendBusy(true);
 
     const token = localStorage.getItem('gemini2api_token');
+    const thinkingLevel = document.getElementById('pg-thinking-level')?.value;
     const reqBody = _pgBuildChatRequest(
         model, _pgMessages, _pgConversationId,
-        document.getElementById('pg-thinking-level')?.value
+        thinkingLevel
     );
+
+    const formatPgDuration = (ms) => (
+        ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(Math.max(0, ms))}ms`
+    );
+    const isNoThinking = _pgThinkingEffort(thinkingLevel) === 'none';
+    const t0 = performance.now();
+    let firstVisibleAt = null;
+    let firstTextAt = null;
+    let hadReasoning = false;
+    let lastContent = '';
+    let waitTimerId = null;
+
+    const stopWaitTimer = () => {
+        if (waitTimerId !== null) {
+            clearInterval(waitTimerId);
+            waitTimerId = null;
+        }
+    };
+
+    if (!isImageGen) {
+        const waitKey = isNoThinking ? 'playground.waitingReply' : 'playground.thinkingWait';
+        const waitSpan = document.createElement('span');
+        waitSpan.className = 'pg-wait-timer';
+        const cursorSpan = document.createElement('span');
+        cursorSpan.className = 'typing-cursor';
+        let lastSec = -1;
+        const updateWaitText = () => {
+            const sec = Math.floor(Math.max(0, (performance.now() - t0) / 1000));
+            if (sec === lastSec) return;
+            lastSec = sec;
+            waitSpan.textContent = t(waitKey).replace('{sec}', () => String(sec));
+        };
+        updateWaitText();
+        aiBubble.textContent = '';
+        aiBubble.appendChild(waitSpan);
+        aiBubble.appendChild(cursorSpan);
+        waitTimerId = setInterval(() => {
+            if (!waitSpan.isConnected) {
+                stopWaitTimer();
+                return;
+            }
+            updateWaitText();
+        }, 250);
+    }
+
+    aiMsg._pgTiming = {
+        onReasoning() {
+            hadReasoning = true;
+            if (firstVisibleAt === null) {
+                firstVisibleAt = performance.now();
+            }
+        },
+        onText(curContent) {
+            const now = performance.now();
+            if (firstVisibleAt === null) firstVisibleAt = now;
+            if (firstTextAt === null) {
+                firstTextAt = now;
+                stopWaitTimer();
+            }
+            if (curContent) lastContent = curContent;
+        },
+        stopTimer: stopWaitTimer,
+        renderMetrics() {
+            stopWaitTimer();
+            if (aiMsg.isConnected === false) return;
+            const tEnd = performance.now();
+            const parts = [];
+            if (!isImageGen && (hadReasoning || !isNoThinking) && firstTextAt !== null) {
+                parts.push(t('playground.metrics.thinking').replace('{time}', () => formatPgDuration(firstTextAt - t0)));
+            }
+            if (firstVisibleAt !== null) {
+                parts.push(t('playground.metrics.ttft').replace('{time}', () => formatPgDuration(firstVisibleAt - t0)));
+            }
+            if (firstTextAt !== null) {
+                const genSec = (tEnd - firstTextAt) / 1000;
+                if (genSec >= 0.05 && lastContent) {
+                    const chars = Array.from(lastContent).length;
+                    if (chars > 0) {
+                        const rate = (chars / genSec).toFixed(1);
+                        parts.push(t('playground.metrics.speed').replace('{rate}', () => rate));
+                    }
+                }
+            }
+            parts.push(t('playground.metrics.total').replace('{time}', () => formatPgDuration(tEnd - t0)));
+
+            const metricsEl = document.createElement('div');
+            metricsEl.className = 'pg-metrics';
+            metricsEl.title = t('playground.metrics.tooltip');
+            metricsEl.textContent = parts.join(' · ');
+            aiBubble.parentNode?.appendChild(metricsEl);
+            if (chatContainer) chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+    };
 
     try {
         const resp = await fetch('/openai/v1/chat/completions', {
@@ -1024,6 +1118,7 @@ async function sendPlaygroundRequest() {
         let streamError = null;
         let reasoningBody = null;
         const ensureReasoningBlock = () => {
+            aiMsg._pgTiming?.onReasoning();
             if (reasoningBody) return reasoningBody;
             const det = document.createElement('details');
             det.className = 'pg-reasoning';
@@ -1075,6 +1170,7 @@ async function sendPlaygroundRequest() {
                         _pgClearGeneratingState(aiMsg, aiBubble);
                         content += piece;
                         aiBubble.textContent = content;
+                        aiMsg._pgTiming?.onText(content);
                         chatContainer.scrollTop = chatContainer.scrollHeight;
                     }
                     const rPiece = info.reasoning;
@@ -1114,6 +1210,8 @@ async function sendPlaygroundRequest() {
         _pgClearGeneratingState(aiMsg, aiBubble);
         aiBubble.innerHTML = `<span class="text-danger">${escapeHtml(_pgFormatPlaygroundError(error))}</span>`;
     } finally {
+        aiMsg._pgTiming?.stopTimer();
+        aiMsg._pgTiming?.renderMetrics();
         _pgSetSendBusy(false);
     }
 }

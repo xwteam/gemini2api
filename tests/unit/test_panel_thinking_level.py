@@ -150,9 +150,9 @@ def _pg_options():
     return html, re.findall(r'<option value="([^"]*)"([^>]*)>', m.group(1))
 
 
-def test_the_level_select_defaults_to_low_with_three_levels_and_a_default_option():
+def test_the_level_select_defaults_to_low_with_none_three_levels_and_a_default_option():
     html, options = _pg_options()
-    assert [v for v, _ in options] == ["low", "medium", "high", "default"]
+    assert [v for v, _ in options] == ["none", "low", "medium", "high", "default"]
     assert [v for v, attrs in options if "selected" in attrs] == ["low"]
     assert 'id="pg-thinking"' not in html, "旧的思考勾选框应当被档位选择取代"
 
@@ -216,6 +216,6 @@ def test_thinking_option_labels_exist_in_every_language():
     for block in blocks:
         pg_keys = re.findall(r'data-i18n="(playground\.thinkingLevel\.[a-z]+)"',
                              _PG_HTML.read_text(encoding="utf-8"))
-        assert len(pg_keys) == 4
+        assert len(pg_keys) == 5
         for key in keys + pg_keys:
             assert f"'{key}':" in block, key
