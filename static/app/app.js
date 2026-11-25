@@ -96,6 +96,9 @@ async function loadSectionData(sectionId) {
             case 'gems':
                 await loadAccountsThenGems();
                 break;
+            case 'playground':
+                await ensurePlaygroundModels();
+                break;
         }
     } catch (error) {
         console.error(`加载${sectionId}数据失败:`, error);
@@ -386,10 +389,28 @@ function updatePlaygroundModels(modelsSet) {
         return;
     }
 
+    // 仪表盘每次刷新都会重填列表：记住当前选中的模型，还在列表里就选回去（否则回到第一个）
+    const previous = select.value;
     // 安全：model 转义后再拼入 option 的 value 属性与文本内容，防止属性逸出/标签注入
     select.innerHTML = models.map(model =>
         `<option value="${escapeAttr(model)}">${escapeHtml(model)}</option>`
     ).join('');
+    if (previous && models.includes(previous)) select.value = previous;
+}
+
+// 直接打开 / 刷新「模型测试」页（#playground）时仪表盘没加载过，下拉框会一直停在「加载中...」。
+// 只在下拉框还没有真实选项时拉一次 /admin/status（与仪表盘同口径：池级 models，旧后端退回各账号
+// 列表的并集）；已经有列表就不动，切回来不会把选中的模型重置掉。
+async function ensurePlaygroundModels() {
+    const select = document.getElementById('pg-model');
+    if (!select || select.querySelector('option[value]:not([value=""])')) return;
+    const data = await apiCall('GET', '/admin/status');
+    const modelsSet = new Set();
+    const modelLists = Array.isArray(data.models) ? [data.models] : (data.accounts || []).map(a => a.models);
+    modelLists.forEach(list => {
+        if (Array.isArray(list)) list.forEach(m => modelsSet.add(m));
+    });
+    updatePlaygroundModels(modelsSet);
 }
 
 // ============================================================================
