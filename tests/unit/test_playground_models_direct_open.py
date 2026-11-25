@@ -50,7 +50,7 @@ _HARNESS = textwrap.dedent("""
     function t(k) { return k; }
     function escapeAttr(s) { return String(s); }
     function escapeHtml(s) { return String(s); }
-    async function apiCall(method, path) { calls.push(method + ' ' + path); return status; }
+    async function apiCall(method, path) { calls.push(method + ' ' + path); if (status === 'FAIL') throw new Error('boom'); return status; }
     function makeSelect(options, value) {
       const sel = { _opts: options.map(([v, txt]) => ({ value: v, textContent: txt })), value };
       Object.defineProperty(sel, 'innerHTML', {
@@ -75,7 +75,7 @@ _HARNESS = textwrap.dedent("""
 def _run(options, value, body, status=None):
     src = _src()
     fns = "\n".join(_extract_function(src, n) for n in ("updatePlaygroundModels", "ensurePlaygroundModels"))
-    status = status or {"models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon"], "accounts": []}
+    status = status if status is not None else {"models": ["gemini-auto", "gemini-4-hydrogen", "gemini-4-neon"], "accounts": []}
     code = _HARNESS % {"status": json.dumps(status), "options": json.dumps(options),
                        "value": json.dumps(value), "fns": fns, "body": body}
     out = subprocess.run([_NODE, "-e", code], capture_output=True, text=True, timeout=30)
@@ -117,3 +117,11 @@ def test_old_backend_without_pool_models_uses_account_union():
     status = {"accounts": [{"models": ["gemini-auto"]}, {"models": ["gemini-auto", "gemini-4-neon"]}]}
     r = _run([["", "加载中..."]], "", "await ensurePlaygroundModels();", status=status)
     assert r["options"] == ["gemini-auto", "gemini-4-neon"]
+
+
+@_needs_node
+def test_fetch_failure_replaces_the_loading_placeholder():
+    r = _run([["", "加载中..."]], "", "try { await ensurePlaygroundModels(); } catch (e) { calls.push('threw'); }",
+             status="FAIL")
+    assert r["calls"] == ["GET /admin/status", "threw"]
+    assert r["options"] == [""]           # 只剩「无可用模型」占位（value=""），下次进页面会再拉

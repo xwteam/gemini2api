@@ -404,7 +404,14 @@ function updatePlaygroundModels(modelsSet) {
 async function ensurePlaygroundModels() {
     const select = document.getElementById('pg-model');
     if (!select || select.querySelector('option[value]:not([value=""])')) return;
-    const data = await apiCall('GET', '/admin/status');
+    let data;
+    try {
+        data = await apiCall('GET', '/admin/status');
+    } catch (error) {
+        // 拉取失败别让下拉框永远停在「加载中...」：换成「无可用模型」，下次切回本页会再试
+        updatePlaygroundModels(new Set());
+        throw error;
+    }
     const modelsSet = new Set();
     const modelLists = Array.isArray(data.models) ? [data.models] : (data.accounts || []).map(a => a.models);
     modelLists.forEach(list => {
